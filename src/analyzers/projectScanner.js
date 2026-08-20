@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { isUserScriptCandidate } from './userScriptAnalyzer.js';
 
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue']);
 const SKIP_DIRS = new Set([
@@ -118,11 +119,13 @@ function gitInfo(projectRoot) {
   }
 }
 
-function detectFramework(packageJson) {
+function detectFramework(packageJson, userScriptCount) {
   const deps = { ...(packageJson?.dependencies ?? {}), ...(packageJson?.devDependencies ?? {}) };
   if (deps.vue) return 'vue';
   if (deps.nuxt) return 'vue';
   if (deps.react) return 'react';
+  // 无前端框架依赖但存在油猴脚本 → 纯脚本仓库（React/Vue 项目与油猴脚本混合时仍以宿主框架为准）
+  if (userScriptCount > 0) return 'userscript';
   return 'unknown';
 }
 
@@ -133,6 +136,13 @@ export function scanProject(projectRoot, options = {}) {
     walk(path.join(projectRoot, root), projectRoot, files);
   }
   files.sort();
+
+  // 油猴脚本探测：.user.js 扩展名，或 .js 文件头部含 ==UserScript== 元数据块（仅读首 4KB）
+  const userScriptFiles = new Set();
+  for (const f of files) {
+    if (!/\.m?js$/.test(f)) continue;
+    if (isUserScriptCandidate(path.join(projectRoot, f))) userScriptFiles.add(f);
+  }
 
   const packageJson = readJson(path.join(projectRoot, 'package.json'));
   const tsconfigPaths = parseTsconfigPaths(path.join(projectRoot, 'tsconfig.json'));
@@ -152,15 +162,18 @@ export function scanProject(projectRoot, options = {}) {
 
   return {
     root: projectRoot,
+    roots,
     name: packageJson?.name ?? path.basename(projectRoot),
     version: packageJson?.version ?? null,
-    framework: detectFramework(packageJson),
+    framework: detectFramework(packageJson, userScriptFiles.size),
     files,
     fileCount: files.length,
     tsFileCount: counts.ts,
     tsxFileCount: counts.tsx,
     jsFileCount: counts.js + counts.jsx,
     vueFileCount: counts.vue,
+    userScriptFiles,
+    userScriptFileCount: userScriptFiles.size,
     tsconfigPaths,
     dependencies,
     ...gitInfo(projectRoot),

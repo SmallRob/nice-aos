@@ -16,7 +16,7 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 
 const program = new Command();
 program
   .name('nice-aos')
-  .description('nice-aos —— 通用 React 前端代码本体分析 CLI：扫描 React/TypeScript 源码生成结构化本体快照（模块/文件/组件/Hook/Store/Service/路由/依赖 + import/render/导航关系图谱），供 AI agent 与开发者毫秒级查询')
+  .description('nice-aos —— 通用前端代码本体分析 CLI：扫描 React/TypeScript、Vue 3 SFC 与油猴脚本（Tampermonkey UserScript）生成结构化本体快照（模块/文件/组件/Hook/Store/Service/路由/依赖 + import/render/导航关系图谱；油猴脚本含 GM API/DOM 注入/网络端点/函数调用图），供 AI agent 与开发者毫秒级查询')
   .version(VERSION)
   .option('--snapshot-dir <path>', '快照目录（默认 ./.nice-aos/data 或环境变量 NICE_AOS_SNAPSHOT_DIR）')
   .hook('preAction', (thisCommand) => {

@@ -3,6 +3,7 @@ import { scanProject } from '../analyzers/projectScanner.js';
 import { createResolver } from '../analyzers/importResolver.js';
 import { analyzeFileFromDisk } from '../analyzers/tsAnalyzer.js';
 import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
+import { analyzeUserScriptFromDisk } from '../analyzers/userScriptAnalyzer.js';
 import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
 
 const KIND_SUFFIXES = [
@@ -12,8 +13,15 @@ const KIND_SUFFIXES = [
   ['Button', 'button'], ['Widget', 'widget'], ['View', 'view'], ['Provider', 'provider'],
   ['Overlay', 'overlay'], ['Tab', 'tab'], ['Picker', 'picker'], ['Badge', 'badge'],
 ];
-const ENTRY_FILES = new Set(['src/App.tsx', 'src/index.tsx', 'src/main.tsx', 'src/index.ts', 'src/main.ts', 'src/main.js', 'src/App.vue']);
+const ENTRY_BASENAMES = new Set(['App.tsx', 'index.tsx', 'main.tsx', 'index.ts', 'main.ts', 'main.js', 'App.vue']);
 const SERVICE_NAME_RE = /(Service|Engine|Manager|Repository|Factory)$/;
+
+// 入口识别：位于任一扫描根顶层的常见入口文件名（多根 monorepo 每个根均可有自己的入口）
+function isEntryFile(relPath, roots) {
+  if (!ENTRY_BASENAMES.has(path.posix.basename(relPath))) return false;
+  const dir = path.posix.dirname(relPath);
+  return roots.some((r) => dir === r || dir === r.replace(/\/+$/, ''));
+}
 
 function componentKind(name) {
   for (const [suffix, kind] of KIND_SUFFIXES) {
@@ -90,9 +98,12 @@ function findCycles(fileObjects) {
 export async function buildOntologyData(projectRoot, options = {}) {
   const startedAt = Date.now();
   const scan = scanProject(projectRoot, options);
+  // 入口识别使用实际扫描根（显式 roots 或默认 src/）；根级入口名在每个根顶层均有效
+  const entryRoots = scan.roots ?? ['src'];
   const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files);
 
   // 1. 逐文件解析（TypeScript Compiler API，仅词法/语法层，不做类型检查）
+  // 路由：.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（三者平级、逻辑独立）
   const factsMap = new Map();
   const analysisErrors = [];
   const getFacts = (relPath) => {
@@ -100,7 +111,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
     try {
       const facts = relPath.endsWith('.vue')
         ? analyzeVueFileFromDisk(relPath, projectRoot)
-        : analyzeFileFromDisk(relPath, projectRoot);
+        : (scan.userScriptFiles?.has(relPath)
+          ? analyzeUserScriptFromDisk(relPath, projectRoot)
+          : analyzeFileFromDisk(relPath, projectRoot));
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
@@ -204,7 +217,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       layer: dir ? moduleLayerOf(dir) : 'root',
       lineCount: facts.lineCount,
       isTest: isTestFile(relPath),
-      isEntry: ENTRY_FILES.has(relPath),
+      isEntry: isEntryFile(relPath, entryRoots),
       isPageFile: stem.endsWith('Page') || (relPath.endsWith('.vue') && /\/(views|pages)\//.test(relPath)),
       importIds,
       typeImportCount,
@@ -305,6 +318,197 @@ export async function buildOntologyData(projectRoot, options = {}) {
         reviewed: false, notes: null,
       });
     }
+  }
+
+  // 5b. 油猴脚本对象（UserScript / GmApiUsage / InjectionPoint / NetworkEndpoint / ScriptFunction）
+  // 与 React/Vue 组件体系并存：油猴脚本不产出 Component/Store，而是产出注入点、网络端点与脚本函数
+  const userScripts = [];
+  const gmApiUsages = [];
+  const injectionPoints = [];
+  const networkEndpoints = [];
+  const scriptFunctions = [];
+  for (const relPath of scan.files) {
+    const facts = factsMap.get(relPath);
+    if (!facts?.isUserScript) continue;
+    const meta = facts.meta ?? {};
+    const fileObj = fileObjectByPath.get(relPath);
+    const stem = path.posix.basename(relPath).replace(/\.user\.js$|\.m?js$/, '');
+    const scriptName = meta.name ?? stem;
+    const usId = `us:${relPath}`;
+
+    // 函数对象（先建，调用边依赖 id 映射）
+    const fnIdUsed = new Set();
+    const fnIds = [];
+    const fnIdMap = new Map();
+    for (const fn of facts.functions ?? []) {
+      const fnId = uniqueId(`fn:${relPath}#${fn.name}`, fnIdUsed);
+      fnIdMap.set(fn.name, fnId);
+      fnIds.push(fnId);
+    }
+    for (const fn of facts.functions ?? []) {
+      scriptFunctions.push({
+        id: fnIdMap.get(fn.name),
+        name: fn.name,
+        kind: fn.kind,
+        owner: fn.owner ?? null,
+        isTopLevel: fn.isTopLevel,
+        line: fn.line,
+        lineCount: fn.lineCount,
+        callCount: fn.callCount,
+        calledByCount: fn.calledByCount,
+        gmApiCalls: fn.gmApiCalls ?? [],
+        gmApiCount: (fn.gmApiCalls ?? []).length,
+        domOpCount: fn.domOpCount ?? 0,
+        htmlInjectionCount: fn.htmlInjectionCount ?? 0,
+        mountCount: fn.mountCount ?? 0,
+        networkCallCount: fn.networkCallCount ?? 0,
+        observerCount: fn.observerCount ?? 0,
+        listenerCount: fn.listenerCount ?? 0,
+        timerCount: fn.timerCount ?? 0,
+        callIds: [],
+        calledByIds: [],
+        scriptId: usId,
+        scriptName,
+        filePath: relPath,
+        reviewed: false, notes: null,
+      });
+    }
+    // 调用边回填（from/to 均为已收集函数）
+    for (const edge of facts.callEdges ?? []) {
+      const fromId = fnIdMap.get(edge.from);
+      if (!fromId) continue;
+      const fromFn = scriptFunctions.find((f) => f.id === fromId);
+      for (const t of edge.to) {
+        const toId = fnIdMap.get(t.to);
+        if (!toId || toId === fromId) continue;
+        if (!fromFn.callIds.includes(toId)) fromFn.callIds.push(toId);
+        const toFn = scriptFunctions.find((f) => f.id === toId);
+        if (toFn && !toFn.calledByIds.includes(fromId)) toFn.calledByIds.push(fromId);
+      }
+    }
+
+    // GM API 使用对象
+    const gmIds = [];
+    for (const gm of facts.gmApiCalls ?? []) {
+      const gmId = `gm:${relPath}#${gm.name}`;
+      gmIds.push(gmId);
+      gmApiUsages.push({
+        id: gmId,
+        name: gm.name,
+        category: gm.category,
+        callCount: gm.callCount,
+        lines: gm.lines,
+        declared: gm.declared,
+        scriptId: usId,
+        scriptName,
+        filePath: relPath,
+        reviewed: false, notes: null,
+      });
+    }
+
+    // DOM 注入点对象
+    const injectIds = [];
+    const injectSorted = [...(facts.domInjections ?? [])].sort((a, b) => (b.callCount - a.callCount) || String(a.kind).localeCompare(String(b.kind)) || String(a.target).localeCompare(String(b.target)));
+    injectSorted.forEach((inj, i) => {
+      const injId = `inject:${relPath}#${i + 1}`;
+      injectIds.push(injId);
+      injectionPoints.push({
+        id: injId,
+        kind: inj.kind,
+        target: inj.target,
+        callCount: inj.callCount,
+        lines: inj.lines,
+        interpolated: !!inj.interpolated,
+        scriptId: usId,
+        scriptName,
+        filePath: relPath,
+        reviewed: false, notes: null,
+      });
+    });
+
+    // 网络端点对象
+    const netIds = [];
+    for (const net of facts.networkRequests ?? []) {
+      const netId = `net:${relPath}#${net.kind}:${net.domain}`;
+      netIds.push(netId);
+      networkEndpoints.push({
+        id: netId,
+        kind: net.kind,
+        domain: net.domain,
+        urls: net.urls,
+        methods: net.methods,
+        callCount: net.callCount,
+        lines: net.lines,
+        allowedByConnect: net.allowedByConnect,
+        scriptId: usId,
+        scriptName,
+        filePath: relPath,
+        reviewed: false, notes: null,
+      });
+    }
+
+    const observerCount = (facts.observers ?? []).length;
+    const intervalCount = (facts.timers ?? []).filter((t) => t.kind === 'interval').length;
+    const timeoutCount = (facts.timers ?? []).filter((t) => t.kind === 'timeout').length;
+    userScripts.push({
+      id: usId,
+      name: scriptName,
+      namespace: meta.namespace ?? null,
+      version: meta.version ?? null,
+      author: meta.author ?? null,
+      description: meta.description ? meta.description.slice(0, 200) : null,
+      license: meta.license ?? null,
+      filePath: relPath,
+      fileId: fileObj ? fileObj.id : `file:${relPath}`,
+      matches: meta.matches ?? [],
+      excludes: meta.excludes ?? [],
+      grants: meta.grants ?? [],
+      grantNone: !!meta.grantNone,
+      connects: meta.connects ?? [],
+      requires: meta.requires ?? [],
+      resources: (meta.resources ?? []).map((r) => r.name),
+      runAt: meta.runAt ?? 'document-idle(默认)',
+      noframes: !!meta.noframes,
+      lineCount: facts.lineCount,
+      isIife: facts.isIife,
+      usesStrict: facts.usesStrict,
+      hostFramework: facts.hostFramework,
+      hostMarkers: facts.hostMarkers ?? [],
+      functionCount: (facts.functions ?? []).length,
+      topLevelFunctionCount: (facts.functions ?? []).filter((f) => f.isTopLevel).length,
+      gmApiCount: (facts.gmApiCalls ?? []).length,
+      gmApiCallCount: (facts.gmApiCalls ?? []).reduce((a, g) => a + g.callCount, 0),
+      injectionCount: (facts.domInjections ?? []).length,
+      mountCount: (facts.domInjections ?? []).filter((d) => d.kind === 'mount').length,
+      htmlInjectionCount: (facts.domInjections ?? []).filter((d) => d.kind === 'inner-html' || d.kind === 'insert-adjacent' || d.kind === 'document-write').length,
+      networkEndpointCount: (facts.networkRequests ?? []).length,
+      networkCallCount: (facts.networkRequests ?? []).reduce((a, n) => a + n.callCount, 0),
+      hijackCount: (facts.hijacks ?? []).length,
+      mutationObserverCount: observerCount,
+      intervalCount,
+      timeoutCount,
+      listenerCount: (facts.listeners ?? []).length,
+      lifecycleEvents: facts.lifecycleEvents ?? [],
+      customEventsEmitted: facts.customEventsEmitted ?? [],
+      customEventsListened: facts.customEventsListened ?? [],
+      usesUnsafeWindow: (facts.unsafeWindowReads?.length ?? 0) + (facts.unsafeWindowWrites?.length ?? 0) > 0,
+      unsafeWindowReads: facts.unsafeWindowReads ?? [],
+      unsafeWindowWrites: facts.unsafeWindowWrites ?? [],
+      windowExposes: facts.windowExposes ?? [],
+      storageUsage: facts.storageUsage ?? {},
+      createElementCount: facts.createElementCount ?? 0,
+      styleElementCount: facts.styleElementCount ?? 0,
+      gmAddStyleCount: facts.gmAddStyleCount ?? 0,
+      topLevelCalls: facts.topLevelCalls ?? [],
+      risks: facts.risks ?? [],
+      riskCount: (facts.risks ?? []).length,
+      riskLevel: facts.riskLevel ?? 'none',
+      gmApiIds: gmIds,
+      injectionIds: injectIds,
+      networkIds: netIds,
+      functionIds: fnIds,
+      reviewed: false, notes: null,
+    });
   }
 
   // 6. renders 关系：文件主组件的 JSX 标签 → 导入来源文件的组件
@@ -517,6 +721,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     tsxFileCount: scan.tsxFileCount,
     jsFileCount: scan.jsFileCount,
     vueFileCount: scan.vueFileCount,
+    userScriptFileCount: scan.userScriptFileCount ?? 0,
     analysisErrors,
     reviewed: false, notes: null,
   };
@@ -531,6 +736,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
         Module: modules.length, SourceFile: fileObjects.length, Component: components.length,
         Hook: hooks.length, Store: stores.length, Service: services.length,
         Route: routes.length, Dependency: dependencies.length,
+        UserScript: userScripts.length, GmApiUsage: gmApiUsages.length,
+        InjectionPoint: injectionPoints.length, NetworkEndpoint: networkEndpoints.length,
+        ScriptFunction: scriptFunctions.length,
       },
     },
     Project: [project],
@@ -542,6 +750,11 @@ export async function buildOntologyData(projectRoot, options = {}) {
     Service: services,
     Route: routes,
     Dependency: dependencies,
+    UserScript: userScripts,
+    GmApiUsage: gmApiUsages,
+    InjectionPoint: injectionPoints,
+    NetworkEndpoint: networkEndpoints,
+    ScriptFunction: scriptFunctions,
   };
   return dataMap;
 }

@@ -20,8 +20,12 @@ export const actionCommand = new Command('action')
 
     if (name === 'refreshRepo') {
       const projectPath = path.resolve(params.repoPath ?? params.projectPath ?? process.cwd());
-      if (!fs.existsSync(path.join(projectPath, 'package.json'))) {
-        fail(`路径下未找到 package.json，不是前端项目根目录: ${projectPath}`);
+      // 纯油猴脚本仓库可无 package.json，改用目录存在性校验（扫描器对缺失的 package.json 已有兜底）
+      if (!fs.existsSync(projectPath)) {
+        fail(`路径不存在: ${projectPath}`);
+      }
+      if (!fs.statSync(projectPath).isDirectory()) {
+        fail(`路径不是目录: ${projectPath}`);
       }
       const dataMap = await buildOntologyData(projectPath, params);
       const snapshotPath = saveSnapshot(dataMap);

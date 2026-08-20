@@ -1,5 +1,6 @@
 // 本体蓝图：对象类型 + 链接关系 + 动作的定义与实现
-// 与 asdm-aos 的 codeRepoBlueprint 对应，针对 React/Vue 前端重新建模
+// 与 asdm-aos 的 codeRepoBlueprint 对应，针对 React/Vue 前端重新建模；
+// 油猴脚本（UserScript）体系与 React/Vue 组件体系并存、逻辑独立
 
 export const OBJECT_TYPES = [
   { type: 'Project', prefix: 'proj:', description: '代码仓库' },
@@ -11,9 +12,17 @@ export const OBJECT_TYPES = [
   { type: 'Service', prefix: 'svc:', description: '服务/引擎模块' },
   { type: 'Route', prefix: 'route:', description: '路由条目（Overlay / vue-router 页面）' },
   { type: 'Dependency', prefix: 'dep:', description: 'npm 依赖' },
+  { type: 'UserScript', prefix: 'us:', description: '油猴脚本（Tampermonkey UserScript）' },
+  { type: 'GmApiUsage', prefix: 'gm:', description: 'GM API 使用（@grant 声明比对）' },
+  { type: 'InjectionPoint', prefix: 'inject:', description: 'DOM 注入点（挂载/innerHTML/样式）' },
+  { type: 'NetworkEndpoint', prefix: 'net:', description: '网络端点（GM_xhr/fetch/XHR 域名）' },
+  { type: 'ScriptFunction', prefix: 'fn:', description: '脚本函数/类/对象（逻辑分布单元）' },
 ];
 
-export const LINK_TYPES = ['contains', 'imports', 'importedBy', 'renders', 'renderedBy', 'navigatesTo', 'registers', 'usesStore', 'usesHook'];
+export const LINK_TYPES = [
+  'contains', 'imports', 'importedBy', 'renders', 'renderedBy', 'navigatesTo', 'registers', 'usesStore', 'usesHook',
+  'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy',
+];
 
 export const ACTION_NAMES = ['refreshRepo', 'markReviewed', 'addNote'];
 
@@ -41,6 +50,11 @@ export function createBlueprint(dataMap) {
   const files = dataMap.SourceFile ?? [];
   const components = dataMap.Component ?? [];
   const routes = dataMap.Route ?? [];
+  const userScripts = dataMap.UserScript ?? [];
+  const gmApiUsages = dataMap.GmApiUsage ?? [];
+  const injectionPoints = dataMap.InjectionPoint ?? [];
+  const networkEndpoints = dataMap.NetworkEndpoint ?? [];
+  const scriptFunctions = dataMap.ScriptFunction ?? [];
 
   const linkImpls = {
     contains(srcId) {
@@ -60,7 +74,17 @@ export function createBlueprint(dataMap) {
         out.push(...(dataMap.Hook ?? []).filter((h) => h.filePath === filePath));
         out.push(...(dataMap.Store ?? []).filter((s) => s.filePath === filePath));
         out.push(...(dataMap.Service ?? []).filter((s) => s.filePath === filePath));
+        out.push(...userScripts.filter((u) => u.filePath === filePath));
         return out;
+      }
+      if (srcId.startsWith('us:')) {
+        // 油猴脚本的子对象：函数 / GM API 使用 / 注入点 / 网络端点
+        return [
+          ...scriptFunctions.filter((f) => f.scriptId === srcId),
+          ...gmApiUsages.filter((g) => g.scriptId === srcId),
+          ...injectionPoints.filter((i) => i.scriptId === srcId),
+          ...networkEndpoints.filter((n) => n.scriptId === srcId),
+        ];
       }
       return [];
     },
@@ -138,6 +162,65 @@ export function createBlueprint(dataMap) {
           const importer = files.find((f) => f.id === `file:${filePath}`);
           return importer && (importer.importIds ?? []).includes(hFileId);
         });
+      }
+      return [];
+    },
+
+    // ---- 油猴脚本链接（双向：us: 正向；gm:/inject:/net:/fn: 反查所属脚本）----
+    usesGmApi(srcId) {
+      if (srcId.startsWith('us:')) {
+        const script = getObject(index, srcId);
+        if (!script) return [];
+        return objectsForIds(index, script.gmApiIds ?? []);
+      }
+      if (srcId.startsWith('gm:')) {
+        const usage = getObject(index, srcId);
+        return usage ? [getObject(index, usage.scriptId)].filter(Boolean) : [];
+      }
+      return [];
+    },
+
+    injectsInto(srcId) {
+      if (srcId.startsWith('us:')) {
+        const script = getObject(index, srcId);
+        if (!script) return [];
+        return objectsForIds(index, script.injectionIds ?? []);
+      }
+      if (srcId.startsWith('inject:')) {
+        const point = getObject(index, srcId);
+        return point ? [getObject(index, point.scriptId)].filter(Boolean) : [];
+      }
+      return [];
+    },
+
+    requestsTo(srcId) {
+      if (srcId.startsWith('us:')) {
+        const script = getObject(index, srcId);
+        if (!script) return [];
+        return objectsForIds(index, script.networkIds ?? []);
+      }
+      if (srcId.startsWith('net:')) {
+        const endpoint = getObject(index, srcId);
+        return endpoint ? [getObject(index, endpoint.scriptId)].filter(Boolean) : [];
+      }
+      return [];
+    },
+
+    // 脚本函数调用图：fn: → fn:（正向被调用 callees；反向 calledBy）
+    calls(srcId) {
+      if (srcId.startsWith('fn:')) {
+        const fn = getObject(index, srcId);
+        if (!fn) return [];
+        return objectsForIds(index, fn.callIds ?? []);
+      }
+      return [];
+    },
+
+    calledBy(srcId) {
+      if (srcId.startsWith('fn:')) {
+        const fn = getObject(index, srcId);
+        if (!fn) return [];
+        return objectsForIds(index, fn.calledByIds ?? []);
       }
       return [];
     },

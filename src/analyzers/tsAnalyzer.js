@@ -48,7 +48,9 @@ function extractJsdoc(ts, node, sourceText) {
 
 function isZustandCreateCall(ts, node, importMap) {
   if (!ts.isCallExpression(node)) return false;
-  const callee = node.expression;
+  let callee = node.expression;
+  // create<State>()(...) 泛型形式：外层 call 的 expression 是内层 call，向内穿透到 identifier
+  while (ts.isCallExpression(callee)) callee = callee.expression;
   if (!ts.isIdentifier(callee)) return false;
   const source = importMap.get(callee.text);
   return !!source && (source === 'zustand' || source.startsWith('zustand/'));
@@ -291,13 +293,20 @@ export function analyzeFile(filePath, content, projectRoot) {
         } else if (/^use[A-Z]/.test(name)) {
           facts.useCalls.push({ name, pos: node.getStart(sourceFile) });
         } else if (name === 'create' || name === 'createStore') {
-          const parent = node.parent;
-          if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+          // zustand create：支持 create((set)=>({...})) 与 create<State>()(...) 泛型形式。
+          // 泛型形式中 create 是内层 call（parent 为外层 call），需穿透到外层 call 再定位变量声明
+          let decl = node.parent;
+          let callNode = node;
+          if (ts.isCallExpression(decl) && decl.expression === node && ts.isVariableDeclaration(decl.parent)) {
+            callNode = decl;
+            decl = decl.parent;
+          }
+          if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name)) {
             facts.zustandCreates.push({
-              varName: parent.name.text,
-              callNode: node,
-              pos: parent.getStart(sourceFile),
-              end: parent.end,
+              varName: decl.name.text,
+              callNode,
+              pos: decl.getStart(sourceFile),
+              end: decl.end,
             });
           }
         } else if (name === 'defineStore') {
@@ -431,21 +440,22 @@ export function analyzeFile(filePath, content, projectRoot) {
   facts.stores = [];
   for (const entry of facts.zustandCreates) {
     if (!isZustandCreateCall(ts, entry.callNode, facts.importMap)) continue;
-    let target = entry.callNode;
-    // create<State>()(...) 形式
-    if (ts.isCallExpression(target.expression)) target = target.expression;
-    let factory = target.arguments[0];
+    // factory 取外层 call 的 arguments[0]：create((set)=>({...})) 与 create<State>()(X) 中 X 均位于此
+    let factory = entry.callNode.arguments[0];
     let hasPersist = false;
     let storageKey = null;
-    if (factory && ts.isCallExpression(factory) && ts.isIdentifier(factory.expression)
+    // 穿透 persist/devtools 包装（可嵌套，如 devtools(persist((set)=>({...}), {name})))）
+    while (factory && ts.isCallExpression(factory) && ts.isIdentifier(factory.expression)
         && (factory.expression.text === 'persist' || factory.expression.text === 'devtools')) {
-      hasPersist = factory.expression.text === 'persist';
-      const opts = factory.arguments[1];
-      if (opts && ts.isObjectLiteralExpression(opts)) {
-        for (const prop of opts.properties) {
-          if (ts.isPropertyAssignment(prop) && prop.name?.getText(sourceFile) === 'name'
-              && ts.isStringLiteralLike(prop.initializer)) {
-            storageKey = prop.initializer.text;
+      if (factory.expression.text === 'persist') {
+        hasPersist = true;
+        const opts = factory.arguments[1];
+        if (opts && ts.isObjectLiteralExpression(opts)) {
+          for (const prop of opts.properties) {
+            if (ts.isPropertyAssignment(prop) && prop.name?.getText(sourceFile) === 'name'
+                && ts.isStringLiteralLike(prop.initializer)) {
+              storageKey = prop.initializer.text;
+            }
           }
         }
       }
