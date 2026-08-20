@@ -3,6 +3,7 @@
 > 把任意 React、Vue 3 前端仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia Store/Service/路由/依赖 + import/render/导航关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
 > 参考 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 代码本体分析）的架构，针对前端生态重新建模：React（React 19 + TypeScript + Vite + Zustand + overlay 路由 / react-router）、Vue 3（SFC + vue-router + Pinia）与油猴脚本（UserScript 元数据 + GM API + 注入/请求审计）。
 > 语义本体引擎：对象按概念范畴与抽象层级（L3 架构 / L2 结构 / L1 单元 / L0 事实）组织；架构分层按内容信号推断（非目录名直译）；Module/Domain/Project 自动生成职责画像与自然语言总结。
+> 本体查看器（viewer）：`export --format html` 一键生成**自包含蓝图 HTML**（零依赖可离线打开），含领域蓝图 / 业务数据图 / 业务逻辑流向四个视图；`--format viewmodel` 输出聚合视图模型 JSON 供 agent 直接消费。
 
 ## 为什么需要它
 
@@ -20,6 +21,7 @@
 | 说不清项目架构和功能划分 | `query Project` 看 summary/architecture（分层画像 + 功能域清单 + 健康度） |
 | 不知道某目录的职责 | `query Module --where "archLayer=state"` 看职责画像 |
 | 想按功能域浏览代码 | `link belongsTo --src dom:health` 列出该域全部成员 |
+| 想要一张可交互的项目蓝图给人看 | `export --format html --output blueprint.html`（浏览器直接打开，无需服务） |
 
 ## 安装
 
@@ -49,6 +51,9 @@ nice-aos link usesStore --src "store:useThemeStore"        # store 被谁用了
 
 # 4. 导出全景报告（路由地图 / 导航图 / 循环依赖 / 死代码候选 / Store 一览）
 nice-aos export --format markdown --output report.md
+
+# 5. 生成可交互蓝图 HTML（浏览器直接打开，离线可用）
+nice-aos export --format html --output blueprint.html
 ```
 
 > **快照目录解析优先级**：`--snapshot-dir` 参数 > `NICE_AOS_SNAPSHOT_DIR` 环境变量 > `cwd/.nice-aos/data` > `~/.nice-aos/data`。
@@ -192,9 +197,24 @@ action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页�
 ```bash
 export --format markdown --output report.md     # Markdown 全景报告
 export --format json | jq '._meta.cycles'       # JSON 供 jq 聚合
+export --format html --output blueprint.html    # 自包含蓝图 HTML（本体查看器）
+export --format viewmodel                       # 视图模型 JSON（聚合数据，供 agent 消费）
 ```
 
 Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）三大语义章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。
+
+### 本体查看器（blueprint HTML / viewmodel）
+
+`src/ontology/viewer.js` 是本体体系的使用者视图层，数据流为：快照 DataMap → `buildViewerModel()`（数据聚合）→ `renderViewerHtml()`（视图渲染）。视图模型（JSON）独立于渲染，可被 AI agent 与其他前端直接消费：
+
+| 视图 | 内容 | 回答的问题 |
+|------|------|-----------|
+| **总览** | 项目画像、本体蓝图（taxonomy 概念分类体系 + 15 种对象/链接类型 + 实例计数）、健康度 | 这个仓库是什么、本体里都有什么 |
+| **领域蓝图** | 每个功能域的业务层级构成（script/presentation/service/…）、代码组织（模块清单）、单元清单（组件/Store/Hook/Service/脚本）与职责画像 | 各业务领域的层级关系与代码组织关系 |
+| **业务数据图** | Store 数据枢纽（state/action 键、持久化、被哪些域使用）、跨域数据依赖、持久化状态汇总 | 业务数据在哪、谁依赖谁 |
+| **业务逻辑流向** | 架构层间导入流向矩阵（行=来源层，列=目标层）、跨域依赖边、高扇入 Service/Store 枢纽 | 业务逻辑怎么流、哪些节点是枢纽 |
+
+生成的 HTML 自包含零依赖（数据内嵌为 JSON，无外链），可直接离线打开分享；大仓库单元清单带截断保护（计数保留全量）；纯油猴仓库无 Store/路由时数据图与流向优雅降级为空态。
 
 ## 解析能力
 

@@ -10,12 +10,15 @@ description: |
   语义本体引擎：15 种对象按概念范畴与抽象层级（L3 架构/L2 结构/L1 单元/L0 事实）组织，
   架构分层（archLayer）按内容信号推断而非目录名直译，功能域（Domain）聚合横向业务切片，
   Project/Domain/Module 自动生成职责画像与自然语言总结（summary/architecture/health）。
+  本体查看器（viewer）：export --format html 生成自包含蓝图 HTML（领域蓝图/业务数据图/
+  业务逻辑流向，零依赖可离线打开），--format viewmodel 输出聚合视图模型 JSON 供 agent 直接消费。
   基于 TypeScript Compiler API 静态解析，不做类型检查；React/Vue 项目全量分析约 3.5 秒
   （含数百个超大脚本的纯油猴仓库可能需要数十秒）。
   触发：用户说"分析这个前端项目的结构 / 项目有哪些页面 / overlay 有哪些 / 这个组件在哪个文件 /
   谁渲染了这个组件 / 修改这个 service 会影响哪些代码 / 变更影响分析 / 页面跳转关系 / 导航图 /
   这个 store 被谁用了 / 项目有哪些自定义 Hook / 循环依赖 / 死代码 / 孤儿组件 / 刷新快照 /
   生成代码地图 / 依赖关系图 / 项目架构是什么样 / 有哪些功能模块 / 某目录的职责 /
+  生成项目蓝图 / 领域蓝图 / 业务数据图 / 业务逻辑流向 / 可视化架构 /
   分析油猴脚本 / 这个脚本用了哪些 GM API / 脚本往页面注入了什么 DOM /
   脚本请求了哪些域名 / 油猴脚本安全风险审计 / 脚本函数调用图 / 这个 GM 调用有没有 @grant 声明"，
   或在需要理解前端代码结构但不想 grep 1700+ 文件时，
@@ -23,7 +26,8 @@ description: |
   英文触发词：analyze frontend structure, overlay routes, who renders this component,
   change impact analysis, navigation graph, store usage, dead code, circular imports,
   build code map, refresh snapshot, userscript analysis, GM API audit, script injection points,
-  project architecture, functional domains。
+  project architecture, functional domains, blueprint viewer, domain blueprint, data map,
+  logic flow diagram。
   不做：代码生成 / 重构建议 / 构建 / 运行测试 / ESLint（用专用工具）；不分析 Java 后端（asdm-aos 负责）。
 ---
 
@@ -47,6 +51,7 @@ description: |
 | **项目架构总览** | "项目架构是什么样？" / "各层文件占比？" | `query Project` 看 summary/architecture/health |
 | **功能域地图** | "项目有哪些功能模块？" / "health 域包含什么？" | `query Domain --pretty` / `link belongsTo --src dom:health` |
 | **模块职责** | "src/store 目录的职责？" / "哪些模块是状态层？" | `query Module --where "path=src/store"` 看 summary / `query Module --where "archLayer=state"` |
+| **项目蓝图 / 可视化** | "生成项目蓝图" / "领域蓝图" / "业务数据图" / "业务逻辑流向图" | `export --format html --output blueprint.html`（浏览器打开）；agent 自己分析用 `export --format viewmodel` |
 | **了解项目结构** | "项目有哪些模块？" / "components 下分多少领域？" | `query Module` + `query Project` |
 | **页面/路由清单** | "项目有哪些页面？" / "overlay 有哪些？" / "这个页面的 backTarget 是什么？" | `query Route` / `query Route --where "domain=health"` |
 | **页面跳转关系** | "从饮食健康页能跳到哪？" / "页面导航图" | `link navigatesTo --src route:dietary_health` |
@@ -291,7 +296,17 @@ export --format markdown --output "$SNAPSHOT_DIR/report.md"
 # JSON 供 jq 聚合
 export --format json | jq '._meta.orphanCandidates | length'
 export --format json | jq '.UserScript[] | select(.riskLevel=="high") | .filePath'
+
+# 自包含蓝图 HTML（本体查看器）：四个标签页（总览/领域蓝图/业务数据图/业务逻辑流向），
+# 零外部依赖、数据内嵌、可离线打开分享；告诉用户文件路径即可用浏览器打开
+export --format html --output "$SNAPSHOT_DIR/blueprint.html"
+
+# 视图模型 JSON（buildViewerModel 聚合结果：领域蓝图/业务数据图/逻辑流向），
+# 供 agent 直接消费（比原始 snapshot.json 小且已聚合，无需再拼装）
+export --format viewmodel --output "$SNAPSHOT_DIR/viewmodel.json"
 ```
+
+**何时用 html / viewmodel**：用户要"给人看的蓝图/可视化/汇报材料"→ `html`；agent 自己要整体理解领域划分、数据枢纽、层间流向 → `viewmodel`（一次读取即得聚合视图，避免数十次 query/link 拼装）。
 
 ## 使用建议
 
@@ -347,6 +362,7 @@ link renderedBy --src "comp:XXXPage"                     # UI 层影响
 | 回答油猴脚本问题（GM API/注入/请求/风险） | 优先 query UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint + link 关系，而不是通读脚本源码 |
 | 分析纯油猴脚本仓库 | 直接 refreshRepo（无需 package.json）；快照不存在时照常自动构建 |
 | 大型油猴仓库 refreshRepo | 数百个超大脚本（单脚本 2 万+ 行）全量分析可达数十秒，属正常耗时，耐心等待而非中断重试 |
+| 用户要"项目蓝图 / 可视化 / 汇报材料" | `export --format html` 生成自包含蓝图 HTML 并告知文件路径（无需起服务）；agent 自用聚合数据用 `--format viewmodel` |
 | markReviewed/addNote | 执行 review 类任务后主动回写，下次会话可恢复上下文 |
 
 ## 输出格式
