@@ -31,13 +31,13 @@ export const OBJECT_TYPES = [
   { type: 'Hook', prefix: 'hook:', category: 'CodeUnit', level: 'L1', description: '自定义 Hook / Composable' },
   { type: 'Store', prefix: 'store:', category: 'CodeUnit', level: 'L1', description: '状态 Store（Zustand / Pinia）' },
   { type: 'Service', prefix: 'svc:', category: 'CodeUnit', level: 'L1', description: '服务/引擎模块' },
-  { type: 'ScriptFunction', prefix: 'fn:', category: 'CodeUnit', level: 'L1', description: '脚本函数/类/对象（逻辑分布单元）' },
+  { type: 'ScriptFunction', prefix: 'fn:', category: 'CodeUnit', level: 'L1', description: '脚本函数/类/对象（含业务角色 roles：render/data/state/event/ui/logic）' },
   { type: 'Route', prefix: 'route:', category: 'EntryPoint', level: 'L2', description: '路由条目（Overlay / react-router / vue-router）' },
   { type: 'UserScript', prefix: 'us:', category: 'Script', level: 'L2', description: '油猴脚本（Tampermonkey UserScript）' },
   { type: 'Dependency', prefix: 'dep:', category: 'Environment', level: 'L2', description: 'npm 依赖' },
   { type: 'GmApiUsage', prefix: 'gm:', category: 'AuditFact', level: 'L0', description: 'GM API 使用（@grant 声明比对）' },
-  { type: 'InjectionPoint', prefix: 'inject:', category: 'AuditFact', level: 'L0', description: 'DOM 注入点（挂载/innerHTML/样式）' },
-  { type: 'NetworkEndpoint', prefix: 'net:', category: 'AuditFact', level: 'L0', description: '网络端点（GM_xhr/fetch/XHR 域名）' },
+  { type: 'InjectionPoint', prefix: 'inject:', category: 'AuditFact', level: 'L0', description: 'DOM 注入点（含归属函数 fns/fnIds，构成逻辑注入链）' },
+  { type: 'NetworkEndpoint', prefix: 'net:', category: 'AuditFact', level: 'L0', description: '网络端点（含归属函数 fns/fnIds）' },
 ];
 
 export const LINK_TYPES = [

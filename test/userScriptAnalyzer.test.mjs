@@ -228,6 +228,90 @@ test('宿主框架推断：__vue__ → vue / __reactContainer$ → react', () =>
   assert.equal(reactHost.hostFramework, 'react');
 });
 
+// ---- fixture：类风格脚本（this.method() / new 入口 / 实例变量调用 / 角色推断 / 注入与网络归属函数）----
+const CLASS_FIXTURE = [
+  '// ==UserScript==',
+  '// @name         Class Style Demo',
+  '// @version      2.0.0',
+  '// @match        https://example.com/*',
+  '// @grant        GM_xmlhttpRequest',
+  '// @grant        GM_setValue',
+  '// @connect      api.example.com',
+  '// ==/UserScript==',
+  '(function () {',
+  "  'use strict';",
+  '  class Panel {',
+  '    constructor() {',
+  '      this.mount();',
+  '    }',
+  '    mount() {',
+  "      const host = document.querySelector('#app');",
+  "      if (host) host.innerHTML = '<div class=\"panel\">loading</div>';",
+  '    }',
+  '    load() {',
+  '      GM_xmlhttpRequest({',
+  "        method: 'GET',",
+  "        url: 'https://api.example.com/v1/data',",
+  '        onload: (res) => this.update(JSON.parse(res.responseText)),',
+  '      });',
+  '    }',
+  '    update(data) {',
+  "      GM_setValue('last', data);",
+  "      const host = document.querySelector('#app');",
+  '      if (host) host.innerHTML = `<div>${data.name}</div>`;',
+  '    }',
+  '  }',
+  '  const panel = new Panel();',
+  '  panel.load();',
+  '})();',
+].join('\n');
+
+test('类风格脚本：constructor/方法收集 + this.method() 调用边解析', () => {
+  const facts = analyzeUserScript('fixture/class-demo.user.js', CLASS_FIXTURE, ROOT);
+  const names = new Set(facts.functions.map((f) => f.name));
+  assert.ok(names.has('Panel'), '类本身应为逻辑单元');
+  assert.ok(names.has('Panel.constructor'), 'constructor 应收集为类入口');
+  assert.ok(names.has('Panel.mount') && names.has('Panel.load') && names.has('Panel.update'));
+  // this.mount()（constructor 内）→ Panel.mount；this.update()（load 回调内）→ Panel.update
+  const edgeOf = (from) => facts.callEdges.find((e) => e.from === from);
+  assert.ok(edgeOf('Panel.constructor').to.some((t) => t.to === 'Panel.mount'));
+  assert.ok(edgeOf('Panel.load').to.some((t) => t.to === 'Panel.update'));
+  // new Panel() → 顶层入口调用 Panel.constructor；panel.load() → 实例别名解析为 Panel.load
+  const top = new Map(facts.topLevelCalls.map((c) => [c.name, c.count]));
+  assert.equal(top.get('Panel.constructor'), 1);
+  assert.equal(top.get('Panel.load'), 1);
+});
+
+test('类风格脚本：注入点/网络端点归属函数 + innerHTML 锚点还原', () => {
+  const facts = analyzeUserScript('fixture/class-demo.user.js', CLASS_FIXTURE, ROOT);
+  // innerHTML receiver host 为 querySelector 变量 → 锚点还原为页面选择器
+  const inj = facts.domInjections.find((i) => i.kind === 'inner-html');
+  assert.equal(inj.target, "querySelector('#app')");
+  assert.equal(inj.callCount, 2); // mount（静态）+ update（模板插值）
+  assert.equal(inj.interpolated, true);
+  assert.deepEqual(inj.fns, ['Panel.mount', 'Panel.update']); // 注入归属函数（逻辑注入链）
+  // 网络端点归属函数
+  const net = facts.networkRequests.find((n) => n.kind === 'gm-xhr');
+  assert.equal(net.domain, 'api.example.com');
+  assert.deepEqual(net.fns, ['Panel.load']);
+});
+
+test('函数业务角色推断：render/data/state/event/ui/logic', () => {
+  const facts = analyzeUserScript('fixture/class-demo.user.js', CLASS_FIXTURE, ROOT);
+  const roles = new Map(facts.functions.map((f) => [f.name, f.roles]));
+  assert.deepEqual(roles.get('Panel.mount'), ['render']);            // innerHTML 注入
+  assert.deepEqual(roles.get('Panel.load'), ['data']);               // 网络请求
+  assert.deepEqual(roles.get('Panel.update'), ['render', 'state']);  // 注入 + GM 存储（双角色）
+  assert.deepEqual(roles.get('Panel.constructor'), ['logic']);       // 纯调度逻辑
+  // 综合样例：storage.get 有 GM 存储 → state；fetchData 有网络 → data
+  const demo = analyzeUserScript('fixture/demo.user.js', FIXTURE, ROOT);
+  const demoRoles = new Map(demo.functions.map((f) => [f.name, f.roles]));
+  assert.deepEqual(demoRoles.get('storage.get'), ['state']);
+  assert.deepEqual(demoRoles.get('fetchData'), ['data']);
+  assert.ok(demoRoles.get('render').includes('render'));
+});
+
+
 // ---- 集成：纯油猴仓库（无 package.json）扫描 + 本体构建 ----
 
 test('scanProject：纯油猴仓库 framework=userscript', () => {
@@ -283,6 +367,17 @@ test('buildOntologyData + blueprint：UserScript 五类对象与链接', async (
     assert.ok(callees.some((c) => c.name === 'render'));
     const fnRender = dataMap.ScriptFunction.find((f) => f.name === 'render');
     assert.ok(bp.link('calledBy', fnRender.id).some((c) => c.name === 'fetchData'));
+    // 逻辑注入链：注入点/网络端点携带归属函数（fns + fnIds 指向 ScriptFunction）
+    const inj = dataMap.InjectionPoint.find((i) => i.kind === 'inner-html');
+    assert.deepEqual(inj.fns, ['render']);
+    assert.equal(inj.fnIds.length, 1);
+    assert.equal(inj.fnIds[0], fnRender.id);
+    const net = dataMap.NetworkEndpoint.find((n) => n.kind === 'gm-xhr');
+    assert.deepEqual(net.fns, ['fetchData']);
+    assert.equal(net.fnIds[0], fnFetch.id);
+    // 函数业务角色透传
+    assert.deepEqual(fnFetch.roles, ['data']);
+    assert.ok(fnRender.roles.includes('render'));
     // contains：file: → us:
     const fileObjs = bp.link('contains', `file:demo.user.js`);
     assert.ok(fileObjs.some((o) => o.id === us.id));

@@ -156,8 +156,100 @@ test('viewmodel 对空数据仓库的降级（无 Store / 无路由）', async (
     const model = buildViewerModel(dataMap);
     assert.equal(model.dataMap.stores.length, 0);
     assert.equal(model.dataMap.crossDomainData.length, 0);
+    assert.equal(model.scriptBlueprint, null); // 无油猴脚本 → 脚本蓝图整体为 null
     const html = renderViewerHtml(model);
     assert.ok(html.includes('未检测到状态管理'));
+    assert.ok(html.includes("data-tab=\"scripts\""), '脚本蓝图 Tab 始终存在（无脚本时隐藏）');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- fixture：类风格油猴脚本（函数调用图 + DOM 注入锚点 + 网络端点的逻辑注入链）----
+const SCRIPT_FIXTURE = [
+  '// ==UserScript==',
+  '// @name         Panel Demo',
+  '// @version      1.2.0',
+  '// @match        https://example.com/*',
+  '// @grant        GM_xmlhttpRequest',
+  '// @grant        GM_setValue',
+  '// @connect      api.example.com',
+  '// ==/UserScript==',
+  '(function () {',
+  "  'use strict';",
+  '  class Panel {',
+  '    constructor() {',
+  '      this.mount();',
+  '    }',
+  '    mount() {',
+  "      const host = document.querySelector('#app');",
+  "      if (host) host.innerHTML = '<div class=\"panel\">loading</div>';",
+  '    }',
+  '    load() {',
+  '      GM_xmlhttpRequest({',
+  "        method: 'GET',",
+  "        url: 'https://api.example.com/v1/data',",
+  '        onload: (res) => this.update(JSON.parse(res.responseText)),',
+  '      });',
+  '    }',
+  '    update(data) {',
+  "      GM_setValue('last', data);",
+  "      const host = document.querySelector('#app');",
+  '      if (host) host.innerHTML = `<div>${data.name}</div>`;',
+  '    }',
+  '  }',
+  '  const panel = new Panel();',
+  '  panel.load();',
+  '})();',
+].join('\n');
+
+test('脚本蓝图：函数调用图 + 注入锚点 + 网络端点一图聚合', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-viewer-script-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'panel.user.js'), SCRIPT_FIXTURE);
+    const dataMap = await buildOntologyData(dir);
+    const model = buildViewerModel(dataMap);
+
+    const sb = model.scriptBlueprint;
+    assert.ok(sb, '应有脚本蓝图');
+    assert.equal(sb.scriptCount, 1);
+    assert.equal(sb.totalFunctionCount, 5); // Panel + constructor + mount/load/update
+    assert.equal(sb.totalInjectionCount, 1);
+    assert.equal(sb.totalNetworkCount, 1);
+    assert.ok(sb.roleMeta.length >= 6, '应内置六类角色元数据');
+
+    const s = sb.scripts[0];
+    assert.equal(s.name, 'Panel Demo');
+    assert.equal(s.version, '1.2.0');
+    assert.deepEqual(s.matches, ['https://example.com/*']);
+    // 图节点：调用关系内联（constructor→mount / load→update）
+    const node = (n) => s.graph.nodes.find((x) => x.name === n);
+    assert.ok(node('Panel.constructor'));
+    assert.deepEqual(node('Panel.constructor').calls, ['Panel.mount']);
+    assert.ok(node('Panel.update').calledBy.includes('Panel.load'));
+    assert.ok(node('Panel.constructor').isEntry, 'new Panel() 入口应标记');
+    assert.ok(node('Panel.load').isEntry, 'panel.load() 顶层调用应标记');
+    assert.deepEqual(node('Panel.update').roles, ['render', 'state']);
+    // 注入锚点：目标还原为页面选择器 + 归属函数
+    const inj = s.graph.anchors.injections[0];
+    assert.equal(inj.target, "querySelector('#app')");
+    assert.deepEqual(inj.fns, ['Panel.mount', 'Panel.update']);
+    // 网络锚点：域名 + 归属函数
+    const net = s.graph.anchors.networks[0];
+    assert.equal(net.domain, 'api.example.com');
+    assert.deepEqual(net.fns, ['Panel.load']);
+    // 函数清单与角色分布（render=3：Panel 类容器 + mount + update，层级归属）
+    assert.ok(s.functionTable.length === 5);
+    assert.equal(s.roleCounts.render, 3);
+    assert.equal(s.roleCounts.data, 2);
+
+    // HTML 渲染：脚本蓝图 Tab + SVG 调用图由前端数据驱动生成
+    const html = renderViewerHtml(model);
+    assert.ok(html.includes('脚本蓝图'), '应有脚本蓝图标签页');
+    const m = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/);
+    const parsed = JSON.parse(m[1]);
+    assert.equal(parsed.scriptBlueprint.scripts[0].graph.nodes.length, 5);
+    assert.ok(html.includes('buildScriptGraphSvg'), '应内置 SVG 调用图生成器');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

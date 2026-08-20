@@ -360,6 +360,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
         lineCount: fn.lineCount,
         callCount: fn.callCount,
         calledByCount: fn.calledByCount,
+        roles: fn.roles ?? ['logic'],
         gmApiCalls: fn.gmApiCalls ?? [],
         gmApiCount: (fn.gmApiCalls ?? []).length,
         domOpCount: fn.domOpCount ?? 0,
@@ -410,7 +411,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       });
     }
 
-    // DOM 注入点对象
+    // DOM 注入点对象（fnIds = 执行注入的函数，逻辑注入链）
     const injectIds = [];
     const injectSorted = [...(facts.domInjections ?? [])].sort((a, b) => (b.callCount - a.callCount) || String(a.kind).localeCompare(String(b.kind)) || String(a.target).localeCompare(String(b.target)));
     injectSorted.forEach((inj, i) => {
@@ -423,6 +424,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
         callCount: inj.callCount,
         lines: inj.lines,
         interpolated: !!inj.interpolated,
+        fns: inj.fns ?? [],
+        fnIds: (inj.fns ?? []).map((n) => fnIdMap.get(n)).filter(Boolean),
         scriptId: usId,
         scriptName,
         filePath: relPath,
@@ -430,7 +433,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       });
     });
 
-    // 网络端点对象
+    // 网络端点对象（fnIds = 发起请求的函数）
     const netIds = [];
     for (const net of facts.networkRequests ?? []) {
       const netId = `net:${relPath}#${net.kind}:${net.domain}`;
@@ -444,6 +447,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
         callCount: net.callCount,
         lines: net.lines,
         allowedByConnect: net.allowedByConnect,
+        fns: net.fns ?? [],
+        fnIds: (net.fns ?? []).map((n) => fnIdMap.get(n)).filter(Boolean),
         scriptId: usId,
         scriptName,
         filePath: relPath,

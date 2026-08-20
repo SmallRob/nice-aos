@@ -1,7 +1,8 @@
 // 油猴脚本（Tampermonkey UserScript）专用解析器
 // 与 tsAnalyzer（React/TS）/ vueAnalyzer（Vue 3 SFC）平级共存、逻辑完全独立：
 //   - 元数据块（// ==UserScript== ... // ==/UserScript==）解析：@name/@version/@match/@grant/@connect/@require/@resource...
-//   - 函数使用与逻辑分布：IIFE 内顶层函数/箭头函数/类/常量对象（含对象方法）、函数间调用关系
+//   - 函数使用与逻辑分布：IIFE 内顶层函数/箭头函数/类（含 constructor）/常量对象（含对象方法）、
+//     函数间调用关系（直调 / this.method() / 实例变量 app.method() / new X() 入口）、业务角色推断（render/data/state/event/ui/logic）
 //   - DOM 注入：innerHTML/insertAdjacentHTML/document.write（HTML 字符串面）、页面挂载点（appendChild/insertBefore）、样式注入、Shadow DOM
 //   - 请求与劫持：GM_xmlhttpRequest/GM.* 跨域请求域名、fetch/XHR/WebSocket 调用、fetch/XHR/EventTarget/history 原型劫持
 //   - GM API 使用：GM_* / GM.* 调用统计与 @grant 声明交叉比对、unsafeWindow 读写
@@ -243,6 +244,9 @@ export function analyzeUserScript(filePath, content, projectRoot) {
   const hijacks = [];            // {kind, target, pos}
   const functions = [];          // {name, kind, pos, end, isTopLevel, owner}
   const callSites = [];          // {callee, pos}
+  const thisCalls = [];          // {method, pos}（this.method() → 归并时解析为 Owner.method）
+  const newCalls = [];           // {name, pos}（new X() → 归并时解析为 X.constructor 入口边）
+  const newVarDecls = [];        // {name, className}（const app = new App() → 实例变量别名）
   const observers = [];          // {kind, pos}
   const timers = [];             // {kind, delay, pos}
   const listeners = [];          // {event, targetKind, pos}
@@ -379,6 +383,9 @@ export function analyzeUserScript(filePath, content, projectRoot) {
               functions.push({ name: `${name}.${propName}`, kind: 'method', pos: prop.getStart(sourceFile), end: prop.end, isTopLevel: false, owner: name });
             }
           }
+        } else if (T.isNewExpression(init) && T.isIdentifier(init.expression)) {
+          // const app = new App() → 记录实例变量别名（app.method() 归并时解析为 App.method）
+          newVarDecls.push({ name, className: init.expression.text });
         } else if (T.isCallExpression(init) && T.isPropertyAccessExpression(init.expression)
           && T.isIdentifier(init.expression.expression) && init.expression.expression.text === 'document'
           && QUERY_METHODS.has(init.expression.name.text)) {
@@ -403,6 +410,16 @@ export function analyzeUserScript(filePath, content, projectRoot) {
         if (T.isMethodDeclaration(member) && member.name) {
           functions.push({
             name: `${node.name.text}.${member.name.getText(sourceFile)}`,
+            kind: 'method',
+            pos: member.getStart(sourceFile),
+            end: member.end,
+            isTopLevel: false,
+            owner: node.name.text,
+          });
+        } else if (T.isConstructorDeclaration(member)) {
+          // constructor 收集为类入口（new X() 的调用目标，this.method() 链的起点）
+          functions.push({
+            name: `${node.name.text}.constructor`,
             kind: 'method',
             pos: member.getStart(sourceFile),
             end: member.end,
@@ -501,6 +518,9 @@ export function analyzeUserScript(filePath, content, projectRoot) {
           // 元素移除不作为注入点，跳过
         } else if (MOUNT_METHODS.has(method)) {
           mounts.push({ method, receiverText, pos });
+        } else if (receiver.kind === T.SyntaxKind.ThisKeyword) {
+          // this.method()：类/对象方法内互调，归并时按外层函数 owner 解析为 Owner.method
+          thisCalls.push({ method, pos });
         } else if (T.isIdentifier(receiver)) {
           callSites.push({ callee: `${receiver.text}.${method}`, pos });
         }
@@ -523,6 +543,7 @@ export function analyzeUserScript(filePath, content, projectRoot) {
       else if (name === 'IntersectionObserver') observers.push({ kind: 'intersection', pos });
       else if (name === 'WebSocket') recordNetwork('websocket', extractUrlAndMethod(node.arguments?.[0]), pos);
       else if (name === 'Function') evalHits.push({ pos });
+      newCalls.push({ name, pos });
     }
 
     // ---- 子节点递归（进入函数体时 depth+1）----
@@ -551,6 +572,13 @@ export function analyzeUserScript(filePath, content, projectRoot) {
 
   // 挂载点解析：document.* 直挂 / querySelector 变量锚点（含 .parentNode 链；同名变量取全文最后声明，启发式）
   const queryMap = new Map(queryDecls.map((q) => [q.name, q]));
+  // HTML 注入目标锚点还原：innerHTML/insertAdjacentHTML 的 receiver 若为 querySelector 变量 → 页面选择器；
+  // 其余保留 receiver 原文（局部 createElement 元素仍有语义）
+  const resolveAnchor = (rt) => {
+    if (!rt) return '(global)';
+    if (/^(window\.)?document\b/.test(rt)) return rt;
+    return queryMap.get(rt)?.selector ?? rt;
+  };
   const mountRecords = [];
   for (const m of mounts) {
     const rt = m.receiverText;
@@ -573,10 +601,33 @@ export function analyzeUserScript(filePath, content, projectRoot) {
   for (const f of functions) {
     if (!fnByName.has(f.name)) fnByName.set(f.name, f);
   }
+  // this.method() → Owner.method（外层函数为类/对象方法时，解析到同 owner 的目标方法）
+  for (const t of thisCalls) {
+    const enc = enclosingFunction(t.pos);
+    if (!enc?.owner) continue;
+    const target = fnByName.get(`${enc.owner}.${t.method}`);
+    if (!target || target.name === enc.name) continue;
+    callSites.push({ callee: target.name, pos: t.pos });
+  }
+  // 实例变量别名：const app = new App() → app.method() 解析为 App.method（类风格脚本调用链）
+  const aliasByVar = new Map();
+  for (const v of newVarDecls) {
+    if (fnByName.has(v.className)) aliasByVar.set(v.name, v.className);
+  }
+  // new ClassName() → ClassName.constructor 入口边（类实例化即入口调用）
+  for (const n of newCalls) {
+    if (fnByName.has(`${n.name}.constructor`)) callSites.push({ callee: `${n.name}.constructor`, pos: n.pos });
+  }
   const callEdges = new Map(); // fromName → Map(toName → count)
   const topLevelCalls = new Map();
   for (const site of callSites) {
-    const target = fnByName.get(site.callee);
+    let calleeName = site.callee;
+    const dot = calleeName.indexOf('.');
+    if (dot > 0) {
+      const cls = aliasByVar.get(calleeName.slice(0, dot));
+      if (cls) calleeName = cls + calleeName.slice(dot);
+    }
+    const target = fnByName.get(calleeName);
     if (!target) continue;
     const from = enclosingFunction(site.pos);
     if (from) {
@@ -616,33 +667,44 @@ export function analyzeUserScript(filePath, content, projectRoot) {
     listeners.filter((l) => emittedNames.has(l.event) || l.event.includes(':')).map((l) => l.event),
   )];
 
-  // DOM 注入汇总（kind + target 聚合）
+  // DOM 注入汇总（kind + target 聚合；fns = 执行注入的函数，逻辑注入链的数据基础）
   const injectionAgg = new Map();
   function aggInjection(kind, target, pos, interpolated, count = 1) {
     const key = `${kind}|${target}`;
     if (!injectionAgg.has(key)) {
-      injectionAgg.set(key, { kind, target, callCount: 0, lines: [], interpolated: false });
+      injectionAgg.set(key, { kind, target, callCount: 0, lines: [], interpolated: false, fnSet: new Set() });
     }
     const s = injectionAgg.get(key);
     s.callCount += count;
     if (interpolated) s.interpolated = true;
+    const owner = pos >= 0 ? enclosingFunction(pos)?.name : null;
+    if (owner) s.fnSet.add(owner);
     if (pos >= 0 && s.lines.length < 5) s.lines.push(lineOf(pos));
   }
-  for (const h of htmlInjections) aggInjection(h.kind, h.receiver ?? '(global)', h.pos, h.interpolated);
+  for (const h of htmlInjections) aggInjection(h.kind, resolveAnchor(h.receiver), h.pos, h.interpolated);
   for (const m of mountRecords) aggInjection('mount', m.target, m.pos, false);
   const styleElementCount = creates.filter((c) => c.tag === 'style').length;
   if (styleElementCount > 0) aggInjection('style-element', "document.createElement('style')", -1, false, styleElementCount);
   for (const s of shadowDoms) aggInjection('shadow-dom', 'attachShadow', s.pos, false);
-  const domInjections = [...injectionAgg.values()];
+  const domInjections = [...injectionAgg.values()].map((s) => ({
+    kind: s.kind,
+    target: s.target,
+    callCount: s.callCount,
+    lines: s.lines,
+    interpolated: s.interpolated,
+    fns: [...s.fnSet].slice(0, 8),
+  }));
 
-  // 网络请求汇总（kind + domain 聚合）
+  // 网络请求汇总（kind + domain 聚合；fns = 发起请求的函数）
   const netAgg = new Map();
   for (const c of networkCalls) {
     const domain = c.domain ?? '(dynamic)';
     const key = `${c.kind}|${domain}`;
-    if (!netAgg.has(key)) netAgg.set(key, { kind: c.kind, domain, urls: [], callCount: 0, lines: [], methods: new Set() });
+    if (!netAgg.has(key)) netAgg.set(key, { kind: c.kind, domain, urls: [], callCount: 0, lines: [], methods: new Set(), fnSet: new Set() });
     const s = netAgg.get(key);
     s.callCount += 1;
+    const owner = enclosingFunction(c.pos)?.name;
+    if (owner) s.fnSet.add(owner);
     if (c.url && s.urls.length < 5) s.urls.push(c.url.slice(0, 120));
     if (c.method) s.methods.add(c.method);
     if (s.lines.length < 5) s.lines.push(lineOf(c.pos));
@@ -655,13 +717,24 @@ export function analyzeUserScript(filePath, content, projectRoot) {
     callCount: s.callCount,
     lines: s.lines,
     methods: [...s.methods],
+    fns: [...s.fnSet].slice(0, 8),
     // @connect 白名单比对（仅 GM 跨域请求受 TM 管控；* 为全放行；(dynamic) 域名无法静态判定 → null）
     allowedByConnect: s.kind !== 'gm-xhr' ? null
       : (connects.has('*') ? true
         : (s.domain === '(dynamic)' ? null : connects.has(s.domain))),
   }));
 
-  // 函数指标（范围内各类操作计数）
+  // 函数指标（范围内各类操作计数）+ 业务角色推断
+  const STORAGE_GM = new Set(['GM_getValue', 'GM_setValue', 'GM_deleteValue', 'GM_listValues', 'GM_addValueChangeListener', 'GM_removeValueChangeListener']);
+  function inferRoles(f) {
+    const roles = [];
+    if (f.htmlInjectionCount + f.mountCount > 0) roles.push('render');      // DOM 注入（含挂载）
+    if (f.networkCallCount > 0) roles.push('data');                         // 网络请求（数据获取）
+    if ((f.gmApiCalls ?? []).some((n) => STORAGE_GM.has(n))) roles.push('state'); // GM 存储（跨会话状态）
+    if (f.listenerCount + f.observerCount + f.timerCount > 0) roles.push('event'); // 监听/观察/定时
+    if (f.domOpCount > 0) roles.push('ui');                                 // 元素构建
+    return roles.length ? roles.slice(0, 2) : ['logic'];                    // 最多双角色，纯逻辑标 logic
+  }
   const fnFacts = functions.map((f) => {
     const inRange = (pos) => pos >= f.pos && pos < f.end;
     return {
@@ -686,6 +759,8 @@ export function analyzeUserScript(filePath, content, projectRoot) {
   }
   for (const f of fnFacts) {
     f.calledByCount = [...callEdges.values()].filter((toMap) => toMap.has(f.name)).length;
+    f.roles = inferRoles(f);
+    f.role = f.roles[0];
   }
 
   // 存储使用
