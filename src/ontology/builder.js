@@ -2,7 +2,8 @@ import path from 'node:path';
 import { scanProject } from '../analyzers/projectScanner.js';
 import { createResolver } from '../analyzers/importResolver.js';
 import { analyzeFileFromDisk } from '../analyzers/tsAnalyzer.js';
-import { analyzeOverlayRoutes } from '../analyzers/overlayAnalyzer.js';
+import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
+import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
 
 const KIND_SUFFIXES = [
   ['Page', 'page'], ['Modal', 'modal'], ['Dialog', 'dialog'], ['Card', 'card'],
@@ -11,7 +12,7 @@ const KIND_SUFFIXES = [
   ['Button', 'button'], ['Widget', 'widget'], ['View', 'view'], ['Provider', 'provider'],
   ['Overlay', 'overlay'], ['Tab', 'tab'], ['Picker', 'picker'], ['Badge', 'badge'],
 ];
-const ENTRY_FILES = new Set(['src/App.tsx', 'src/index.tsx', 'src/main.tsx', 'src/index.ts', 'src/main.ts']);
+const ENTRY_FILES = new Set(['src/App.tsx', 'src/index.tsx', 'src/main.tsx', 'src/index.ts', 'src/main.ts', 'src/main.js', 'src/App.vue']);
 const SERVICE_NAME_RE = /(Service|Engine|Manager|Repository|Factory)$/;
 
 function componentKind(name) {
@@ -97,7 +98,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const getFacts = (relPath) => {
     if (factsMap.has(relPath)) return factsMap.get(relPath);
     try {
-      const facts = analyzeFileFromDisk(relPath, projectRoot);
+      const facts = relPath.endsWith('.vue')
+        ? analyzeVueFileFromDisk(relPath, projectRoot)
+        : analyzeFileFromDisk(relPath, projectRoot);
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
@@ -107,6 +110,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
         imports: [], exportSymbols: [], exportNames: [], jsxTags: new Set(),
         useCalls: [], overlayOpens: [], stores: [], lazyWrappers: [], components: [],
         hooks: [], primaryComponentName: null, hasSingletonClass: false, hasClassExport: false,
+        importMap: new Map(), vueRoutes: [], vueRouteMeta: null,
       };
       factsMap.set(relPath, empty);
       return empty;
@@ -201,7 +205,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       lineCount: facts.lineCount,
       isTest: isTestFile(relPath),
       isEntry: ENTRY_FILES.has(relPath),
-      isPageFile: stem.endsWith('Page'),
+      isPageFile: stem.endsWith('Page') || (relPath.endsWith('.vue') && /\/(views|pages)\//.test(relPath)),
       importIds,
       typeImportCount,
       unresolvedImports,
@@ -236,10 +240,11 @@ export async function buildOntologyData(projectRoot, options = {}) {
 
     for (const comp of facts.components) {
       const id = uniqueId(`comp:${comp.name}`, compUsedIds);
+      const isVuePage = relPath.endsWith('.vue') && /\/(views|pages)\//.test(relPath);
       components.push({
         id, name: comp.name,
         fileId: fileObj.id, filePath: relPath,
-        kind: componentKind(comp.name),
+        kind: isVuePage && componentKind(comp.name) === 'common' ? 'page' : componentKind(comp.name),
         isDefaultExport: comp.isDefault,
         isPrimary: facts.primaryComponentName === comp.name,
         propsCount: comp.propsCount,
@@ -331,9 +336,13 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
-  // 7. Overlay 路由（自动探测 overlayGroups/lazyImports 体系，普通项目无则跳过）
-  const rawRoutes = analyzeOverlayRoutes(projectRoot, resolver, getFacts, scan.files);
+  // 7. Overlay 路由（自定义 overlayGroups/lazyImports 体系）+ React JSX 声明式路由（react-router <Routes>/<Route>）
+  const rawRoutes = [
+    ...analyzeOverlayRoutes(projectRoot, resolver, getFacts, scan.files),
+    ...analyzeJsxRoutes(projectRoot, resolver, getFacts, scan.files),
+  ];
   const knownRouteIds = new Set(rawRoutes.map((r) => r.overlayId));
+  const routeIdsUsed = new Set();
   const routes = [];
   const lazyReferencedFiles = new Set();
   for (const [relPath, facts] of factsMap) {
@@ -354,8 +363,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
       ? ((componentsByFile.get(componentFile) ?? []).find((c) => c.isPrimary)?.id
         ?? (componentsByFile.get(componentFile) ?? [])[0]?.id ?? null)
       : null;
+    const routeId = uniqueId(`route:${route.overlayId}`, routeIdsUsed);
     routes.push({
-      id: `route:${route.overlayId}`,
+      id: routeId,
       overlayId: route.overlayId,
       name: route.overlayId,
       routePath: route.routePath,
@@ -368,11 +378,110 @@ export async function buildOntologyData(projectRoot, options = {}) {
       componentId: compId,
       navigatesToIds: navigatesTo.map((id) => `route:${id}`),
       hasPropsFactory: route.hasPropsFactory,
+      routeType: route.routeType ?? 'overlay',
       reviewed: false, notes: null,
     });
     if (compId) {
       const comp = components.find((c) => c.id === compId);
-      if (comp) comp.routeIds.push(`route:${route.overlayId}`);
+      if (comp) {
+        comp.routeIds.push(routeId);
+        // React 页面组件升级：pages/ 目录下被路由直接引用的 common 组件视为 page
+        if (route.routeType === 'react' && comp.kind === 'common' && comp.filePath?.includes('/pages/')) {
+          comp.kind = 'page';
+        }
+      }
+    }
+  }
+
+  // 7b. Vue Router 路由：RouteRecordRaw 显式声明 + views/pages 下 .vue 文件路由推导
+  const vueRoutes = [];
+  const explicitRouteFiles = new Set();
+  for (const [relPath, facts] of factsMap) {
+    for (const vr of facts.vueRoutes ?? []) {
+      let componentFile = null;
+      if (vr.specifier) {
+        const r = resolver.resolve(relPath, vr.specifier);
+        if (r.kind === 'internal') componentFile = r.file;
+      }
+      if (componentFile) explicitRouteFiles.add(componentFile);
+      vueRoutes.push({ ...vr, componentFile, fromFile: relPath, fileBased: false });
+    }
+  }
+  for (const relPath of scan.files) {
+    if (!relPath.endsWith('.vue')) continue;
+    if (explicitRouteFiles.has(relPath)) continue;
+    const m = relPath.match(/^src\/(views|pages)\/(.+\.vue)$/);
+    if (!m) continue;
+    let rest = m[2].replace(/\/index\.vue$/, '').replace(/\.vue$/, '');
+    if (rest === 'index') rest = ''; // src/views/index.vue → 根路径 '/'
+    let routePath = rest ? `/${rest}` : '/';
+    if (rest.includes('[')) routePath = '/:pathMatch(.*)*'; // [...all].vue catch-all
+    const facts = factsMap.get(relPath);
+    vueRoutes.push({
+      path: routePath,
+      name: facts.vueRouteMeta?.name ?? null,
+      metaTitle: facts.vueRouteMeta?.title ?? null,
+      componentRef: relPath,
+      specifier: null,
+      componentFile: relPath,
+      fromFile: relPath,
+      fileBased: true,
+    });
+  }
+  const vueRouteIds = new Set();
+  const vueRouteByPath = new Map();
+  for (const vr of vueRoutes) {
+    const id = uniqueId(`route:${vr.path}`, vueRouteIds);
+    vueRouteByPath.set(vr.path, id);
+    const compId = vr.componentFile
+      ? ((componentsByFile.get(vr.componentFile) ?? []).find((c) => c.isPrimary)?.id
+        ?? (componentsByFile.get(vr.componentFile) ?? [])[0]?.id ?? null)
+      : null;
+    const seg = vr.path.split('/').filter(Boolean)[0];
+    // 顶层段为动态参数（:id）或 catch-all（(.*)）时无稳定语义，归入 root
+    const domain = !seg || seg.startsWith(':') || seg.includes('(') ? 'root' : seg;
+    routes.push({
+      id,
+      overlayId: vr.path,
+      name: vr.name ?? vr.path,
+      routePath: vr.path,
+      backTarget: null,
+      hidesNav: null,
+      domain,
+      group: vr.fromFile,
+      componentRef: vr.componentRef,
+      componentFileId: vr.componentFile ? `file:${vr.componentFile}` : null,
+      componentId: compId,
+      navigatesToIds: [],
+      hasPropsFactory: false,
+      routeType: 'vue',
+      description: vr.metaTitle ?? null,
+      reviewed: false, notes: null,
+    });
+    if (compId) {
+      const comp = components.find((c) => c.id === compId);
+      if (comp) comp.routeIds.push(id);
+    }
+  }
+
+  // 7c. vue-router 导航边：文件内 router.push('/path') 调用 → 文件所属路由 → 目标路由
+  const vueRouteOwner = new Map();
+  for (const vr of vueRoutes) {
+    if (!vr.componentFile) continue;
+    if (!vueRouteOwner.has(vr.componentFile)) vueRouteOwner.set(vr.componentFile, []);
+    vueRouteOwner.get(vr.componentFile).push(vueRouteByPath.get(vr.path));
+  }
+  for (const [relPath, facts] of factsMap) {
+    const ownerIds = vueRouteOwner.get(relPath);
+    if (!ownerIds || ownerIds.length === 0) continue;
+    for (const o of facts.overlayOpens) {
+      if (!o.target.startsWith('/')) continue; // 仅 Vue 路由 path（React overlay id 不参与）
+      const toId = vueRouteByPath.get(o.target);
+      if (!toId) continue;
+      for (const ownerId of ownerIds) {
+        const route = routes.find((r) => r.id === ownerId);
+        if (route && !route.navigatesToIds.includes(toId)) route.navigatesToIds.push(toId);
+      }
     }
   }
 
@@ -407,6 +516,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     tsFileCount: scan.tsFileCount,
     tsxFileCount: scan.tsxFileCount,
     jsFileCount: scan.jsFileCount,
+    vueFileCount: scan.vueFileCount,
     analysisErrors,
     reviewed: false, notes: null,
   };

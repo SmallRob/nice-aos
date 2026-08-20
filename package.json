@@ -1,7 +1,7 @@
 {
   "name": "nice-aos",
-  "version": "0.1.0",
-  "description": "nice-aos —— 通用 React 前端代码本体分析 CLI：扫描 React/TypeScript 源码生成结构化本体快照（模块/文件/组件/Hook/Store/Service/路由/依赖 + import/render/导航关系图谱），供 AI agent 与开发者毫秒级查询",
+  "version": "0.2.0",
+  "description": "nice-aos —— 通用前端代码本体分析 CLI（React / Vue 3）：扫描 React/TypeScript 与 Vue 3 SFC 源码生成结构化本体快照（模块/文件/组件/Hook/Composable/Zustand/Pinia Store/Service/路由/依赖 + import/render/导航关系图谱），供 AI agent 与开发者毫秒级查询",
   "type": "module",
   "bin": {
     "nice-aos": "src/cli/index.js"
@@ -12,6 +12,7 @@
   "keywords": [
     "code-ontology",
     "react",
+    "vue",
     "typescript",
     "static-analysis",
     "code-map",
@@ -22,7 +23,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SmallRob/nice-today-2.0.git",
+    "url": "git+https://github.com/SmallRob/nice-aos.git",
     "directory": "nice-aos"
   },
   "scripts": {
@@ -38,6 +39,7 @@
   "files": [
     "src/**",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ]
 }

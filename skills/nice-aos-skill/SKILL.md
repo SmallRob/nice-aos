@@ -1,11 +1,12 @@
 ---
 name: nice-aos
 description: |
-  Nice AOS（Nice Anterior Ontology Service）是通用的React前端项目的代码本体分析组件。
-  它将 React/TypeScript 前端源码（src）预先分析为结构化本体快照，
-  把"代码文件"转化为 AI agent 可直接查询的"关系图谱"——包含模块、组件、Hook、Zustand Store、
-  Service、Overlay 路由、npm 依赖，以及 import 依赖、JSX 渲染、页面跳转（navigatesTo）、Store/Hook
-  使用等 9 种关系。基于 TypeScript Compiler API 静态解析，不做类型检查，全量分析约 3.5 秒。
+  Nice AOS（Nice Anterior Ontology Service）是通用的 React/Vue 前端项目的代码本体分析组件。
+  它将 React/TypeScript 与 Vue 3（SFC/vue-router/Pinia）前端源码（src）预先分析为结构化本体快照，
+  把"代码文件"转化为 AI agent 可直接查询的"关系图谱"——包含模块、组件、Hook/Composable、
+  Zustand/Pinia Store、Service、路由（Overlay / vue-router）、npm 依赖，以及 import 依赖、
+  JSX/template 渲染、页面跳转（navigatesTo）、Store/Hook 使用等 9 种关系。
+  基于 TypeScript Compiler API 静态解析，不做类型检查，全量分析约 3.5 秒。
   触发：用户说"分析这个前端项目的结构 / 项目有哪些页面 / overlay 有哪些 / 这个组件在哪个文件 /
   谁渲染了这个组件 / 修改这个 service 会影响哪些代码 / 变更影响分析 / 页面跳转关系 / 导航图 /
   这个 store 被谁用了 / 项目有哪些自定义 Hook / 循环依赖 / 死代码 / 孤儿组件 / 刷新快照 /
@@ -19,7 +20,8 @@ description: |
 
 # Nice AOS Skill — 前端代码本体分析
 
-> Nice AOS 参考 asdm-aos（Java 代码本体分析）的设计，针对 React前端项目（React 19 + TS + Vite + Zustand + 自研 overlay 路由）重新建模。
+> Nice AOS 参考 asdm-aos（Java 代码本体分析）的设计，针对 React（React 19 + TS + Vite + Zustand + 自研 overlay 路由）
+> 与 Vue 3（SFC + vue-router + Pinia + unplugin-vue-router）前端项目重新建模。
 > **核心价值**：把"逐文件 grep + LLM 推理"降级为"毫秒级本体查询"，在 1700+ 源文件的项目中保障 agent 的响应速度和结构理解准确度。
 
 ## 概述
@@ -115,14 +117,14 @@ node <REPO_ROOT>/nice-aos/src/cli/index.js \
 
 | 类型 | 说明 | 典型属性 | ID 前缀 |
 |------|------|---------|---------|
-| Project | 代码仓库 | name, framework, fileCount, tsxFileCount, commitHash, branch, analysisErrors | `proj:` |
+| Project | 代码仓库 | name, framework(react/vue/unknown), fileCount, tsxFileCount, vueFileCount, commitHash, branch, analysisErrors | `proj:` |
 | Module | 目录模块（领域/分层） | name, path, layer, fileCount, parentId | `mod:` |
-| SourceFile | 源文件 | path, ext, layer, lineCount, isTest, isEntry, importIds, exportNames, opensOverlayIds | `file:` |
-| Component | React 组件 | name, filePath, kind(page/modal/card/...), isDefaultExport, propsCount, hooksUsed, stateCount, lineCount, rendersIds, routeIds, description | `comp:` |
-| Hook | 自定义 Hook | name, filePath, lineCount, description | `hook:` |
-| Store | Zustand Store | name, stateKeys, actionKeys, hasPersist, storageKey, location(store/services/other) | `store:` |
+| SourceFile | 源文件 | path, ext(ts/tsx/js/jsx/vue), layer, lineCount, isTest, isEntry, importIds, exportNames, opensOverlayIds | `file:` |
+| Component | 前端组件（React / Vue SFC） | name, filePath, kind(page/modal/card/...), isDefaultExport, propsCount, hooksUsed, stateCount, lineCount, rendersIds, routeIds, description | `comp:` |
+| Hook | 自定义 Hook / Composable | name, filePath, lineCount, description | `hook:` |
+| Store | Zustand / Pinia Store | name, stateKeys, actionKeys, hasPersist, storageKey, location(store/services/other) | `store:` |
 | Service | 服务/引擎模块 | name, pattern(singleton/class/functions), exportsCount, lineCount | `svc:` |
-| Route | Overlay 路由条目 | overlayId, routePath, backTarget, hidesNav, domain, componentFileId, navigatesToIds | `route:` |
+| Route | 路由条目（Overlay / vue-router） | overlayId(path), routePath, backTarget, hidesNav, domain, routeType(overlay/vue), componentFileId, navigatesToIds, description | `route:` |
 | Dependency | npm 依赖 | name, version, scope, source(npm/workspace/undeclared), importCount | `dep:` |
 
 ### 链接（9 种）
@@ -264,5 +266,9 @@ link renderedBy --src "comp:XXXPage"                     # UI 层影响
 - `renders` 归属到文件的主组件（default export 优先）；同文件多组件的内部渲染关系不细分
 - 跳转边来自 `setActiveOverlay/openOverlay('id')` 字面量调用；`onOpenOverlay: app.setActiveOverlay` 这类函数透传无法静态追踪
 - App.tsx 内部跳转（Tab 级）不计入 navigatesTo（仅 overlay→overlay）
+- Vue 适配范围：Vue 3 SFC（`<script setup>`/`<template>`/`<route lang="yaml">`）、vue-router RouteRecordRaw 显式路由、
+  views/pages 目录文件路由推导、Pinia `defineStore`（setup/options 两种写法）、composables（导出 `useXxx`）；
+  模板渲染关系支持 PascalCase/kebab-case 标签与 `:is` 动态组件（不含动态变量拼装）；
+  导航边来自 `router.push('/path')`/`replace('/path')` 字面量调用（解构 `const { push } = useRouter()` 同样支持）
 - 每次查询全量加载 JSON（1760 文件规模毫秒级；无并发写保护）
 - `--where` 为全表扫描：`=`/`:` 精确相等、`~` 模糊包含（不支持数值比较，数值过滤请配合 jq）

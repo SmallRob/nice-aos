@@ -1,15 +1,15 @@
 // 本体蓝图：对象类型 + 链接关系 + 动作的定义与实现
-// 与 asdm-aos 的 codeRepoBlueprint 对应，针对 React/TS 前端重新建模
+// 与 asdm-aos 的 codeRepoBlueprint 对应，针对 React/Vue 前端重新建模
 
 export const OBJECT_TYPES = [
   { type: 'Project', prefix: 'proj:', description: '代码仓库' },
   { type: 'Module', prefix: 'mod:', description: '目录模块（领域/分层）' },
-  { type: 'SourceFile', prefix: 'file:', description: '源文件（ts/tsx/js/jsx）' },
-  { type: 'Component', prefix: 'comp:', description: 'React 组件' },
-  { type: 'Hook', prefix: 'hook:', description: '自定义 Hook' },
-  { type: 'Store', prefix: 'store:', description: 'Zustand Store' },
+  { type: 'SourceFile', prefix: 'file:', description: '源文件（ts/tsx/js/jsx/vue）' },
+  { type: 'Component', prefix: 'comp:', description: '前端组件（React / Vue SFC）' },
+  { type: 'Hook', prefix: 'hook:', description: '自定义 Hook / Composable' },
+  { type: 'Store', prefix: 'store:', description: '状态 Store（Zustand / Pinia）' },
   { type: 'Service', prefix: 'svc:', description: '服务/引擎模块' },
-  { type: 'Route', prefix: 'route:', description: 'Overlay 路由条目（页面）' },
+  { type: 'Route', prefix: 'route:', description: '路由条目（Overlay / vue-router 页面）' },
   { type: 'Dependency', prefix: 'dep:', description: 'npm 依赖' },
 ];
 

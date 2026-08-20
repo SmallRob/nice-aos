@@ -5,7 +5,7 @@ const ASSET_EXTENSIONS = new Set([
   '.webp', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4',
   '.wav', '.json', '.wasm', '.yaml', '.yml', '.md', '.txt', '.csv',
 ]);
-const PROBE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '/index.ts', '/index.tsx', '/index.js', '/index.jsx'];
+const PROBE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.vue', '/index.ts', '/index.tsx', '/index.js', '/index.jsx', '/index.vue'];
 
 // 将 tsconfig paths（如 "@/*": "./src/*"）编译为前缀匹配规则，长前缀优先
 function compileAliases(tsconfigPaths, projectRoot) {

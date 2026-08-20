@@ -19,6 +19,8 @@ const OVERLAY_OPENER_FUNCS = new Set([
   'setActiveOverlay', 'openOverlay', 'pushOverlay', 'navigateToOverlay', 'showOverlay',
 ]);
 const REACT_LAZY_WRAPPERS = new Set(['lazy', 'memo', 'forwardRef', 'React.memo', 'React.forwardRef']);
+// vue-router 导航方法（仅当调用主体是 useRouter() 声明的变量时才计入）
+const VUE_ROUTER_NAV_METHODS = new Set(['push', 'replace']);
 
 function hasExportModifier(ts, node) {
   if (!ts.canHaveModifiers?.(node)) return false;
@@ -52,6 +54,31 @@ function isZustandCreateCall(ts, node, importMap) {
   return !!source && (source === 'zustand' || source.startsWith('zustand/'));
 }
 
+function isPiniaDefineStoreCall(ts, node, importMap) {
+  if (!ts.isCallExpression(node)) return false;
+  const callee = node.expression;
+  if (!ts.isIdentifier(callee)) return false;
+  const source = importMap.get(callee.text);
+  // auto-import 场景（unplugin-auto-import）无 import 记录；defineStore 是 Pinia 专有 API 名
+  return !source || source === 'pinia';
+}
+
+// 从节点子树中找第一个动态 import 的模块字符串（路由懒加载 component: () => import('...')）
+function findDynamicImportSpec(ts, node) {
+  let found = null;
+  function visit(n) {
+    if (found) return;
+    if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const arg = n.arguments[0];
+      if (arg && ts.isStringLiteralLike(arg)) found = arg.text;
+      return;
+    }
+    ts.forEachChild(n, visit);
+  }
+  visit(node);
+  return found;
+}
+
 function unwrapStateObject(ts, factoryNode) {
   let body = null;
   if (ts.isArrowFunction(factoryNode) || ts.isFunctionExpression(factoryNode)) {
@@ -64,6 +91,107 @@ function unwrapStateObject(ts, factoryNode) {
   while (body && ts.isParenthesizedExpression(body)) body = body.expression;
   if (body && ts.isObjectLiteralExpression(body)) return body;
   return null;
+}
+
+function objectPropKeys(ts, objectNode, sourceFile) {
+  const keys = [];
+  if (!objectNode) return keys;
+  for (const prop of objectNode.properties) {
+    if (ts.isMethodDeclaration(prop) || ts.isGetAccessorDeclaration(prop) || ts.isSetAccessorDeclaration(prop)) {
+      // 对象字面量方法简写：login() {} / get x() {}
+      const name = prop.name?.getText(sourceFile);
+      if (name) keys.push(name);
+      continue;
+    }
+    if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) continue;
+    const key = ts.isPropertyAssignment(prop) && !ts.isIdentifier(prop.name)
+      ? prop.name.getText(sourceFile).replace(/^['"]|['"]$/g, '')
+      : prop.name?.getText(sourceFile);
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+// Pinia defineStore('id', setup | { state, getters, actions }, options?) → 与 zustand 同构的 store 事实
+function extractPiniaStore(ts, callNode, sourceFile) {
+  const storeId = callNode.arguments[0] && ts.isStringLiteralLike(callNode.arguments[0])
+    ? callNode.arguments[0].text
+    : null;
+  const stateKeys = [];
+  const actionKeys = [];
+  let hasPersist = false;
+  let storageKey = null;
+
+  const setupOrOptions = callNode.arguments[1];
+  if (setupOrOptions && (ts.isArrowFunction(setupOrOptions) || ts.isFunctionExpression(setupOrOptions))) {
+    // setup store：返回对象中的函数值 → action，其余 → state；shorthand 需回溯 setup 函数体内的函数声明
+    const fnNames = new Set();
+    const collectFnDecls = (n) => {
+      if (ts.isFunctionDeclaration(n) && n.name) {
+        fnNames.add(n.name.text);
+      } else if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) {
+        const init = n.initializer;
+        if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) fnNames.add(n.name.text);
+      } else {
+        ts.forEachChild(n, collectFnDecls);
+      }
+    };
+    collectFnDecls(setupOrOptions);
+    const returned = unwrapStateObject(ts, setupOrOptions);
+    if (returned) {
+      for (const prop of returned.properties) {
+        if (ts.isMethodDeclaration(prop) || ts.isGetAccessorDeclaration(prop) || ts.isSetAccessorDeclaration(prop)) {
+          const name = prop.name?.getText(sourceFile);
+          if (name) actionKeys.push(name);
+          continue;
+        }
+        if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) continue;
+        const key = ts.isPropertyAssignment(prop) && !ts.isIdentifier(prop.name)
+          ? prop.name.getText(sourceFile).replace(/^['"]|['"]$/g, '')
+          : prop.name?.getText(sourceFile);
+        if (!key) continue;
+        const isAction = (ts.isPropertyAssignment(prop)
+            && (ts.isArrowFunction(prop.initializer) || ts.isFunctionExpression(prop.initializer)))
+          || (ts.isShorthandPropertyAssignment(prop) && fnNames.has(key));
+        (isAction ? actionKeys : stateKeys).push(key);
+      }
+    }
+  } else if (setupOrOptions && ts.isObjectLiteralExpression(setupOrOptions)) {
+    // options store：state/getters 归 state，actions 归 action
+    for (const prop of setupOrOptions.properties) {
+      if (!ts.isPropertyAssignment(prop)) continue;
+      const section = prop.name?.getText(sourceFile);
+      if (section === 'state') {
+        stateKeys.push(...objectPropKeys(ts, unwrapStateObject(ts, prop.initializer), sourceFile));
+      } else if (section === 'getters' && ts.isObjectLiteralExpression(prop.initializer)) {
+        stateKeys.push(...objectPropKeys(ts, prop.initializer, sourceFile));
+      } else if (section === 'actions' && ts.isObjectLiteralExpression(prop.initializer)) {
+        actionKeys.push(...objectPropKeys(ts, prop.initializer, sourceFile));
+      }
+    }
+  }
+
+  // persist 插件配置（pinia-plugin-persistedstate）：第三参数，或第二参数对象内的 persist 字段
+  const persistSources = [callNode.arguments[2], setupOrOptions].filter((x) => x && ts.isObjectLiteralExpression(x));
+  for (const src of persistSources) {
+    for (const prop of src.properties) {
+      if (ts.isPropertyAssignment(prop) && prop.name?.getText(sourceFile) === 'persist') {
+        const init = prop.initializer;
+        if (init.kind === ts.SyntaxKind.TrueKeyword) {
+          hasPersist = true;
+        } else if (ts.isObjectLiteralExpression(init)) {
+          hasPersist = true;
+          for (const p of init.properties) {
+            if (ts.isPropertyAssignment(p) && p.name?.getText(sourceFile) === 'key'
+                && ts.isStringLiteralLike(p.initializer)) {
+              storageKey = p.initializer.text;
+            }
+          }
+        }
+      }
+    }
+  }
+  return { id: storeId, stateKeys, actionKeys, hasPersist, storageKey };
 }
 
 export function analyzeFile(filePath, content, projectRoot) {
@@ -83,6 +211,8 @@ export function analyzeFile(filePath, content, projectRoot) {
     useCalls: [],
     overlayOpens: [],
     zustandCreates: [],
+    piniaCreates: [],
+    vueRoutes: [],
     lazyWrappers: [],
     hasSingletonClass: false,
     hasClassExport: false,
@@ -108,6 +238,10 @@ export function analyzeFile(filePath, content, projectRoot) {
     }
     return names;
   };
+
+  // useRouter() 声明的变量名（含解构 { push }），用于归属 vue-router 导航调用
+  const routerVarDecls = [];
+  const pendingNavCalls = [];
 
   function visit(node) {
     if (ts.isImportDeclaration(node) && node.importClause && ts.isStringLiteralLike(node.moduleSpecifier)) {
@@ -135,12 +269,42 @@ export function analyzeFile(filePath, content, projectRoot) {
           if (first && ts.isStringLiteralLike(first)) {
             facts.overlayOpens.push({ target: first.text, pos: node.getStart(sourceFile) });
           }
+        } else if (name === 'useRouter') {
+          // 记录 useRouter() 声明的变量（const router = useRouter() / const { push } = useRouter()）
+          // 注意：必须置于 /^use[A-Z]/ 分支之前，否则被 useCalls 提前吞掉
+          const parent = node.parent;
+          if (parent && ts.isVariableDeclaration(parent)) {
+            if (ts.isIdentifier(parent.name)) {
+              routerVarDecls.push({ name: parent.name.text, pos: node.getStart(sourceFile) });
+            } else if (ts.isObjectBindingPattern(parent.name)) {
+              for (const el of parent.name.elements) {
+                if (ts.isIdentifier(el.name)) routerVarDecls.push({ name: el.name.text, pos: node.getStart(sourceFile) });
+              }
+            }
+          }
+        } else if (VUE_ROUTER_NAV_METHODS.has(name)) {
+          // push('/path') / replace('/path') 形式（解构自 useRouter 时计入导航）
+          const first = node.arguments[0];
+          if (first && ts.isStringLiteralLike(first)) {
+            pendingNavCalls.push({ calleeName: name, isProp: false, target: first.text, pos: node.getStart(sourceFile) });
+          }
         } else if (/^use[A-Z]/.test(name)) {
           facts.useCalls.push({ name, pos: node.getStart(sourceFile) });
         } else if (name === 'create' || name === 'createStore') {
           const parent = node.parent;
           if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
             facts.zustandCreates.push({
+              varName: parent.name.text,
+              callNode: node,
+              pos: parent.getStart(sourceFile),
+              end: parent.end,
+            });
+          }
+        } else if (name === 'defineStore') {
+          // Pinia store：export const useXxxStore = defineStore('id', ...)
+          const parent = node.parent;
+          if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+            facts.piniaCreates.push({
               varName: parent.name.text,
               callNode: node,
               pos: parent.getStart(sourceFile),
@@ -154,6 +318,19 @@ export function analyzeFile(filePath, content, projectRoot) {
         const first = node.arguments[0];
         if (first && ts.isStringLiteralLike(first)) {
           facts.overlayOpens.push({ target: first.text, pos: node.getStart(sourceFile) });
+        }
+      } else if (ts.isPropertyAccessExpression(node.expression)
+        && VUE_ROUTER_NAV_METHODS.has(node.expression.name.text)
+        && ts.isIdentifier(node.expression.expression)) {
+        // router.push('/path') 形式（router 来自 useRouter() 时计入导航）
+        const first = node.arguments[0];
+        if (first && ts.isStringLiteralLike(first)) {
+          pendingNavCalls.push({
+            calleeName: node.expression.expression.text,
+            isProp: true,
+            target: first.text,
+            pos: node.getStart(sourceFile),
+          });
         }
       }
       const calleeText = node.expression.getText(sourceFile);
@@ -174,6 +351,14 @@ export function analyzeFile(filePath, content, projectRoot) {
     } else if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
       const tag = node.tagName;
       if (ts.isIdentifier(tag) && /^[A-Z]/.test(tag.text)) facts.jsxTags.add(tag.text);
+      // <Navigate to="/path" /> 重定向（react-router），计入 overlayOpens 供路由导航边使用
+      if (tag.text === 'Navigate' && /react-router/.test(facts.importMap.get('Navigate') ?? '')) {
+        const attrs = node.attributes?.properties ?? [];
+        const toAttr = attrs.find((p) => ts.isJsxAttribute(p) && p.name?.getText(sourceFile) === 'to');
+        if (toAttr?.initializer && ts.isStringLiteral(toAttr.initializer)) {
+          facts.overlayOpens.push({ target: toAttr.initializer.text, pos: node.getStart(sourceFile) });
+        }
+      }
     } else if (ts.isClassDeclaration(node) && node.name) {
       const exported = hasExportModifier(ts, node);
       if (exported) facts.hasClassExport = true;
@@ -222,6 +407,12 @@ export function analyzeFile(filePath, content, projectRoot) {
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
+
+  // vue-router 导航调用归属：callee 名与更早出现的 useRouter 声明匹配才计入 overlayOpens
+  for (const nav of pendingNavCalls) {
+    const hit = routerVarDecls.find((d) => d.name === nav.calleeName && d.pos < nav.pos);
+    if (hit) facts.overlayOpens.push({ target: nav.target, pos: nav.pos });
+  }
 
   // 「const X = ...; export default X;」分离导出模式：末尾 default 引用回填导出标记
   const defaultReferenced = new Set(
@@ -284,7 +475,93 @@ export function analyzeFile(filePath, content, projectRoot) {
       lineCount: sourceFile.text.slice(entry.pos, entry.end).split('\n').length,
     });
   }
+
+  // Pinia store 详情（defineStore 调用，importMap 提升语义同上）
+  for (const entry of facts.piniaCreates) {
+    if (!isPiniaDefineStoreCall(ts, entry.callNode, facts.importMap)) continue;
+    const pinia = extractPiniaStore(ts, entry.callNode, sourceFile);
+    facts.stores.push({
+      name: entry.varName,
+      stateKeys: pinia.stateKeys,
+      actionKeys: pinia.actionKeys,
+      hasPersist: pinia.hasPersist,
+      storageKey: pinia.storageKey,
+      line: sourceFile.getLineAndCharacterOfPosition(entry.pos).line + 1,
+      lineCount: sourceFile.text.slice(entry.pos, entry.end).split('\n').length,
+    });
+  }
   delete facts.zustandCreates;
+  delete facts.piniaCreates;
+
+  // Vue Router 路由提取：router/ 目录（或导入 vue-router）文件中 path+component 对象 → RouteRecordRaw
+  if (filePath.includes('/router/') || [...facts.importMap.values()].some((s) => s === 'vue-router' || s.startsWith('vue-router/'))) {
+    const localFunctions = new Map();
+    for (const stmt of sourceFile.statements) {
+      if (ts.isFunctionDeclaration(stmt) && stmt.name) localFunctions.set(stmt.name.text, stmt);
+    }
+    const resolveComponentRef = (init) => {
+      if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {
+        const spec = findDynamicImportSpec(ts, init);
+        if (spec) return { ref: `() => import('${spec}')`, specifier: spec };
+      } else if (ts.isIdentifier(init)) {
+        if (facts.importMap.has(init.text)) return { ref: init.text, specifier: facts.importMap.get(init.text) };
+        const fn = localFunctions.get(init.text);
+        if (fn) {
+          const spec = findDynamicImportSpec(ts, fn);
+          if (spec) return { ref: init.text, specifier: spec };
+        }
+      }
+      return { ref: init.getText(sourceFile), specifier: null };
+    };
+    const visited = new Set();
+    const collectRouteObject = (node, parentPath) => {
+      if (visited.has(node)) return;
+      visited.add(node);
+      const pathProp = node.properties.find((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'path');
+      const compProp = node.properties.find((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'component');
+      if (!pathProp || !ts.isStringLiteralLike(pathProp.initializer) || !compProp) return;
+      const childPath = pathProp.initializer.text;
+      const fullPath = childPath.startsWith('/') ? childPath : parentPath + childPath;
+      const nameProp = node.properties.find((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'name');
+      const metaProp = node.properties.find((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'meta');
+      let metaTitle = null;
+      if (metaProp && ts.isObjectLiteralExpression(metaProp.initializer)) {
+        const titleProp = metaProp.initializer.properties.find((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'title');
+        if (titleProp) {
+          if (ts.isStringLiteralLike(titleProp.initializer)) {
+            metaTitle = titleProp.initializer.text;
+          } else if (ts.isArrowFunction(titleProp.initializer)) {
+            // () => t('menu.steamData') 形式取 i18n key
+            const body = titleProp.initializer.body;
+            if (ts.isCallExpression(body) && body.arguments[0] && ts.isStringLiteralLike(body.arguments[0])) {
+              metaTitle = body.arguments[0].text;
+            }
+          }
+        }
+      }
+      const { ref, specifier } = resolveComponentRef(compProp.initializer);
+      facts.vueRoutes.push({
+        path: fullPath,
+        name: nameProp && ts.isStringLiteralLike(nameProp.initializer) ? nameProp.initializer.text : null,
+        metaTitle,
+        componentRef: ref,
+        specifier,
+        pos: node.getStart(sourceFile),
+        end: node.end,
+      });
+      const childrenProp = node.properties.find((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'children');
+      if (childrenProp && ts.isArrayLiteralExpression(childrenProp.initializer)) {
+        for (const el of childrenProp.initializer.elements) {
+          if (ts.isObjectLiteralExpression(el)) collectRouteObject(el, fullPath);
+        }
+      }
+    };
+    const collectVisit = (node) => {
+      if (ts.isObjectLiteralExpression(node)) collectRouteObject(node, '');
+      ts.forEachChild(node, collectVisit);
+    };
+    collectVisit(sourceFile);
+  }
 
   // 组件抽取：.tsx/.jsx 中的导出 PascalCase 符号
   facts.components = [];

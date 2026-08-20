@@ -19,16 +19,18 @@ export function exportToMarkdown(dataMap) {
   out.push('## 1. 项目概览');
   out.push('');
   out.push(table(['指标', '数值'], [
+    ['框架', proj.framework ?? 'unknown'],
     ['源文件总数', proj.fileCount],
     ['tsx 文件', proj.tsxFileCount],
     ['ts 文件', proj.tsFileCount],
     ['js/jsx 文件', proj.jsFileCount],
+    ['vue 文件', proj.vueFileCount ?? 0],
     ['模块数', counts.Module],
     ['组件数', counts.Component],
-    ['自定义 Hook 数', counts.Hook],
-    ['Zustand Store 数', counts.Store],
+    ['自定义 Hook/Composable 数', counts.Hook],
+    ['Store 数（Zustand/Pinia）', counts.Store],
     ['Service 模块数', counts.Service],
-    ['Overlay 路由数', counts.Route],
+    ['路由数（Overlay/Vue Router）', counts.Route],
     ['npm 依赖数', counts.Dependency],
     ['解析错误数', (proj.analysisErrors ?? []).length],
   ]));
@@ -49,10 +51,10 @@ export function exportToMarkdown(dataMap) {
   out.push(table(['模块', '层', '文件数'], topModules.map((m) => [m.path, m.layer, m.fileCount])));
   out.push('');
 
-  out.push('## 4. Overlay 路由地图');
+  out.push('## 4. 路由地图（Overlay / Vue Router）');
   out.push('');
-  out.push(table(['路由 ID', 'routePath', 'backTarget', 'hidesNav', 'domain', '组件文件'], (dataMap.Route ?? []).map((r) => [
-    r.overlayId, r.routePath ?? '-', r.backTarget ?? '(stack)', r.hidesNav, r.domain,
+  out.push(table(['路由', 'routePath', 'backTarget', 'hidesNav', 'domain', '组件文件'], (dataMap.Route ?? []).map((r) => [
+    r.overlayId, r.routePath ?? '-', r.backTarget ?? '-', r.hidesNav ?? '-', r.domain,
     r.componentFileId ? r.componentFileId.slice(5) : `⚠️ ${r.componentRef}`,
   ])));
   out.push('');
@@ -79,7 +81,7 @@ export function exportToMarkdown(dataMap) {
   out.push(table(['组件', '文件', '被渲染次数'], topRendered));
   out.push('');
 
-  out.push('## 7. Zustand Store 一览');
+  out.push('## 7. Store 一览（Zustand / Pinia）');
   out.push('');
   out.push(table(['Store', '状态键数', 'persist', 'storageKey', '位置', '文件'], (dataMap.Store ?? []).map((s) => [
     s.name, s.stateKeyCount, s.hasPersist ? '✓' : '-', s.storageKey ?? '-', s.location, s.filePath,

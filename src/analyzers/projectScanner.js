@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue']);
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'dist-ssr', 'build', 'out',
   'coverage', '.next', '.nuxt', 'public', 'docs',
@@ -42,9 +42,53 @@ function walk(dir, projectRoot, files) {
   }
 }
 
+// 剥离 JSON 文件中的注释（// 行注释与 /* */ 块注释），字符串内的序列已保护
+// 部分项目的 tsconfig.json 含注释（如 shadcn-vue CLI 生成的文件），标准 JSON.parse 会失败
+function stripJsonComments(text) {
+  let out = '';
+  let i = 0;
+  let inString = false;
+  let quote = '';
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inString) {
+      out += ch;
+      if (ch === '\\') {
+        out += next ?? '';
+        i += 2;
+        continue;
+      }
+      if (ch === quote) inString = false;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      i += 2;
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 function readJson(filePath) {
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    return JSON.parse(stripJsonComments(fs.readFileSync(filePath, 'utf-8')));
   } catch {
     return null;
   }
@@ -74,6 +118,14 @@ function gitInfo(projectRoot) {
   }
 }
 
+function detectFramework(packageJson) {
+  const deps = { ...(packageJson?.dependencies ?? {}), ...(packageJson?.devDependencies ?? {}) };
+  if (deps.vue) return 'vue';
+  if (deps.nuxt) return 'vue';
+  if (deps.react) return 'react';
+  return 'unknown';
+}
+
 export function scanProject(projectRoot, options = {}) {
   const roots = resolveRoots(projectRoot, options);
   const files = [];
@@ -92,7 +144,7 @@ export function scanProject(projectRoot, options = {}) {
     }
   }
 
-  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0 };
+  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0 };
   for (const f of files) {
     const ext = path.extname(f).slice(1);
     if (counts[ext] !== undefined) counts[ext] += 1;
@@ -102,12 +154,13 @@ export function scanProject(projectRoot, options = {}) {
     root: projectRoot,
     name: packageJson?.name ?? path.basename(projectRoot),
     version: packageJson?.version ?? null,
-    framework: packageJson?.dependencies?.react ? 'react' : 'unknown',
+    framework: detectFramework(packageJson),
     files,
     fileCount: files.length,
     tsFileCount: counts.ts,
     tsxFileCount: counts.tsx,
     jsFileCount: counts.js + counts.jsx,
+    vueFileCount: counts.vue,
     tsconfigPaths,
     dependencies,
     ...gitInfo(projectRoot),
