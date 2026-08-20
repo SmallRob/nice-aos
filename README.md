@@ -1,7 +1,8 @@
 # nice-aos — 通用前端代码本体分析 CLI（React / Vue 3 / 油猴脚本）
 
-> 把任意 React、Vue 3 前端仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（模块/文件/组件/Hook/Composable/Zustand/Pinia Store/Service/路由/依赖 + import/render/导航关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
+> 把任意 React、Vue 3 前端仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia Store/Service/路由/依赖 + import/render/导航关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
 > 参考 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 代码本体分析）的架构，针对前端生态重新建模：React（React 19 + TypeScript + Vite + Zustand + overlay 路由 / react-router）、Vue 3（SFC + vue-router + Pinia）与油猴脚本（UserScript 元数据 + GM API + 注入/请求审计）。
+> 语义本体引擎：对象按概念范畴与抽象层级（L3 架构 / L2 结构 / L1 单元 / L0 事实）组织；架构分层按内容信号推断（非目录名直译）；Module/Domain/Project 自动生成职责画像与自然语言总结。
 
 ## 为什么需要它
 
@@ -16,6 +17,9 @@
 | 不知道 store 被谁用了 | `link usesStore --src store:useThemeStore` |
 | 审计油猴脚本是否越权调 GM API | `query GmApiUsage --where "declared=false"` |
 | 不知道油猴脚本往页面哪里注入了 DOM | `link injectsInto --src us:demo.user.js` |
+| 说不清项目架构和功能划分 | `query Project` 看 summary/architecture（分层画像 + 功能域清单 + 健康度） |
+| 不知道某目录的职责 | `query Module --where "archLayer=state"` 看职责画像 |
+| 想按功能域浏览代码 | `link belongsTo --src dom:health` 列出该域全部成员 |
 
 ## 安装
 

@@ -5,6 +5,10 @@ import { analyzeFileFromDisk } from '../analyzers/tsAnalyzer.js';
 import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
 import { analyzeUserScriptFromDisk } from '../analyzers/userScriptAnalyzer.js';
 import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
+import {
+  ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
+  summarizeModule, buildProjectProfile,
+} from './semantics.js';
 
 const KIND_SUFFIXES = [
   ['Page', 'page'], ['Modal', 'modal'], ['Dialog', 'dialog'], ['Card', 'card'],
@@ -689,6 +693,129 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
+  // 7d. 语义富化：文件级架构分层 → 功能域聚合 → 模块职责画像 → 单元归属回填
+  //     分类以内容信号为准（单元构成/路由归属/引用结构），目录名仅作弱信号兜底
+  const importersOf = new Map(); // fileId -> Set(importerFileIds)
+  for (const f of fileObjects) {
+    for (const id of f.importIds) {
+      if (!id.startsWith('file:')) continue;
+      if (!importersOf.has(id)) importersOf.set(id, new Set());
+      importersOf.get(id).add(f.id);
+    }
+  }
+  const fileArchLayer = new Map(); // relPath -> archLayer
+  for (const f of fileObjects) {
+    const facts = factsMap.get(f.path);
+    const archLayer = inferFileArchLayer({
+      relPath: f.path,
+      isUserScript: !!facts?.isUserScript,
+      isTest: f.isTest,
+      isEntry: f.isEntry,
+      componentCount: facts?.components?.length ?? 0,
+      storeCount: facts?.stores?.length ?? 0,
+      hookCount: facts?.hooks?.length ?? 0,
+    });
+    f.archLayer = archLayer;
+    fileArchLayer.set(f.path, archLayer);
+  }
+
+  // 功能域：路由域段 + 业务命名目录 → Domain（与纵向架构层正交的横向功能切片）
+  const { domains, fileDomainIds, moduleDomainIds } = buildDomains({
+    routes, modules, fileObjects, components, stores, hooks, services, userScripts,
+  });
+
+  // 模块子树（文件集合 + 层构成 + 单元构成 + 外部引用）
+  const moduleSubtreeFiles = new Map(); // moduleId -> Set<relPath>
+  for (const m of modules) {
+    const set = new Set();
+    for (const f of fileObjects) {
+      if (f.path === m.path || f.path.startsWith(`${m.path}/`)) set.add(f.path);
+    }
+    moduleSubtreeFiles.set(m.id, set);
+  }
+  const moduleChainOf = (relPath) => {
+    const chain = [];
+    let dir = path.posix.dirname(relPath) === '.' ? '' : path.posix.dirname(relPath);
+    while (dir && dir !== '.') {
+      chain.push(`mod:${dir}`);
+      const parent = path.posix.dirname(dir);
+      if (parent === '.') break;
+      dir = parent;
+    }
+    return chain;
+  };
+  const moduleById = new Map(modules.map((m) => [m.id, m]));
+  const bumpUnits = (relPath, key, extra = 0) => {
+    for (const modId of moduleChainOf(relPath)) {
+      const mod = moduleById.get(modId);
+      if (!mod) continue;
+      mod.unitCounts[key] = (mod.unitCounts[key] ?? 0) + 1;
+      if (extra) mod.unitCounts[extra] = (mod.unitCounts[extra] ?? 0) + 1;
+    }
+  };
+  for (const m of modules) {
+    m.layerComposition = {};
+    m.unitCounts = {};
+  }
+  for (const f of fileObjects) {
+    for (const modId of moduleChainOf(f.path)) {
+      const mod = moduleById.get(modId);
+      if (mod) mod.layerComposition[f.archLayer] = (mod.layerComposition[f.archLayer] ?? 0) + 1;
+    }
+  }
+  for (const c of components) bumpUnits(c.filePath, 'component', c.kind === 'page' ? 'page' : null);
+  for (const h of hooks) bumpUnits(h.filePath, 'hook');
+  for (const s of stores) bumpUnits(s.filePath, 'store');
+  for (const s of services) bumpUnits(s.filePath, 'service');
+  for (const fn of scriptFunctions) bumpUnits(fn.filePath, 'scriptFunction');
+  for (const us of userScripts) bumpUnits(us.filePath, 'userScript');
+
+  for (const m of modules) {
+    const subtree = moduleSubtreeFiles.get(m.id);
+    const { archLayer, dominantShare } = inferModuleArchLayer(m.layerComposition);
+    m.archLayer = archLayer;
+    m.archLayerLabel = ARCH_LAYERS[archLayer]?.label ?? null;
+    m.dominantShare = Math.round(dominantShare * 100);
+    m.subtreeFileCount = subtree.size;
+    m.unitCount = Object.values(m.unitCounts).reduce((a, b) => a + b, 0);
+    m.domainIds = moduleDomainIds.get(m.path) ?? [];
+    m.routeCount = 0;
+    for (const r of routes) {
+      const fp = r.componentFileId?.slice(5);
+      if (fp && subtree.has(fp)) m.routeCount += 1;
+    }
+    m.externalImportedByCount = 0;
+    for (const fp of subtree) {
+      for (const importerId of importersOf.get(`file:${fp}`) ?? []) {
+        if (!subtree.has(importerId.slice(5))) m.externalImportedByCount += 1;
+      }
+    }
+    m.summary = summarizeModule(m);
+  }
+
+  // 单元级归属回填：架构层（继承所在文件）+ 功能域
+  for (const c of components) {
+    c.archLayer = fileArchLayer.get(c.filePath) ?? null;
+    c.domainIds = fileDomainIds.get(c.filePath) ?? [];
+  }
+  for (const h of hooks) {
+    h.archLayer = fileArchLayer.get(h.filePath) ?? null;
+    h.domainIds = fileDomainIds.get(h.filePath) ?? [];
+  }
+  for (const s of stores) {
+    s.archLayer = fileArchLayer.get(s.filePath) ?? null;
+    s.domainIds = fileDomainIds.get(s.filePath) ?? [];
+  }
+  for (const s of services) {
+    s.archLayer = fileArchLayer.get(s.filePath) ?? null;
+    s.domainIds = fileDomainIds.get(s.filePath) ?? [];
+  }
+  for (const us of userScripts) {
+    us.archLayer = 'script';
+    us.domainIds = fileDomainIds.get(us.filePath) ?? [];
+  }
+  for (const fn of scriptFunctions) fn.archLayer = 'script';
+
   // 8. 死代码候选与循环依赖
   const importedByCount = new Map();
   for (const f of fileObjects) {
@@ -726,6 +853,18 @@ export async function buildOntologyData(projectRoot, options = {}) {
     reviewed: false, notes: null,
   };
 
+  // 9b. 项目级架构画像：分层结构 / 架构风格 / 健康度 / 能力清单 / 自然语言总结
+  const profile = buildProjectProfile({
+    framework: scan.framework,
+    fileObjects, modules, domains, routes,
+    components, stores, hooks, services, userScripts,
+    dependencies, cycles, orphanCandidates, analysisErrors,
+  });
+  project.architecture = profile.architecture;
+  project.health = profile.health;
+  project.capabilities = profile.capabilities;
+  project.summary = profile.summary;
+
   const dataMap = {
     _meta: {
       generatedAt: new Date().toISOString(),
@@ -738,7 +877,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
         Route: routes.length, Dependency: dependencies.length,
         UserScript: userScripts.length, GmApiUsage: gmApiUsages.length,
         InjectionPoint: injectionPoints.length, NetworkEndpoint: networkEndpoints.length,
-        ScriptFunction: scriptFunctions.length,
+        ScriptFunction: scriptFunctions.length, Domain: domains.length,
       },
     },
     Project: [project],
@@ -755,6 +894,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     InjectionPoint: injectionPoints,
     NetworkEndpoint: networkEndpoints,
     ScriptFunction: scriptFunctions,
+    Domain: domains,
   };
   return dataMap;
 }

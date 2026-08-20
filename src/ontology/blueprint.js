@@ -1,27 +1,48 @@
-// 本体蓝图：对象类型 + 链接关系 + 动作的定义与实现
+// 本体蓝图：概念分类体系（taxonomy）+ 对象类型 + 链接关系 + 动作的定义与实现
 // 与 asdm-aos 的 codeRepoBlueprint 对应，针对 React/Vue 前端重新建模；
 // 油猴脚本（UserScript）体系与 React/Vue 组件体系并存、逻辑独立
 
+// 概念元模型：对象类型按"概念范畴"（is-a 族）与"抽象层级"（L0-L3）双维组织，
+// 消除 14+ 种类型平铺罗列、无抽象总结的问题
+export const ONTOLOGY_META = {
+  version: '2.0',
+  abstractionLevels: [
+    { level: 'L3', name: '架构层', description: '产品级聚合：整体架构画像与功能域划分', types: ['Project', 'Domain'] },
+    { level: 'L2', name: '结构层', description: '代码组织结构：模块、文件、路由、脚本与运行环境', types: ['Module', 'SourceFile', 'Route', 'UserScript', 'Dependency'] },
+    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'ScriptFunction'] },
+    { level: 'L0', name: '事实层', description: '审计事实（AuditFact 概念族）：从代码提取的行为证据', types: ['GmApiUsage', 'InjectionPoint', 'NetworkEndpoint'] },
+  ],
+  categories: [
+    { category: 'Container', label: '容器', description: '按结构聚合代码单元的节点', types: ['Project', 'Domain', 'Module', 'SourceFile'] },
+    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'ScriptFunction'] },
+    { category: 'EntryPoint', label: '行为入口', description: '用户可触达的行为入口', types: ['Route'] },
+    { category: 'Script', label: '油猴脚本', description: '独立于宿主应用的脚本形态（自带子对象体系）', types: ['UserScript'] },
+    { category: 'Environment', label: '运行环境', description: '外部环境要素', types: ['Dependency'] },
+    { category: 'AuditFact', label: '审计事实', description: '安全/行为审计的原子事实', types: ['GmApiUsage', 'InjectionPoint', 'NetworkEndpoint'] },
+  ],
+};
+
 export const OBJECT_TYPES = [
-  { type: 'Project', prefix: 'proj:', description: '代码仓库' },
-  { type: 'Module', prefix: 'mod:', description: '目录模块（领域/分层）' },
-  { type: 'SourceFile', prefix: 'file:', description: '源文件（ts/tsx/js/jsx/vue）' },
-  { type: 'Component', prefix: 'comp:', description: '前端组件（React / Vue SFC）' },
-  { type: 'Hook', prefix: 'hook:', description: '自定义 Hook / Composable' },
-  { type: 'Store', prefix: 'store:', description: '状态 Store（Zustand / Pinia）' },
-  { type: 'Service', prefix: 'svc:', description: '服务/引擎模块' },
-  { type: 'Route', prefix: 'route:', description: '路由条目（Overlay / vue-router 页面）' },
-  { type: 'Dependency', prefix: 'dep:', description: 'npm 依赖' },
-  { type: 'UserScript', prefix: 'us:', description: '油猴脚本（Tampermonkey UserScript）' },
-  { type: 'GmApiUsage', prefix: 'gm:', description: 'GM API 使用（@grant 声明比对）' },
-  { type: 'InjectionPoint', prefix: 'inject:', description: 'DOM 注入点（挂载/innerHTML/样式）' },
-  { type: 'NetworkEndpoint', prefix: 'net:', description: '网络端点（GM_xhr/fetch/XHR 域名）' },
-  { type: 'ScriptFunction', prefix: 'fn:', description: '脚本函数/类/对象（逻辑分布单元）' },
+  { type: 'Project', prefix: 'proj:', category: 'Container', level: 'L3', description: '代码仓库（含架构画像/健康度/总结）' },
+  { type: 'Domain', prefix: 'dom:', category: 'Container', level: 'L3', description: '功能域（横向功能切片：路由+组件+模块聚合）' },
+  { type: 'Module', prefix: 'mod:', category: 'Container', level: 'L2', description: '目录模块（含语义架构层 archLayer 与职责画像 summary）' },
+  { type: 'SourceFile', prefix: 'file:', category: 'Container', level: 'L2', description: '源文件（ts/tsx/js/jsx/vue，含 archLayer）' },
+  { type: 'Component', prefix: 'comp:', category: 'CodeUnit', level: 'L1', description: '前端组件（React / Vue SFC）' },
+  { type: 'Hook', prefix: 'hook:', category: 'CodeUnit', level: 'L1', description: '自定义 Hook / Composable' },
+  { type: 'Store', prefix: 'store:', category: 'CodeUnit', level: 'L1', description: '状态 Store（Zustand / Pinia）' },
+  { type: 'Service', prefix: 'svc:', category: 'CodeUnit', level: 'L1', description: '服务/引擎模块' },
+  { type: 'ScriptFunction', prefix: 'fn:', category: 'CodeUnit', level: 'L1', description: '脚本函数/类/对象（逻辑分布单元）' },
+  { type: 'Route', prefix: 'route:', category: 'EntryPoint', level: 'L2', description: '路由条目（Overlay / react-router / vue-router）' },
+  { type: 'UserScript', prefix: 'us:', category: 'Script', level: 'L2', description: '油猴脚本（Tampermonkey UserScript）' },
+  { type: 'Dependency', prefix: 'dep:', category: 'Environment', level: 'L2', description: 'npm 依赖' },
+  { type: 'GmApiUsage', prefix: 'gm:', category: 'AuditFact', level: 'L0', description: 'GM API 使用（@grant 声明比对）' },
+  { type: 'InjectionPoint', prefix: 'inject:', category: 'AuditFact', level: 'L0', description: 'DOM 注入点（挂载/innerHTML/样式）' },
+  { type: 'NetworkEndpoint', prefix: 'net:', category: 'AuditFact', level: 'L0', description: '网络端点（GM_xhr/fetch/XHR 域名）' },
 ];
 
 export const LINK_TYPES = [
   'contains', 'imports', 'importedBy', 'renders', 'renderedBy', 'navigatesTo', 'registers', 'usesStore', 'usesHook',
-  'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy',
+  'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy', 'belongsTo',
 ];
 
 export const ACTION_NAMES = ['refreshRepo', 'markReviewed', 'addNote'];
@@ -59,7 +80,10 @@ export function createBlueprint(dataMap) {
   const linkImpls = {
     contains(srcId) {
       if (srcId.startsWith('proj:')) {
-        return (dataMap.Module ?? []).filter((m) => !m.parentId || m.parentId === srcId);
+        return [
+          ...(dataMap.Domain ?? []),
+          ...(dataMap.Module ?? []).filter((m) => !m.parentId || m.parentId === srcId),
+        ];
       }
       if (srcId.startsWith('mod:')) {
         return [
@@ -221,6 +245,31 @@ export function createBlueprint(dataMap) {
         const fn = getObject(index, srcId);
         if (!fn) return [];
         return objectsForIds(index, fn.calledByIds ?? []);
+      }
+      return [];
+    },
+
+    // ---- 功能域归属（双向：dom: 列成员；mod:/comp:/store:/hook:/route: 反查所属域）----
+    belongsTo(srcId) {
+      if (srcId.startsWith('dom:')) {
+        const domain = getObject(index, srcId);
+        if (!domain) return [];
+        return objectsForIds(index, [
+          ...(domain.moduleIds ?? []),
+          ...(domain.routeIds ?? []),
+          ...(domain.componentIds ?? []),
+          ...(domain.storeIds ?? []),
+          ...(domain.hookIds ?? []),
+          ...(domain.serviceIds ?? []),
+          ...(domain.userScriptIds ?? []),
+        ]);
+      }
+      const obj = getObject(index, srcId);
+      if (obj?.domainIds?.length) return objectsForIds(index, obj.domainIds);
+      // 脚本函数归属其所在脚本的功能域
+      if (srcId.startsWith('fn:')) {
+        const script = obj?.scriptId ? getObject(index, obj.scriptId) : null;
+        return script?.domainIds?.length ? objectsForIds(index, script.domainIds) : [];
       }
       return [];
     },

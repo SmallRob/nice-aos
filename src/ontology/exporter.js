@@ -26,6 +26,9 @@ export function exportToMarkdown(dataMap) {
   heading('项目概览');
   out.push(table(['指标', '数值'], [
     ['框架', proj.framework ?? 'unknown'],
+    ['架构风格', proj.architecture?.styleLabel ?? '-'],
+    ['语义架构层数', proj.architecture?.layerCount ?? '-'],
+    ['功能域数', proj.architecture?.domainCount ?? '-'],
     ['源文件总数', proj.fileCount],
     ['tsx 文件', proj.tsxFileCount],
     ['ts 文件', proj.tsFileCount],
@@ -33,6 +36,7 @@ export function exportToMarkdown(dataMap) {
     ['vue 文件', proj.vueFileCount ?? 0],
     ['油猴脚本文件', proj.userScriptFileCount ?? 0],
     ['模块数', counts.Module],
+    ['功能域对象数', counts.Domain ?? 0],
     ['组件数', counts.Component],
     ['自定义 Hook/Composable 数', counts.Hook],
     ['Store 数（Zustand/Pinia）', counts.Store],
@@ -47,17 +51,65 @@ export function exportToMarkdown(dataMap) {
   ]));
   out.push('');
 
-  heading('分层文件分布');
+  heading('执行摘要');
+  if (proj.summary) {
+    for (const sentence of proj.summary.split('。').filter(Boolean)) {
+      out.push(`- ${sentence}。`);
+    }
+    out.push('');
+  }
+  if (proj.health) {
+    out.push(table(['健康指标', '数值'], [
+      ['循环依赖组数', proj.health.cycleCount ?? 0],
+      ['死代码候选文件数', proj.health.orphanFileCount ?? 0],
+      ['未声明依赖数', proj.health.undeclaredDependencyCount ?? 0],
+      ['高风险油猴脚本数', proj.health.highRiskScriptCount ?? 0],
+      ['解析错误数', proj.health.analysisErrorCount ?? 0],
+    ]));
+    out.push('');
+  }
+
+  heading('架构总览（语义分层）');
+  const archLayers = proj.architecture?.layers ?? [];
+  if (archLayers.length === 0) {
+    out.push('（无分层信息）');
+  } else {
+    out.push(table(['语义层', '定位', '文件数', '占比'], archLayers.map((l) => [
+      l.label, l.description, l.fileCount, `${l.share}%`,
+    ])));
+    out.push('');
+    out.push(`> 分层依据内容信号推断（单元构成/路由归属/引用结构），目录名仅作弱信号回退；单一模块内构成分散时标记为混合层。`);
+    out.push('');
+  }
+
+  const domains = dataMap.Domain ?? [];
+  if (domains.length > 0) {
+    heading('功能域地图（Domain）');
+    out.push(table(['功能域', '来源', '路由', '组件', 'Store', '脚本', '文件', '职责画像'], domains.map((d) => [
+      d.name, (d.sources ?? []).join('+'), d.routeCount, d.componentCount, d.storeCount,
+      d.scriptCount, d.fileCount, d.summary,
+    ])));
+    out.push('');
+  }
+
+  heading('目录层文件分布');
   const layerCount = new Map();
   for (const f of dataMap.SourceFile ?? []) {
     layerCount.set(f.layer, (layerCount.get(f.layer) ?? 0) + 1);
   }
-  out.push(table(['层', '文件数'], [...layerCount.entries()].sort((a, b) => b[1] - a[1])));
+  out.push(table(['目录层', '文件数'], [...layerCount.entries()].sort((a, b) => b[1] - a[1])));
   out.push('');
 
-  heading('模块 Top 30（按文件数）');
+  heading('模块 Top 30（按直属文件数）');
   const topModules = [...(dataMap.Module ?? [])].sort((a, b) => b.fileCount - a.fileCount).slice(0, 30);
-  out.push(table(['模块', '层', '文件数'], topModules.map((m) => [m.path, m.layer, m.fileCount])));
+  out.push(table(['模块', '语义层', '层构成', '直属文件', '子树文件', '职责画像'], topModules.map((m) => [
+    m.path,
+    m.archLayerLabel ?? m.archLayer ?? '-',
+    Object.entries(m.layerComposition ?? {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(' · ') || '-',
+    m.fileCount,
+    m.subtreeFileCount ?? m.fileCount,
+    m.summary ?? '-',
+  ])));
   out.push('');
 
   heading('路由地图（Overlay / Vue Router）');
