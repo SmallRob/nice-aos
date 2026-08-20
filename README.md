@@ -77,29 +77,53 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 
 ## 本体模型
 
-### 对象（14 种）
+### 概念分类体系（taxonomy）
 
-| 类型 | ID 前缀 | 关键属性 |
-|---|---|---|
-| Project | `proj:` | framework（react/vue/userscript）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, analysisErrors |
-| Module | `mod:` | path, layer, fileCount, parentId |
-| SourceFile | `file:` | path, layer, lineCount, isTest, isEntry, importIds, exportNames |
-| Component | `comp:` | kind（page/modal/card/…）, propsCount, hooksUsed, stateCount, rendersIds, routeIds |
-| Hook | `hook:` | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属） |
-| Store | `store:` | stateKeys, actionKeys, hasPersist, storageKey, location（Zustand 与 Pinia 统一归属） |
-| Service | `svc:` | pattern（singleton/class/functions）, exportsCount |
-| Route | `route:` | overlayId, routePath, routeType（overlay/react/vue）, domain, componentFileId, navigatesToIds |
-| Dependency | `dep:` | version, scope, source（npm/workspace/undeclared）, importCount |
-| UserScript | `us:` | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes |
-| GmApiUsage | `gm:` | name, category（network/storage/style/…）, callCount, declared（与 @grant 比对） |
-| InjectionPoint | `inject:` | kind（mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom）, target, interpolated（动态插值 XSS 面） |
-| NetworkEndpoint | `net:` | kind（gm-xhr/fetch/xhr/websocket/beacon）, domain, urls, methods, allowedByConnect（与 @connect 比对） |
-| ScriptFunction | `fn:` | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds |
+15 种对象类型按「概念范畴」（is-a 族）与「抽象层级」（L0-L3）双维组织，而非平铺罗列：
 
-### 链接（14 种）
+| 抽象层级 | 名称 | 说明 | 类型 |
+|---|---|---|---|
+| L3 | 架构层 | 产品级聚合：整体架构画像与功能域划分 | Project, Domain |
+| L2 | 结构层 | 代码组织结构：模块、文件、路由、脚本与运行环境 | Module, SourceFile, Route, UserScript, Dependency |
+| L1 | 单元层 | 可独立理解的代码单元（CodeUnit 概念族） | Component, Hook, Store, Service, ScriptFunction |
+| L0 | 事实层 | 审计事实（AuditFact 概念族）：从代码提取的行为证据 | GmApiUsage, InjectionPoint, NetworkEndpoint |
+
+概念范畴：**Container**（Project/Domain/Module/SourceFile，按结构聚合）、**CodeUnit**（Component/Hook/Store/Service/ScriptFunction，可独立理解的逻辑单元）、**EntryPoint**（Route，用户可触达的行为入口）、**Script**（UserScript，独立于宿主应用的脚本形态）、**Environment**（Dependency，外部环境要素）、**AuditFact**（GmApiUsage/InjectionPoint/NetworkEndpoint，安全审计原子事实）。
+
+聚合节点（Project/Domain/Module）自动生成**职责画像与自然语言总结**（summary/architecture/health），避免"只罗列事实、没有抽象"。
+
+### 对象（15 种）
+
+| 类型 | ID 前缀 | 层级/范畴 | 关键属性 |
+|---|---|---|---|
+| Project | `proj:` | L3 Container | framework（react/vue/userscript）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码/未声明依赖/高风险脚本/解析错误）, analysisErrors |
+| Domain | `dom:` | L3 Container | **name, sources**（route/module）, routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, **capability**（路由能力描述）, **summary**（职责画像） |
+| Module | `mod:` | L2 Container | path, **archLayer**（语义架构层）, **layerComposition**（子树层构成）, fileCount, **subtreeFileCount**, parentId, **unitCounts**, **routeCount**, **summary**（职责画像） |
+| SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames |
+| Component | `comp:` | L1 CodeUnit | kind（page/modal/card/…）, propsCount, hooksUsed, stateCount, rendersIds, routeIds, **archLayer**, **domainIds** |
+| Hook | `hook:` | L1 CodeUnit | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属）, **archLayer**, **domainIds** |
+| Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, location（Zustand 与 Pinia 统一归属）, **archLayer**, **domainIds** |
+| Service | `svc:` | L1 CodeUnit | pattern（singleton/class/functions）, exportsCount, **archLayer**, **domainIds** |
+| ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **archLayer=script** |
+| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue）, domain, **domainIds**, componentFileId, navigatesToIds |
+| UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **archLayer=script**, **domainIds** |
+| Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared）, importCount |
+| GmApiUsage | `gm:` | L0 AuditFact | name, category（network/storage/style/…）, callCount, declared（与 @grant 比对） |
+| InjectionPoint | `inject:` | L0 AuditFact | kind（mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom）, target, interpolated（动态插值 XSS 面） |
+| NetworkEndpoint | `net:` | L0 AuditFact | kind（gm-xhr/fetch/xhr/websocket/beacon）, domain, urls, methods, allowedByConnect（与 @connect 比对） |
+
+### 语义架构层（archLayer）
+
+每个文件/模块推断一个语义架构层，**以内容信号为准**（单元构成、路由归属、引用结构），目录名仅作弱信号回退：
+
+`entry`（入口）→ `presentation`（表现）→ `state`（状态）→ `service`（业务）→ `integration`（集成）→ `shared`（共享）→ `types`（类型）→ `config`（配置）→ `script`（油猴脚本）→ `test`（测试）→ `mixed`（混合，单一模块内构成分散、主导层 < 60% 时如实标记）
+
+功能域（Domain）与架构层**正交**：架构层是纵向技术切片，功能域是横向业务切片（由路由域段 + 业务命名目录聚合而成）。
+
+### 链接（15 种）
 
 ```
-contains     Project → Module → SourceFile → Component/Hook/Store/Service/UserScript
+contains     Project → Domain/Module → SourceFile → Component/Hook/Store/Service/UserScript
 imports / importedBy    文件级依赖（含 dep: 外部包）— 变更影响分析主链路
 renders / renderedBy    组件 JSX/template 渲染关系
 navigatesTo  Route → Route（React 的 Navigate/overlay 跳转、Vue 的 router.push/replace 等导航边）
@@ -109,6 +133,7 @@ usesGmApi    UserScript ↔ GmApiUsage（src 传 gm: 反查所属脚本）
 injectsInto  UserScript ↔ InjectionPoint（DOM 注入点；src 传 inject: 反查所属脚本）
 requestsTo   UserScript ↔ NetworkEndpoint（网络端点；src 传 net: 反查所属脚本）
 calls / calledBy    ScriptFunction 调用图（脚本内函数间静态调用关系，双向）
+belongsTo    功能域归属（双向：src 传 dom: 列出域全部成员；src 传 mod:/comp:/store:/hook:/route: 反查所属功能域）
 ```
 
 ## CLI 参考
@@ -116,10 +141,14 @@ calls / calledBy    ScriptFunction 调用图（脚本内函数间静态调用关
 ### query — 查询对象
 
 ```bash
+query Project                                        # 项目画像（summary/architecture/health）
+query Domain --pretty                                # 功能域地图（横向业务切片）
 query Route --all                                   # 全部路由
 query Component --where "kind=page" --pretty        # 页面类组件，表格输出
 query SourceFile --where "layer=services,isTest=false"
 query Component --where "name~steam"                # ~ 模糊匹配（忽略大小写子串）
+query Module --where "archLayer=state" --pretty     # 按语义架构层过滤模块
+query Component --where "domainIds=dom:health"      # 按功能域过滤成员
 query Dependency --where "source=undeclared"        # 未声明依赖（治理点）
 query Store --where "hasPersist=true"               # 持久化 store
 query UserScript --where "hostFramework=vue"        # Vue 宿主页面的油猴脚本
@@ -146,6 +175,8 @@ link injectsInto --src "us:demo.user.js"                       # 脚本注入了
 link requestsTo --src "us:demo.user.js"                        # 脚本请求了哪些域名
 link calls --src "fn:demo.user.js#renderOverview"              # 函数调用了谁（调用图正向）
 link calledBy --src "fn:demo.user.js#renderOverview"           # 谁调用了该函数（反向影响面）
+link belongsTo --src "dom:health"                              # 功能域 → 全部成员
+link belongsTo --src "comp:HealthStatsPage"                    # 反查组件所属功能域
 ```
 
 ### action — 受控动作
@@ -162,6 +193,8 @@ action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页�
 export --format markdown --output report.md     # Markdown 全景报告
 export --format json | jq '._meta.cycles'       # JSON 供 jq 聚合
 ```
+
+Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）三大语义章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。
 
 ## 解析能力
 

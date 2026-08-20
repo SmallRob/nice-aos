@@ -182,6 +182,8 @@ export function buildDomains({ routes, modules, fileObjects, components, stores,
       fileCount: fileIds.length,
       componentCount: domainComponents.length,
       storeCount: domainStores.length,
+      hookCount: domainHooks.length,
+      serviceCount: domainServices.length,
       scriptCount: domainScripts.length,
       lineCount,
       capability,
@@ -252,6 +254,8 @@ export function summarizeDomain(d) {
   if (d.routeCount > 0) parts.push(`${d.routeCount} 条路由`);
   if (d.componentCount > 0) parts.push(`${d.componentCount} 个组件`);
   if (d.storeCount > 0) parts.push(`${d.storeCount} 个 Store`);
+  if (d.hookCount > 0) parts.push(`${d.hookCount} 个 Hook`);
+  if (d.serviceCount > 0) parts.push(`${d.serviceCount} 个 Service`);
   if (d.scriptCount > 0) parts.push(`${d.scriptCount} 个油猴脚本`);
   parts.push(`${d.fileCount} 个文件`);
   const head = d.capability ? `${d.capability}：` : '';

@@ -6,19 +6,24 @@ description: |
   预先分析为结构化本体快照，把"代码文件"转化为 AI agent 可直接查询的"关系图谱"——包含模块、组件、
   Hook/Composable、Zustand/Pinia Store、Service、路由（Overlay / vue-router）、npm 依赖、
   油猴脚本（UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction），以及 import 依赖、
-  JSX/template 渲染、页面跳转（navigatesTo）、Store/Hook 使用、GM API 使用/DOM 注入/网络端点/脚本函数调用图等 14 种关系。
+  JSX/template 渲染、页面跳转（navigatesTo）、Store/Hook 使用、GM API 使用/DOM 注入/网络端点/脚本函数调用图等 15 种关系。
+  语义本体引擎：15 种对象按概念范畴与抽象层级（L3 架构/L2 结构/L1 单元/L0 事实）组织，
+  架构分层（archLayer）按内容信号推断而非目录名直译，功能域（Domain）聚合横向业务切片，
+  Project/Domain/Module 自动生成职责画像与自然语言总结（summary/architecture/health）。
   基于 TypeScript Compiler API 静态解析，不做类型检查；React/Vue 项目全量分析约 3.5 秒
   （含数百个超大脚本的纯油猴仓库可能需要数十秒）。
   触发：用户说"分析这个前端项目的结构 / 项目有哪些页面 / overlay 有哪些 / 这个组件在哪个文件 /
   谁渲染了这个组件 / 修改这个 service 会影响哪些代码 / 变更影响分析 / 页面跳转关系 / 导航图 /
   这个 store 被谁用了 / 项目有哪些自定义 Hook / 循环依赖 / 死代码 / 孤儿组件 / 刷新快照 /
-  生成代码地图 / 依赖关系图 / 分析油猴脚本 / 这个脚本用了哪些 GM API / 脚本往页面注入了什么 DOM /
+  生成代码地图 / 依赖关系图 / 项目架构是什么样 / 有哪些功能模块 / 某目录的职责 /
+  分析油猴脚本 / 这个脚本用了哪些 GM API / 脚本往页面注入了什么 DOM /
   脚本请求了哪些域名 / 油猴脚本安全风险审计 / 脚本函数调用图 / 这个 GM 调用有没有 @grant 声明"，
   或在需要理解前端代码结构但不想 grep 1700+ 文件时，
   或需要做前端变更影响分析（修改 X 会影响谁）但手动追踪引用太耗时时。
   英文触发词：analyze frontend structure, overlay routes, who renders this component,
   change impact analysis, navigation graph, store usage, dead code, circular imports,
-  build code map, refresh snapshot, userscript analysis, GM API audit, script injection points。
+  build code map, refresh snapshot, userscript analysis, GM API audit, script injection points,
+  project architecture, functional domains。
   不做：代码生成 / 重构建议 / 构建 / 运行测试 / ESLint（用专用工具）；不分析 Java 后端（asdm-aos 负责）。
 ---
 
@@ -39,6 +44,9 @@ description: |
 
 | 用户意图 | 典型表述 | 命令 |
 |---------|---------|------|
+| **项目架构总览** | "项目架构是什么样？" / "各层文件占比？" | `query Project` 看 summary/architecture/health |
+| **功能域地图** | "项目有哪些功能模块？" / "health 域包含什么？" | `query Domain --pretty` / `link belongsTo --src dom:health` |
+| **模块职责** | "src/store 目录的职责？" / "哪些模块是状态层？" | `query Module --where "path=src/store"` 看 summary / `query Module --where "archLayer=state"` |
 | **了解项目结构** | "项目有哪些模块？" / "components 下分多少领域？" | `query Module` + `query Project` |
 | **页面/路由清单** | "项目有哪些页面？" / "overlay 有哪些？" / "这个页面的 backTarget 是什么？" | `query Route` / `query Route --where "domain=health"` |
 | **页面跳转关系** | "从饮食健康页能跳到哪？" / "页面导航图" | `link navigatesTo --src route:dietary_health` |
@@ -138,30 +146,37 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 
 ## 本体模型
 
-### 对象类型（14 种）
+### 概念分类体系
+
+15 种对象类型按「概念范畴」（Container/CodeUnit/EntryPoint/Script/Environment/AuditFact）与「抽象层级」（L3 架构层：Project/Domain；L2 结构层：Module/SourceFile/Route/UserScript/Dependency；L1 单元层：Component/Hook/Store/Service/ScriptFunction；L0 事实层：GmApiUsage/InjectionPoint/NetworkEndpoint）双维组织。聚合节点（Project/Domain/Module）自动生成职责画像与自然语言总结（summary/architecture/health）。
+
+**语义架构层（archLayer）**：每个文件/模块推断一个语义层——entry/presentation/state/service/integration/shared/types/config/script/test/mixed，以内容信号为准（单元构成、路由归属、引用结构），目录名仅作弱信号回退；构成分散（主导层 < 60%）时如实标记 mixed。**功能域（Domain）**与架构层正交：架构层是纵向技术切片，功能域是横向业务切片（路由域段 + 业务命名目录聚合）。
+
+### 对象类型（15 种）
 
 | 类型 | 说明 | 典型属性 | ID 前缀 |
 |------|------|---------|---------|
-| Project | 代码仓库 | name, framework(react/vue/userscript/unknown), fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, analysisErrors | `proj:` |
-| Module | 目录模块（领域/分层） | name, path, layer, fileCount, parentId | `mod:` |
-| SourceFile | 源文件 | path, ext(ts/tsx/js/jsx/vue), layer, lineCount, isTest, isEntry, importIds, exportNames, opensOverlayIds | `file:` |
-| Component | 前端组件（React / Vue SFC） | name, filePath, kind(page/modal/card/...), isDefaultExport, propsCount, hooksUsed, stateCount, lineCount, rendersIds, routeIds, description | `comp:` |
-| Hook | 自定义 Hook / Composable | name, filePath, lineCount, description | `hook:` |
-| Store | Zustand / Pinia Store | name, stateKeys, actionKeys, hasPersist, storageKey, location(store/services/other) | `store:` |
-| Service | 服务/引擎模块 | name, pattern(singleton/class/functions), exportsCount, lineCount | `svc:` |
-| Route | 路由条目（Overlay / vue-router） | overlayId(path), routePath, backTarget, hidesNav, domain, routeType(overlay/react/vue), componentFileId, navigatesToIds, description | `route:` |
+| Project | 代码仓库（含架构画像） | name, framework(react/vue/userscript/unknown), fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, summary（框架定位+分层画像+功能域清单）, architecture（语义分层占比）, health（循环依赖/死代码/未声明依赖/高风险脚本/解析错误）, analysisErrors | `proj:` |
+| Domain | 功能域（横向业务切片） | name, sources(route/module), routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, capability（路由能力描述）, summary（职责画像） | `dom:` |
+| Module | 目录模块（含语义分层） | name, path, archLayer, archLayerLabel, layerComposition（子树层构成）, fileCount, subtreeFileCount, parentId, unitCounts, routeCount, summary（职责画像） | `mod:` |
+| SourceFile | 源文件 | path, ext(ts/tsx/js/jsx/vue), archLayer, layer, lineCount, isTest, isEntry, importIds, exportNames, opensOverlayIds | `file:` |
+| Component | 前端组件（React / Vue SFC） | name, filePath, kind(page/modal/card/...), isDefaultExport, propsCount, hooksUsed, stateCount, lineCount, rendersIds, routeIds, archLayer, domainIds, description | `comp:` |
+| Hook | 自定义 Hook / Composable | name, filePath, lineCount, archLayer, domainIds, description | `hook:` |
+| Store | Zustand / Pinia Store | name, stateKeys, actionKeys, hasPersist, storageKey, location(store/services/other), archLayer, domainIds | `store:` |
+| Service | 服务/引擎模块 | name, pattern(singleton/class/functions), exportsCount, lineCount, archLayer, domainIds | `svc:` |
+| Route | 路由条目（Overlay / vue-router） | overlayId(path), routePath, backTarget, hidesNav, domain, domainIds, routeType(overlay/react/vue), componentFileId, navigatesToIds, description | `route:` |
 | Dependency | npm 依赖 | name, version, scope, source(npm/workspace/undeclared), importCount | `dep:` |
-| UserScript | 油猴脚本（元数据 + 行为画像） | name, version, matches, grants, grantNone, connects, requires, runAt, hostFramework(vue/react/mixed/unknown), isIife, usesStrict, riskLevel, riskCount, risks, hijackCount, unsafeWindowReads/Writes, storageUsage, functionCount, injectionCount, networkEndpointCount | `us:`（= 文件相对路径） |
+| UserScript | 油猴脚本（元数据 + 行为画像） | name, version, matches, grants, grantNone, connects, requires, runAt, hostFramework(vue/react/mixed/unknown), isIife, usesStrict, riskLevel, riskCount, risks, hijackCount, unsafeWindowReads/Writes, storageUsage, functionCount, injectionCount, networkEndpointCount, archLayer=script, domainIds | `us:`（= 文件相对路径） |
 | GmApiUsage | GM API 使用（与 @grant 比对） | name（GM_* 与 GM.* GM4 风格统一归一）, category(storage/network/style/...), callCount, lines, declared | `gm:` |
 | InjectionPoint | DOM 注入点 | kind(mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom), target, callCount, lines, interpolated | `inject:` |
 | NetworkEndpoint | 网络端点（与 @connect 比对） | kind(gm-xhr/fetch/xhr/websocket/beacon), domain（动态拼接 URL 记为 `(dynamic)`）, urls, methods, callCount, allowedByConnect | `net:` |
-| ScriptFunction | 脚本函数/类/对象方法 | name（对象/类方法含 `.`，如 `storage.get`）, kind(function/arrow/class/object/method), owner, isTopLevel, line, lineCount, gmApiCount, domOpCount, networkCallCount, callCount, calledByCount, callIds, calledByIds | `fn:` |
+| ScriptFunction | 脚本函数/类/对象方法 | name（对象/类方法含 `.`，如 `storage.get`）, kind(function/arrow/class/object/method), owner, isTopLevel, line, lineCount, gmApiCount, domOpCount, networkCallCount, callCount, calledByCount, callIds, calledByIds, archLayer=script | `fn:` |
 
-### 链接（14 种）
+### 链接（15 种）
 
 | 链接 | 语义 | 方向 |
 |------|------|------|
-| contains | 层次包含 | Project→Module→SourceFile→Component/Hook/Store/Service/UserScript；us:→GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction |
+| contains | 层次包含 | Project→Domain/Module→SourceFile→Component/Hook/Store/Service/UserScript；us:→GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction |
 | imports | 模块导入 | SourceFile→SourceFile / Dependency |
 | importedBy | 被导入（反向） | 谁导入了这个文件 |
 | renders | JSX 渲染 | Component→Component |
@@ -175,6 +190,7 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 | requestsTo | 网络请求 | us:→NetworkEndpoint 或 net:→所属脚本（反查） |
 | calls | 函数调用图 | ScriptFunction→ScriptFunction（该函数调用了谁） |
 | calledBy | 被调用（反向） | ScriptFunction→调用它的函数（修改影响面） |
+| belongsTo | 功能域归属（双向） | dom:→全部成员；或 mod:/comp:/store:/hook:/route:/us:→所属功能域 |
 
 ### 动作（3 种）
 
@@ -190,6 +206,8 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 
 ```bash
 # 按类型查询（默认前 50 条，--all 全量）
+query Project                                        # 项目画像（summary/architecture/health）
+query Domain --pretty                                # 功能域地图（横向业务切片）
 query Route --all
 query Component --where "kind=page" --pretty
 query SourceFile --where "layer=services,isTest=false"
@@ -199,6 +217,8 @@ query SourceFile --where "path~steam,layer=components" # 模糊可与精确条�
 query Dependency --where "source=undeclared"      # 未声明依赖（治理点）
 query Store --where "hasPersist=true"             # 持久化 store（核对 storageKey 命名）
 query Module --where "layer=components" --all | <统计>
+query Module --where "archLayer=state" --pretty   # 按语义架构层过滤模块
+query Component --where "domainIds=dom:health"    # 按功能域过滤成员
 
 # ---- 油猴脚本 ----
 query UserScript --all                           # 脚本清单（元数据 + 行为画像）
@@ -247,6 +267,10 @@ link requestsTo --src "us:scripts/steam-inventory.user.js"  # 脚本请求了哪
 link contains --src "us:scripts/steam-inventory.user.js"    # 脚本全部子对象（函数/GM/注入/端点）
 link calls --src "fn:scripts/steam-inventory.user.js#renderOverview"  # 函数调用了谁
 link calledBy --src "fn:scripts/steam-inventory.user.js#fetchPrice"    # 谁调用了这个函数（影响面）
+
+# ---- 功能域（dom:）----
+link belongsTo --src "dom:health"                 # 功能域 → 全部成员（组件/Store/Hook/路由/脚本）
+link belongsTo --src "comp:HealthStatsPage"       # 反查组件所属功能域
 ```
 
 ### action — 受控动作
