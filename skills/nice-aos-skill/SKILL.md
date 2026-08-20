@@ -1,32 +1,37 @@
 ---
 name: nice-aos
 description: |
-  Nice AOS（Nice Anterior Ontology Service）是通用的 React/Vue 前端项目的代码本体分析组件。
-  它将 React/TypeScript 与 Vue 3（SFC/vue-router/Pinia）前端源码（src）预先分析为结构化本体快照，
-  把"代码文件"转化为 AI agent 可直接查询的"关系图谱"——包含模块、组件、Hook/Composable、
-  Zustand/Pinia Store、Service、路由（Overlay / vue-router）、npm 依赖，以及 import 依赖、
-  JSX/template 渲染、页面跳转（navigatesTo）、Store/Hook 使用等 9 种关系。
-  基于 TypeScript Compiler API 静态解析，不做类型检查，全量分析约 3.5 秒。
+  Nice AOS（Nice Anterior Ontology Service）是通用的 React/Vue/油猴脚本前端项目的代码本体分析组件。
+  它将 React/TypeScript、Vue 3（SFC/vue-router/Pinia）源码与油猴脚本（Tampermonkey UserScript）
+  预先分析为结构化本体快照，把"代码文件"转化为 AI agent 可直接查询的"关系图谱"——包含模块、组件、
+  Hook/Composable、Zustand/Pinia Store、Service、路由（Overlay / vue-router）、npm 依赖、
+  油猴脚本（UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction），以及 import 依赖、
+  JSX/template 渲染、页面跳转（navigatesTo）、Store/Hook 使用、GM API 使用/DOM 注入/网络端点/脚本函数调用图等 14 种关系。
+  基于 TypeScript Compiler API 静态解析，不做类型检查；React/Vue 项目全量分析约 3.5 秒
+  （含数百个超大脚本的纯油猴仓库可能需要数十秒）。
   触发：用户说"分析这个前端项目的结构 / 项目有哪些页面 / overlay 有哪些 / 这个组件在哪个文件 /
   谁渲染了这个组件 / 修改这个 service 会影响哪些代码 / 变更影响分析 / 页面跳转关系 / 导航图 /
   这个 store 被谁用了 / 项目有哪些自定义 Hook / 循环依赖 / 死代码 / 孤儿组件 / 刷新快照 /
-  生成代码地图 / 依赖关系图"，或在需要理解前端代码结构但不想 grep 1700+ 文件时，
+  生成代码地图 / 依赖关系图 / 分析油猴脚本 / 这个脚本用了哪些 GM API / 脚本往页面注入了什么 DOM /
+  脚本请求了哪些域名 / 油猴脚本安全风险审计 / 脚本函数调用图 / 这个 GM 调用有没有 @grant 声明"，
+  或在需要理解前端代码结构但不想 grep 1700+ 文件时，
   或需要做前端变更影响分析（修改 X 会影响谁）但手动追踪引用太耗时时。
   英文触发词：analyze frontend structure, overlay routes, who renders this component,
   change impact analysis, navigation graph, store usage, dead code, circular imports,
-  build code map, refresh snapshot。
+  build code map, refresh snapshot, userscript analysis, GM API audit, script injection points。
   不做：代码生成 / 重构建议 / 构建 / 运行测试 / ESLint（用专用工具）；不分析 Java 后端（asdm-aos 负责）。
 ---
 
 # Nice AOS Skill — 前端代码本体分析
 
-> Nice AOS 参考 asdm-aos（Java 代码本体分析）的设计，针对 React（React 19 + TS + Vite + Zustand + 自研 overlay 路由）
-> 与 Vue 3（SFC + vue-router + Pinia + unplugin-vue-router）前端项目重新建模。
+> Nice AOS 参考 asdm-aos（Java 代码本体分析）的设计，针对 React（React 19 + TS + Vite + Zustand + 自研 overlay 路由）、
+> Vue 3（SFC + vue-router + Pinia + unplugin-vue-router）与油猴脚本（Tampermonkey UserScript）三类前端源码重新建模，
+> 三个解析器（tsAnalyzer / vueAnalyzer / userScriptAnalyzer）平级共存、逻辑完全独立。
 > **核心价值**：把"逐文件 grep + LLM 推理"降级为"毫秒级本体查询"，在 1700+ 源文件的项目中保障 agent 的响应速度和结构理解准确度。
 
 ## 概述
 
-本 Skill 让 AI agent 通过 `nice-aos` CLI 查询前端代码仓库的结构化本体（模块/组件/Hook/Store/Service/路由/依赖 + 关系图谱），无需全量扫描源码。
+本 Skill 让 AI agent 通过 `nice-aos` CLI 查询前端代码仓库的结构化本体（模块/组件/Hook/Store/Service/路由/依赖/油猴脚本 + 关系图谱），无需全量扫描源码。油猴脚本走独立的 `userScriptAnalyzer` 解析链，产出 GM API 使用、DOM 注入点、网络端点与脚本函数调用图，供安全审计与行为理解。
 
 **自闭环设计**：CLI 位于仓库的 `nice-aos/` 子项目内（无独立安装步骤），快照存放在本 Skill 目录的 `data/` 子目录中，不污染代码库。
 
@@ -43,9 +48,15 @@ description: |
 | **变更影响分析** | "修改 exerciseService 会影响哪些文件？" | `link importedBy --src file:src/services/exerciseService.ts` |
 | **Store 分析** | "项目有哪些 store？" / "useThemeStore 被谁用了？" / "storage key 是什么？" | `query Store` / `link usesStore --src store:useThemeStore` |
 | **Hook 分析** | "有哪些自定义 Hook？" / "useEnergySystem 被谁用了？" | `query Hook` / `link usesHook --src hook:useEnergySystem` |
+| **油猴脚本清单** | "项目有哪些油猴脚本？" / "哪个脚本风险最高？" / "哪个脚本跑在 Vue 页面？" | `query UserScript` / `query UserScript --where "riskLevel=high"` / `--where "hostFramework=vue"` |
+| **GM API 审计** | "这个脚本用了哪些 GM API？" / "有没有越权调用（未 @grant 声明）？" | `link usesGmApi --src us:<path>` / `query GmApiUsage --where "declared=false"` |
+| **DOM 注入分析** | "脚本往页面注入了什么？" / "哪里有动态插值 XSS 面？" | `link injectsInto --src us:<path>` / `query InjectionPoint --where "interpolated=true"` |
+| **网络与劫持分析** | "脚本请求了哪些域名？" / "@connect 白名单齐吗？" / "有没有请求劫持？" | `link requestsTo --src us:<path>` / `query NetworkEndpoint --where "allowedByConnect=false"` / 看脚本 `risks` |
+| **脚本函数调用图** | "renderOverview 调用了谁？" / "谁调用了 fetchGameDetail？" | `link calls --src "fn:<path>#<fnName>"` / `link calledBy --src "fn:<path>#<fnName>"` |
+| **油猴安全审计** | "这个脚本有什么风险？" / "有没有 eval / unsafeWindow / cookie 写？" | `query UserScript --where "name=<脚本名>"` 看 risks/riskLevel，或导出 Markdown 安全风险清单节 |
 | **页面 ↔ 组件映射** | "steam_dashboard 路由对应哪个组件文件？" | `query Route --where "overlayId=steam_dashboard"` 或 `link registers --src route:xxx` |
-| **循环依赖** | "有没有循环依赖？" | 看 `_meta.cycles`（`export --format json` 后 jq）或导出 Markdown 第 8 节 |
-| **死代码候选** | "哪些文件没人用？" | 导出 Markdown 第 9 节 `_meta.orphanCandidates` |
+| **循环依赖** | "有没有循环依赖？" | 看 `_meta.cycles`（`export --format json` 后 jq）或导出 Markdown 的循环依赖节 |
+| **死代码候选** | "哪些文件没人用？" | 导出 Markdown 的死代码候选节 `_meta.orphanCandidates` |
 | **外部依赖** | "哪些 npm 包用得最多？" / "有没有未声明的导入？" | `query Dependency` |
 | **构建/刷新快照** | "刷新快照" / "代码变了重新分析" | `action refreshRepo` |
 | **代码 Review 辅助** | "标记这个组件已审查" / "给这个类加备注" | `action markReviewed` / `action addNote` |
@@ -104,48 +115,72 @@ node <REPO_ROOT>/nice-aos/src/cli/index.js \
   "ok": true,
   "message": "已成功导入 nice-today-2.0（1761 个源文件，3500ms）",
   "stats": { "Module": 256, "SourceFile": 1761, "Component": 851, "Hook": 71,
-             "Store": 17, "Service": 407, "Route": 296, "Dependency": 86 },
+             "Store": 17, "Service": 407, "Route": 296, "Dependency": 86,
+             "UserScript": 0, "GmApiUsage": 0, "InjectionPoint": 0,
+             "NetworkEndpoint": 0, "ScriptFunction": 0 },
   "cycles": 8, "orphanCandidates": 352, "analysisErrors": 0
 }
 ```
 
+stats 固定包含全部 13 类对象计数；React/Vue 项目中油猴 5 类（UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction）为 0，纯油猴仓库则 React/Vue 类为 0（实测 226 脚本仓库：UserScript 226 / InjectionPoint 5409 / ScriptFunction 47327）。
+
 构建完成后 `data/snapshot.json` 即为所有查询的数据源。**代码有变动后需重新执行 refreshRepo 刷新**。
+
+**纯油猴脚本仓库**（如 steam-tampermonkey-scripts）无需 package.json 即可分析：扫描器自动识别 `.user.js` 与头部含 `==UserScript==` 元数据块的 `.js` 文件（`framework=userscript`），refreshRepo 只校验目录存在性：
+
+```bash
+node <REPO_ROOT>/nice-aos/src/cli/index.js \
+  --snapshot-dir "<REPO_ROOT>/.codebuddy/skills/nice-aos-skill/data" \
+  action refreshRepo --params '{"repoPath":"/path/to/steam-tampermonkey-scripts"}'
+```
+
+React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为准，脚本独立产出 UserScript 对象体系）。
 
 ## 本体模型
 
-### 对象类型（9 种）
+### 对象类型（14 种）
 
 | 类型 | 说明 | 典型属性 | ID 前缀 |
 |------|------|---------|---------|
-| Project | 代码仓库 | name, framework(react/vue/unknown), fileCount, tsxFileCount, vueFileCount, commitHash, branch, analysisErrors | `proj:` |
+| Project | 代码仓库 | name, framework(react/vue/userscript/unknown), fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, analysisErrors | `proj:` |
 | Module | 目录模块（领域/分层） | name, path, layer, fileCount, parentId | `mod:` |
 | SourceFile | 源文件 | path, ext(ts/tsx/js/jsx/vue), layer, lineCount, isTest, isEntry, importIds, exportNames, opensOverlayIds | `file:` |
 | Component | 前端组件（React / Vue SFC） | name, filePath, kind(page/modal/card/...), isDefaultExport, propsCount, hooksUsed, stateCount, lineCount, rendersIds, routeIds, description | `comp:` |
 | Hook | 自定义 Hook / Composable | name, filePath, lineCount, description | `hook:` |
 | Store | Zustand / Pinia Store | name, stateKeys, actionKeys, hasPersist, storageKey, location(store/services/other) | `store:` |
 | Service | 服务/引擎模块 | name, pattern(singleton/class/functions), exportsCount, lineCount | `svc:` |
-| Route | 路由条目（Overlay / vue-router） | overlayId(path), routePath, backTarget, hidesNav, domain, routeType(overlay/vue), componentFileId, navigatesToIds, description | `route:` |
+| Route | 路由条目（Overlay / vue-router） | overlayId(path), routePath, backTarget, hidesNav, domain, routeType(overlay/react/vue), componentFileId, navigatesToIds, description | `route:` |
 | Dependency | npm 依赖 | name, version, scope, source(npm/workspace/undeclared), importCount | `dep:` |
+| UserScript | 油猴脚本（元数据 + 行为画像） | name, version, matches, grants, grantNone, connects, requires, runAt, hostFramework(vue/react/mixed/unknown), isIife, usesStrict, riskLevel, riskCount, risks, hijackCount, unsafeWindowReads/Writes, storageUsage, functionCount, injectionCount, networkEndpointCount | `us:`（= 文件相对路径） |
+| GmApiUsage | GM API 使用（与 @grant 比对） | name（GM_* 与 GM.* GM4 风格统一归一）, category(storage/network/style/...), callCount, lines, declared | `gm:` |
+| InjectionPoint | DOM 注入点 | kind(mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom), target, callCount, lines, interpolated | `inject:` |
+| NetworkEndpoint | 网络端点（与 @connect 比对） | kind(gm-xhr/fetch/xhr/websocket/beacon), domain（动态拼接 URL 记为 `(dynamic)`）, urls, methods, callCount, allowedByConnect | `net:` |
+| ScriptFunction | 脚本函数/类/对象方法 | name（对象/类方法含 `.`，如 `storage.get`）, kind(function/arrow/class/object/method), owner, isTopLevel, line, lineCount, gmApiCount, domOpCount, networkCallCount, callCount, calledByCount, callIds, calledByIds | `fn:` |
 
-### 链接（9 种）
+### 链接（14 种）
 
 | 链接 | 语义 | 方向 |
 |------|------|------|
-| contains | 层次包含 | Project→Module→SourceFile→Component/Hook/Store/Service |
+| contains | 层次包含 | Project→Module→SourceFile→Component/Hook/Store/Service/UserScript；us:→GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction |
 | imports | 模块导入 | SourceFile→SourceFile / Dependency |
 | importedBy | 被导入（反向） | 谁导入了这个文件 |
 | renders | JSX 渲染 | Component→Component |
 | renderedBy | 被渲染（反向） | 谁渲染了这个组件 |
-| navigatesTo | 页面跳转 | Route→Route（来自 setActiveOverlay('x') 调用） |
+| navigatesTo | 页面跳转 | Route→Route（overlay 的 `setActiveOverlay('x')`、React 的 `<Navigate to="/x"/>`、Vue 的 `router.push('/x')` 字面量调用） |
 | registers | 路由注册 | Route↔Component（双向：src 为 route: 给组件，src 为 comp:/file: 给路由） |
 | usesStore | Store 使用 | file:/comp:→Store 或 store:→反向使用方 |
 | usesHook | Hook 使用 | file:/comp:→Hook 或 hook:→反向使用方 |
+| usesGmApi | GM API 使用 | us:→GmApiUsage 或 gm:→所属脚本（反查） |
+| injectsInto | DOM 注入 | us:→InjectionPoint 或 inject:→所属脚本（反查） |
+| requestsTo | 网络请求 | us:→NetworkEndpoint 或 net:→所属脚本（反查） |
+| calls | 函数调用图 | ScriptFunction→ScriptFunction（该函数调用了谁） |
+| calledBy | 被调用（反向） | ScriptFunction→调用它的函数（修改影响面） |
 
 ### 动作（3 种）
 
 | 动作 | 用途 | 守卫 |
 |------|------|------|
-| refreshRepo | 重新分析仓库（全量，约 3.5s） | repoPath 必须含 package.json |
+| refreshRepo | 重新分析仓库（全量；React/Vue 项目约 3.5s，大型油猴仓库可达数十秒） | repoPath 必须为存在的目录（纯油猴脚本仓库无需 package.json） |
 | markReviewed | 标记对象已 review（持久化到快照） | objectId 必须存在 |
 | addNote | 给对象加注释（持久化） | objectId 存在且 note 非空 |
 
@@ -164,6 +199,17 @@ query SourceFile --where "path~steam,layer=components" # 模糊可与精确条�
 query Dependency --where "source=undeclared"      # 未声明依赖（治理点）
 query Store --where "hasPersist=true"             # 持久化 store（核对 storageKey 命名）
 query Module --where "layer=components" --all | <统计>
+
+# ---- 油猴脚本 ----
+query UserScript --all                           # 脚本清单（元数据 + 行为画像）
+query UserScript --where "hostFramework=vue"     # 跑在 Vue 页面上的脚本
+query UserScript --where "riskLevel=high"        # 高风险脚本（请求劫持/eval/cookie 写）
+query GmApiUsage --where "declared=false"        # 未在 @grant 声明的 GM 调用（越权面）
+query InjectionPoint --where "interpolated=true" # 含动态插值的 HTML 注入（XSS 面）
+query InjectionPoint --where "kind=mount"        # 页面挂载点（appendChild 等）
+query NetworkEndpoint --where "allowedByConnect=false"  # 未在 @connect 声明的 GM 请求域名
+query ScriptFunction --where "kind=class" --pretty       # 脚本内类（逻辑分布）
+query ScriptFunction --where "name~fetch"        # 函数名模糊匹配
 ```
 
 `--where` 语法：逗号分隔多条件 AND；`k=v`（或 `k:v`）精确相等，`k~v` 模糊匹配（子串包含，忽略大小写）；值为数组时精确做成员包含、模糊做任一成员包含（如 `hooksUsed=useEffect`）。
@@ -192,6 +238,15 @@ link usesHook --src "hook:useUserProfile"
 # 层次下钻
 link contains --src "mod:src/components/health"
 link contains --src "file:src/components/health/HealthStatsPage.tsx"
+
+# ---- 油猴脚本（us:/gm:/inject:/net:/fn:）----
+link usesGmApi --src "us:scripts/steam-inventory.user.js"   # 脚本用了哪些 GM API
+link usesGmApi --src "gm:scripts/steam-inventory.user.js#GM_xmlhttpRequest"  # 反查：该 GM API 使用所属的脚本
+link injectsInto --src "us:scripts/steam-inventory.user.js" # 脚本往页面注入了什么
+link requestsTo --src "us:scripts/steam-inventory.user.js"  # 脚本请求了哪些域名
+link contains --src "us:scripts/steam-inventory.user.js"    # 脚本全部子对象（函数/GM/注入/端点）
+link calls --src "fn:scripts/steam-inventory.user.js#renderOverview"  # 函数调用了谁
+link calledBy --src "fn:scripts/steam-inventory.user.js#fetchPrice"    # 谁调用了这个函数（影响面）
 ```
 
 ### action — 受控动作
@@ -205,11 +260,13 @@ action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页�
 ### export — 导出
 
 ```bash
-# Markdown 全景报告（含路由地图、导航图、循环依赖、死代码候选、Store 一览）
+# Markdown 全景报告（含路由地图、导航图、循环依赖、死代码候选、Store 一览；
+# 存在油猴脚本时追加 6 节：油猴脚本一览、GM API 使用、DOM 注入点、网络请求与请求劫持、脚本函数 Top 30、安全风险清单）
 export --format markdown --output "$SNAPSHOT_DIR/report.md"
 
 # JSON 供 jq 聚合
 export --format json | jq '._meta.orphanCandidates | length'
+export --format json | jq '.UserScript[] | select(.riskLevel=="high") | .filePath'
 ```
 
 ## 使用建议
@@ -232,10 +289,22 @@ link importedBy --src "file:src/services/ai.ts"          # 直接导入方
 link renderedBy --src "comp:XXXPage"                     # UI 层影响
 ```
 
+### 油猴脚本审计（独立分析链）
+
+油猴脚本与 React/Vue 组件体系并存、逻辑独立（脚本不产出 Component/Store，而是 UserScript + 4 类子对象）：
+
+1. **清单**：`query UserScript --all` 看脚本名/版本/@match/宿主框架/风险等级
+2. **越权审计**：`query GmApiUsage --where "declared=false"`（调用了未 @grant 声明的 API）与 `query NetworkEndpoint --where "allowedByConnect=false"`（GM 请求域名未在 @connect 声明，运行时会弹授权确认）
+3. **注入与 XSS 面**：`query InjectionPoint --where "interpolated=true"` 定位含动态插值的 HTML 注入
+4. **风险定位**：`query UserScript --where "riskLevel=high"`，逐个看 `risks` 数组（按 severity 排序）。风险类型全集：`hijack-*`（fetch/XHR/EventTarget/WebSocket/history 重写，high）、`eval-usage`（eval/new Function，high）、`cookie-write`（high）/`cookie-read`（medium）、`unsafe-window-write`（medium）/`unsafe-window-read`（low）、`html-injection`（动态插值 HTML，XSS 面，medium）、`undeclared-gm-api`（GM API 未 @grant 声明，medium）、`gm-api-without-grant`（@grant none 下调用 GM API，low）、`unlisted-connect-domain`（GM 请求域名未 @connect 声明，medium）、`window-define`（Object.defineProperty(window)，low）
+5. **行为理解**：`link contains --src us:<path>` 拿全部子对象，`link calls --src fn:<path>#<fn>` 下钻函数调用图
+6. **回写结论**：`action markReviewed --params '{"objectId":"us:<path>"}'`（GmApiUsage/InjectionPoint 等子对象同样支持）
+
 ### 大文件策略
 
 - `query SourceFile --all` 会输出约 1760 条，避免直接全量；先 `--where "layer=xxx"` 缩小
-- 导航全图较大时，用单路由 `link navigatesTo` 或导出 Markdown 第 5 节
+- 油猴仓库的 `query ScriptFunction --all` 可能输出数万条（226 脚本仓库实测 47327 个函数对象），必须先 `--where "name~xxx"` / `--where "kind=class"` / `--limit <n>` 缩小
+- 导航全图较大时，用单路由 `link navigatesTo` 或导出 Markdown 对应章节
 
 ### 与项目现有检查工具的分工
 
@@ -248,9 +317,12 @@ link renderedBy --src "comp:XXXPage"                     # UI 层影响
 | 场景 | 行为 |
 |------|------|
 | 首次执行 nice-aos 命令 | 检查 `nice-aos/node_modules` 存在，缺失则 `cd nice-aos && npm install` |
-| 查询返回"未找到本体快照" | 提示后直接执行 `action refreshRepo`（约 4 秒，无需用户确认） |
+| 查询返回"未找到本体快照" | 提示后直接执行 `action refreshRepo`（React/Vue 项目约 4 秒，无需用户确认；大油猴仓库耗时见下条） |
 | 用户报"查询结果不对/过期" | 代码可能已变更 → 重新 refreshRepo |
 | 回答结构类问题 | 优先用 nice-aos 查询，而不是 grep 1700+ 文件 |
+| 回答油猴脚本问题（GM API/注入/请求/风险） | 优先 query UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint + link 关系，而不是通读脚本源码 |
+| 分析纯油猴脚本仓库 | 直接 refreshRepo（无需 package.json）；快照不存在时照常自动构建 |
+| 大型油猴仓库 refreshRepo | 数百个超大脚本（单脚本 2 万+ 行）全量分析可达数十秒，属正常耗时，耐心等待而非中断重试 |
 | markReviewed/addNote | 执行 review 类任务后主动回写，下次会话可恢复上下文 |
 
 ## 输出格式
@@ -264,11 +336,16 @@ link renderedBy --src "comp:XXXPage"                     # UI 层影响
 
 - 基于 TypeScript Compiler API 的**语法级**解析（不跑类型检查），个别动态引用（变量拼接的 import、字符串组件名）无法解析
 - `renders` 归属到文件的主组件（default export 优先）；同文件多组件的内部渲染关系不细分
-- 跳转边来自 `setActiveOverlay/openOverlay('id')` 字面量调用；`onOpenOverlay: app.setActiveOverlay` 这类函数透传无法静态追踪
-- App.tsx 内部跳转（Tab 级）不计入 navigatesTo（仅 overlay→overlay）
+- 跳转边均为字面量调用：overlay 体系来自 `setActiveOverlay/openOverlay('id')`，React 来自 `<Navigate to="/x"/>`（相对 `to` 基于所属路由归一为绝对路径），Vue 来自 `router.push/replace('/path')`（含解构 `const { push } = useRouter()`）；`onOpenOverlay: app.setActiveOverlay` 这类函数透传与动态变量导航无法静态追踪
+- App.tsx 内部跳转（Tab 级）不计入 navigatesTo（仅 Route→Route）
 - Vue 适配范围：Vue 3 SFC（`<script setup>`/`<template>`/`<route lang="yaml">`）、vue-router RouteRecordRaw 显式路由、
   views/pages 目录文件路由推导、Pinia `defineStore`（setup/options 两种写法）、composables（导出 `useXxx`）；
   模板渲染关系支持 PascalCase/kebab-case 标签与 `:is` 动态组件（不含动态变量拼装）；
   导航边来自 `router.push('/path')`/`replace('/path')` 字面量调用（解构 `const { push } = useRouter()` 同样支持）
+- 油猴脚本识别为启发式：`.user.js` 扩展名，或 `.js` 文件头部 4KB 内含 `==UserScript==` 元数据块（元数据块须在文件头部 8KB 内）；
+  无元数据块的普通 .js 不会误判
+- 油猴解析限制：动态拼接的 URL/域名记为 `(dynamic)` 且不做 @connect 比对（`allowedByConnect=null`；`--where "allowedByConnect=false"` 只命中"静态域名且未声明"项）；querySelector 变量锚点同名时取全文最后声明；
+  `unsafeWindow.xxx = window.xxx` 全局暴露按赋值左侧文本匹配；宿主框架仅按 `__vue__`/`__reactContainer$` 等运行时标记推断（vue/react 标记并存时为 mixed，无标记为 unknown）；
+  函数调用图只覆盖静态可解析的名字调用（`obj['method']()` 可记，动态变量调用不记）；对象方法归属到声明它的顶层对象；同一文件内同名函数的 ID 追加 `@2`/`@3` 去重后缀（如 `fn:path#init@2`）
 - 每次查询全量加载 JSON（1760 文件规模毫秒级；无并发写保护）
 - `--where` 为全表扫描：`=`/`:` 精确相等、`~` 模糊包含（不支持数值比较，数值过滤请配合 jq）
