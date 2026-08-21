@@ -11,7 +11,9 @@ description: |
   架构分层（archLayer）按内容信号推断而非目录名直译，功能域（Domain）聚合横向业务切片，
   Project/Domain/Module 自动生成职责画像与自然语言总结（summary/architecture/health）。
   本体查看器（viewer）：export --format html 生成自包含蓝图 HTML（领域蓝图/业务数据图/
-  业务逻辑流向/脚本蓝图，零依赖可离线打开），--format viewmodel 输出聚合视图模型 JSON 供 agent 直接消费。
+  业务逻辑流向/脚本蓝图，零依赖可离线打开，宽屏分档适配），--format viewmodel 输出聚合视图模型 JSON 供 agent 直接消费。
+  纯脚本仓库意图适配：无 React/Vue 结构时三视图按函数意图分析重建（意图功能域/存储枢纽/
+  意图流转矩阵），分析不出业务结构（纯功能增强脚本）时对应 Tab 自动隐藏。
   脚本蓝图视图：油猴脚本函数调用关系图（SVG）+ DOM 注入锚点 + 网络端点一图呈现，
   一图直读"入口函数 → 调用链 → 注入锚点/网络域"的逻辑注入链。
   基于 TypeScript Compiler API 静态解析，不做类型检查；React/Vue 项目全量分析约 3.5 秒

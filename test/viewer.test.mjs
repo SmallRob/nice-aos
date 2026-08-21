@@ -305,3 +305,148 @@ test('脚本蓝图：函数调用图 + 注入锚点 + 网络端点一图聚合',
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- fixture：多意图油猴脚本（事件 → 逻辑 → 数据/状态/渲染 完整业务流转）----
+const INTENT_FIXTURE = [
+  '// ==UserScript==',
+  '// @name         Price Watcher',
+  '// @version      1.0.0',
+  '// @match        https://shop.example.com/*',
+  '// @grant        GM_xmlhttpRequest',
+  '// @connect      api.shop.example.com',
+  '// ==/UserScript==',
+  '(function () {',
+  "  'use strict';",
+  '  function fmt(v) { return v.toFixed(2); }',
+  '  function render(row) {',
+  "    const host = document.querySelector('#list');",
+  "    if (host) host.innerHTML = '<div>' + fmt(row.price) + '</div>';",
+  '  }',
+  '  function fetchPrice(id, cb) {',
+  '    GM_xmlhttpRequest({',
+  '      method: "GET",',
+  '      url: "https://api.shop.example.com/p/" + id,',
+  '      onload: (r) => cb(JSON.parse(r.responseText)),',
+  '    });',
+  '  }',
+  '  function save(v) { localStorage.setItem("lastPrice", v); }',
+  '  function onScan() {',
+  '    const id = 1;',
+  '    fetchPrice(id, (row) => { save(row.price); render(row); });',
+  '  }',
+  '  function init() {',
+  "    const btn = document.querySelector('#scan');",
+  "    if (btn) btn.addEventListener('click', onScan);",
+  '    setInterval(onScan, 60000);',
+  '    onScan();',
+  '  }',
+  '  init();',
+  '})();',
+].join('\n');
+
+// ---- fixture：纯功能增强脚本（单一意图、无调用流转、无持久化）----
+const ENHANCE_FIXTURE = [
+  '// ==UserScript==',
+  '// @name         Dark Mode',
+  '// @version      1.0.0',
+  '// @match        https://example.com/*',
+  '// @grant        none',
+  '// ==/UserScript==',
+  '(function () {',
+  "  'use strict';",
+  '  function applyDark() {',
+  "    const style = document.createElement('style');",
+  "    style.textContent = 'body { background: #111; }';",
+  '    document.head.appendChild(style);',
+  '  }',
+  '  applyDark();',
+  '})();',
+].join('\n');
+
+test('油猴意图适配：多意图脚本的领域蓝图/业务数据图/业务逻辑流向按函数意图重建', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-viewer-intent-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'price.user.js'), INTENT_FIXTURE);
+    const dataMap = await buildOntologyData(dir);
+    const model = buildViewerModel(dataMap);
+
+    // 意图功能域：五种意图（event/logic/data/state/render）分组
+    assert.ok(model.scriptDomains, '应有脚本意图功能域');
+    const roles = model.scriptDomains.domains.map((d) => d.role);
+    for (const r of ['event', 'logic', 'data', 'state', 'render']) {
+      assert.ok(roles.includes(r), `应含 ${r} 意图分组`);
+    }
+    const stateDom = model.scriptDomains.domains.find((d) => d.role === 'state');
+    assert.ok(stateDom.functions.some((f) => f.name === 'save'), 'state 域应含 save 函数');
+    assert.ok(stateDom.description, '意图分组应有意图描述');
+
+    // 存储枢纽：localStorage 信号 + 状态存取函数
+    assert.ok(model.scriptDataMap, '应有脚本存储枢纽');
+    const hub = model.scriptDataMap.hubs[0];
+    assert.equal(hub.name, 'Price Watcher');
+    assert.ok(hub.storageUsage.localStorage >= 1, '应检测到 localStorage 使用');
+    assert.ok(hub.stateFunctions.some((f) => f.name === 'save'), 'save 应为状态存取函数');
+
+    // 意图流转：event→logic、logic→data/state/render、render→logic
+    assert.ok(model.scriptFlow, '应有意图流转矩阵');
+    assert.ok(model.scriptFlow.crossRoleEdges >= 4);
+    const flows = model.scriptFlow.flows.map((e) => e.from + '>' + e.to);
+    assert.ok(flows.includes('event>logic'), 'init(事件) → onScan(逻辑)');
+    assert.ok(flows.includes('logic>data'), 'onScan(逻辑) → fetchPrice(数据)');
+    assert.ok(flows.includes('logic>state'), 'onScan(逻辑) → save(状态)');
+    assert.ok(flows.includes('logic>render'), 'onScan(逻辑) → render(渲染)');
+    assert.ok(model.scriptFlow.hubs.some((h) => h.name === 'onScan'), 'onScan 应为高扇入函数');
+
+    // HTML 渲染：三视图适配渲染器内嵌 + 数据无损嵌入
+    const html = renderViewerHtml(model);
+    assert.ok(html.includes('renderScriptDomainList'), '应内置意图功能域渲染器');
+    assert.ok(html.includes('renderScriptDataMap'), '应内置存储枢纽渲染器');
+    assert.ok(html.includes('renderScriptFlow'), '应内置意图流转渲染器');
+    const m = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/);
+    const parsed = JSON.parse(m[1]);
+    assert.ok(parsed.scriptDomains && parsed.scriptDataMap && parsed.scriptFlow, '嵌入数据应含三视图适配数据');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('油猴意图适配：纯功能增强脚本（单一意图）三视图全部隐藏', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-viewer-enhance-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'dark.user.js'), ENHANCE_FIXTURE);
+    const dataMap = await buildOntologyData(dir);
+    const model = buildViewerModel(dataMap);
+
+    // 单一意图（仅 ui）+ 无调用流转 + 无持久化 → 三视图均不生成
+    assert.equal(model.scriptDomains, null, '单一意图无业务结构，不生成意图功能域');
+    assert.equal(model.scriptDataMap, null, '无持久化信号，不生成存储枢纽');
+    assert.equal(model.scriptFlow, null, '无调用流转，不生成意图流转');
+
+    // Tab 显隐逻辑内置于渲染脚本（蓝图/数据图/逻辑流向三个 Tab 隐藏）
+    const html = renderViewerHtml(model);
+    assert.ok(html.includes("hideTab('blueprint')"), '应隐藏领域蓝图 Tab');
+    assert.ok(html.includes("hideTab('data')"), '应隐藏业务数据图 Tab');
+    assert.ok(html.includes("hideTab('flow')"), '应隐藏业务逻辑流向 Tab');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('宽屏适配：内容宽度分档断点 + SVG 图等比自适应', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-viewer-wide-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'panel.user.js'), SCRIPT_FIXTURE);
+    const dataMap = await buildOntologyData(dir);
+    const html = renderViewerHtml(buildViewerModel(dataMap));
+    // 内容宽度变量 + 四档宽屏断点（1600/1920/2240/2560）
+    assert.ok(html.includes('--content-w: 1400px'));
+    for (const w of [1600, 1920, 2240, 2560]) {
+      assert.ok(html.includes(`(min-width: ${w}px)`), `应有 ${w}px 宽屏断点`);
+    }
+    assert.ok(html.includes('margin-left: auto; margin-right: auto'), '内容应居中');
+    // SVG 等比自适应：max-width 100% + height auto
+    assert.ok(/\.graph-wrap svg \{[^}]*max-width: 100%[^}]*height: auto/.test(html), 'SVG 应等比自适应容器宽度');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

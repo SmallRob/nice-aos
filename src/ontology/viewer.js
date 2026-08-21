@@ -1,10 +1,15 @@
 // 本体查看器（Viewer）——使用者层的"企业级知识中心"（对应参考架构中的 Web UI 消费者）
 // 数据流：snapshot.json（DataMap）→ buildViewerModel()（数据聚合）→ renderViewerHtml()（视图层渲染）
-// 三个视图：
+// 五个视图：
 //   1. 领域蓝图（Domain Blueprint）：每个功能域的业务层级构成 / 代码组织 / 单元清单
 //   2. 业务数据图（Data Map）：Store 数据枢纽 + 跨域数据依赖
 //   3. 业务逻辑流向（Logic Flow）：架构层间导入流向 + 跨域依赖 + 高扇入业务节点
-// 原则：视图模型（JSON）独立于渲染，可被 AI agent 直接消费；HTML 自包含零依赖，可离线打开
+//   4. 脚本蓝图（Script Blueprint）：单脚本函数调用图 + DOM 注入锚点 + 网络端点
+//   5. 本体概览（Ontology）：概念分类体系 + 对象/链接类型清单
+// 油猴意图适配：无 React/Vue 结构的纯脚本仓库，视图 1/2/3 按函数意图（roles）重建
+//   （意图功能域 / 存储枢纽 / 意图流转矩阵）；意图信号不足时视图置空并隐藏 Tab
+// 原则：视图模型（JSON）独立于渲染，可被 AI agent 直接消费；HTML 自包含零依赖，可离线打开；
+//       宽屏分档扩展内容宽度（1400 → 2400px），SVG 图等比自适应不截断
 
 import { ARCH_LAYERS } from './semantics.js';
 import { ONTOLOGY_META, OBJECT_TYPES, LINK_TYPES } from './blueprint.js';
@@ -22,14 +27,14 @@ const SCRIPT_TABLE_CAP = 40;
 const SCRIPT_INJECT_CAP = 20;
 const SCRIPT_NET_CAP = 12;
 
-// 脚本函数业务角色（与解析器 inferRoles 对应）
+// 脚本函数业务角色（与解析器 inferRoles 对应）；desc 为意图描述，供脚本意图功能域展示
 const SCRIPT_ROLE_META = {
-  render: { label: '渲染注入', color: '#58a6ff' },
-  data: { label: '数据获取', color: '#bc8cff' },
-  state: { label: '状态存取', color: '#3fb950' },
-  event: { label: '事件监听', color: '#d29922' },
-  ui: { label: '元素构建', color: '#39c5cf' },
-  logic: { label: '纯逻辑', color: '#8b949e' },
+  render: { label: '渲染注入', color: '#58a6ff', desc: '向页面注入与渲染 DOM 内容' },
+  data: { label: '数据获取', color: '#bc8cff', desc: '发起网络请求获取外部数据' },
+  state: { label: '状态存取', color: '#3fb950', desc: '读写持久化状态（GM 存储 / localStorage）' },
+  event: { label: '事件监听', color: '#d29922', desc: '监听事件 / 观察 DOM 变化 / 定时器' },
+  ui: { label: '元素构建', color: '#39c5cf', desc: '创建与组装页面元素' },
+  logic: { label: '纯逻辑', color: '#8b949e', desc: '纯计算与流程控制' },
 };
 
 const layerLabel = (key) => ARCH_LAYERS[key]?.label ?? key;
@@ -51,6 +56,7 @@ export function buildViewerModel(dataMap) {
   const scriptFunctions = dataMap.ScriptFunction ?? [];
   const injectionPoints = dataMap.InjectionPoint ?? [];
   const networkEndpoints = dataMap.NetworkEndpoint ?? [];
+  const gmApiUsages = dataMap.GmApiUsage ?? [];
   const meta = dataMap._meta ?? {};
 
   const fileByPath = new Map(files.map((f) => [f.path, f]));
@@ -416,6 +422,132 @@ export function buildViewerModel(dataMap) {
     scripts: scriptBlueprints,
   } : null;
 
+  // ---- 6. 油猴脚本意图适配：无 React/Vue 结构时按函数意图（roles）重建三视图 ----
+  // 意图信号不足（纯功能增强脚本：单一意图/无调用流转/无状态存取）时置 null，前端隐藏对应 Tab
+  const scriptNameById = new Map(userScripts.map((s) => [s.id, s.name]));
+
+  // 6a. 领域蓝图适配：按主角色分组的虚拟功能域（仅当无目录级功能域时）
+  const scriptDomains = (() => {
+    if (domains.length > 0 || !userScripts.length || !scriptFunctions.length) return null;
+    const groups = new Map();
+    for (const f of scriptFunctions) {
+      const key = (f.roles ?? ['logic'])[0];
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(f);
+    }
+    // 全部函数同一意图（常见于纯功能增强脚本）→ 无法分析出业务结构，不显示
+    if (groups.size < 2) return null;
+    const doms = [...groups.entries()]
+      .map(([role, fns]) => {
+        const meta = SCRIPT_ROLE_META[role] ?? { label: role, color: '#8b949e', desc: '' };
+        const sorted = [...fns].sort((a, b) => fnScore(b) - fnScore(a));
+        return {
+          role,
+          name: meta.label,
+          color: meta.color,
+          description: meta.desc,
+          functionCount: fns.length,
+          scriptNames: [...new Set(fns.map((f) => scriptNameById.get(f.scriptId)).filter(Boolean))].slice(0, 3),
+          injectionCount: fns.reduce((a, f) => a + (f.htmlInjectionCount ?? 0) + (f.mountCount ?? 0), 0),
+          networkCount: fns.reduce((a, f) => a + (f.networkCallCount ?? 0), 0),
+          listenerCount: fns.reduce((a, f) => a + (f.listenerCount ?? 0) + (f.observerCount ?? 0) + (f.timerCount ?? 0), 0),
+          gmApiCount: fns.reduce((a, f) => a + (f.gmApiCount ?? 0), 0),
+          functions: sorted.slice(0, SCRIPT_TABLE_CAP).map((f) => ({
+            name: f.name,
+            kind: f.kind,
+            roles: f.roles ?? ['logic'],
+            line: f.line ?? null,
+            lineCount: f.lineCount ?? null,
+            callCount: f.callCount ?? 0,
+            calledByCount: f.calledByCount ?? 0,
+            domInjectionCount: (f.htmlInjectionCount ?? 0) + (f.mountCount ?? 0),
+            networkCallCount: f.networkCallCount ?? 0,
+            scriptName: scriptNameById.get(f.scriptId) ?? null,
+          })),
+        };
+      })
+      .sort((a, b) => b.functionCount - a.functionCount);
+    return { domains: doms, distinctRoles: doms.length };
+  })();
+
+  // 6b. 业务数据图适配：脚本存储枢纽（localStorage / sessionStorage / indexedDB / GM 存储）
+  const SCRIPT_STATE_GM = new Set(['GM_getValue', 'GM_setValue', 'GM_deleteValue', 'GM_listValues', 'GM_addValueChangeListener', 'GM_removeValueChangeListener']);
+  const scriptDataMap = (() => {
+    if (stores.length > 0 || !userScripts.length) return null;
+    const gmByScript = new Map();
+    for (const g of gmApiUsages) {
+      if (!SCRIPT_STATE_GM.has(g.name)) continue;
+      if (!gmByScript.has(g.scriptId)) gmByScript.set(g.scriptId, []);
+      gmByScript.get(g.scriptId).push({ name: g.name, callCount: g.callCount ?? 0 });
+    }
+    const hubs = userScripts.map((s) => {
+      const su = s.storageUsage ?? {};
+      const stateFns = (fnsByScript.get(s.id) ?? [])
+        .filter((f) => (f.roles ?? []).includes('state'))
+        .sort((a, b) => fnScore(b) - fnScore(a))
+        .slice(0, 12);
+      return {
+        name: s.name,
+        version: s.version ?? null,
+        filePath: s.filePath,
+        storageUsage: { localStorage: su.localStorage ?? 0, sessionStorage: su.sessionStorage ?? 0, indexedDB: su.indexedDB ?? 0 },
+        gmStorageApis: gmByScript.get(s.id) ?? [],
+        unsafeWindowReads: (s.unsafeWindowReads ?? []).slice(0, 8),
+        stateFunctions: stateFns.map((f) => ({
+          name: f.name,
+          roles: f.roles ?? ['logic'],
+          gmApiCalls: (f.gmApiCalls ?? []).slice(0, 6),
+          line: f.line ?? null,
+        })),
+      };
+    });
+    const hasSignal = hubs.some((h) => h.storageUsage.localStorage + h.storageUsage.sessionStorage + h.storageUsage.indexedDB > 0 || h.gmStorageApis.length > 0);
+    // 无任何持久化信号（纯功能增强，不涉及状态数据）→ 不显示
+    if (!hasSignal) return null;
+    return { hubs };
+  })();
+
+  // 6c. 业务逻辑流向适配：函数意图流转矩阵（调用边按 from 角色 → to 角色聚合）+ 高扇入函数
+  const scriptFlow = (() => {
+    if (logicFlow.layerFlowTotal > 0 || !userScripts.length || !scriptFunctions.length) return null;
+    const fnById = new Map(scriptFunctions.map((f) => [f.id, f]));
+    const flowMap = new Map();
+    let crossRoleEdges = 0;
+    let totalEdges = 0;
+    for (const f of scriptFunctions) {
+      const fromRole = (f.roles ?? ['logic'])[0];
+      for (const toId of f.callIds ?? []) {
+        const t = fnById.get(toId);
+        if (!t) continue;
+        totalEdges++;
+        const toRole = (t.roles ?? ['logic'])[0];
+        if (fromRole !== toRole) crossRoleEdges++;
+        const k = `${fromRole}>${toRole}`;
+        flowMap.set(k, (flowMap.get(k) ?? 0) + 1);
+      }
+    }
+    // 调用流转稀疏（扁平脚本：无跨意图调用且边数不足）→ 不显示
+    if (crossRoleEdges < 3 && totalEdges < 8) return null;
+    const flows = [...flowMap.entries()]
+      .map(([k, count]) => {
+        const [from, to] = k.split('>');
+        return { from, fromLabel: SCRIPT_ROLE_META[from]?.label ?? from, to, toLabel: SCRIPT_ROLE_META[to]?.label ?? to, count };
+      })
+      .sort((a, b) => b.count - a.count);
+    const hubs = [...scriptFunctions]
+      .filter((f) => (f.calledByCount ?? 0) > 0)
+      .sort((a, b) => (b.calledByCount ?? 0) - (a.calledByCount ?? 0))
+      .slice(0, HUB_CAP)
+      .map((f) => ({
+        name: f.name,
+        roles: f.roles ?? ['logic'],
+        calledByCount: f.calledByCount ?? 0,
+        callCount: f.callCount ?? 0,
+        scriptName: scriptNameById.get(f.scriptId) ?? null,
+      }));
+    return { flows, flowTotal: totalEdges, crossRoleEdges, hubs };
+  })();
+
   return {
     viewerVersion: '1.0',
     generatedAt: meta.generatedAt ?? new Date().toISOString(),
@@ -434,8 +566,11 @@ export function buildViewerModel(dataMap) {
     },
     domainCount: domains.length,
     domains: domainBlueprints,
+    scriptDomains,
     dataMap: dataMap2,
+    scriptDataMap,
     logicFlow,
+    scriptFlow,
     scriptBlueprint,
     quality: {
       cycles: meta.cycles ?? [],
@@ -480,8 +615,15 @@ export function renderViewerHtml(model) {
   --red: #f85149; --cyan: #39c5cf;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --content-w: 1400px; }
+/* 宽屏适配：内容宽度随视口分档扩展并居中，超宽屏不留大片右侧空白 */
+@media (min-width: 1600px) { :root { --content-w: 1520px; } }
+@media (min-width: 1920px) { :root { --content-w: 1840px; } }
+@media (min-width: 2240px) { :root { --content-w: 2160px; } }
+@media (min-width: 2560px) { :root { --content-w: 2400px; } }
 body { background: var(--bg); color: var(--fg); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px; line-height: 1.6; }
 header { padding: 20px 24px 0; border-bottom: 1px solid var(--border); }
+header > * { max-width: var(--content-w); margin-left: auto; margin-right: auto; }
 h1 { font-size: 20px; }
 h2 { font-size: 16px; margin-bottom: 12px; color: var(--fg); }
 h3 { font-size: 14px; margin: 16px 0 8px; color: var(--fg); }
@@ -490,7 +632,7 @@ h3 { font-size: 14px; margin: 16px 0 8px; color: var(--fg); }
 .tab { padding: 8px 16px; cursor: pointer; color: var(--fg-dim); border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; font-size: 14px; }
 .tab:hover { color: var(--fg); background: var(--panel); }
 .tab.active { color: var(--fg); background: var(--panel); border-color: var(--border); position: relative; top: 1px; }
-main { padding: 20px 24px 48px; max-width: 1400px; }
+main { padding: 20px 24px 48px; max-width: var(--content-w); margin-left: auto; margin-right: auto; }
 section.view { display: none; }
 section.view.active { display: block; }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
@@ -554,7 +696,8 @@ button.btn { background: var(--panel2); color: var(--fg); border: 1px solid var(
 button.btn:hover { border-color: var(--blue); color: var(--blue); }
 /* ---- 脚本蓝图：SVG 逻辑注入关系图 ---- */
 .graph-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); padding: 8px; }
-.graph-wrap svg { display: block; }
+/* 图随容器宽度自适应缩放（viewBox 等比），宽屏完整呈现、窄屏不截断右缘 */
+.graph-wrap svg { display: block; max-width: 100%; height: auto; }
 svg .gn { cursor: pointer; }
 svg .gn rect { fill: var(--panel); stroke-width: 1.5; transition: opacity .12s; }
 svg .gn text { font-size: 11px; font-family: 'SF Mono', Menlo, monospace; }
@@ -566,6 +709,7 @@ svg.focus .gn.hl, svg.focus .ge.hl { opacity: 1; }
 svg .col-label { fill: var(--fg-faint); font-size: 11px; font-family: -apple-system, 'PingFang SC', sans-serif; }
 .legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; align-items: center; }
 .legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+.legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
 .legend .line { display: inline-block; width: 18px; height: 0; border-top: 1.5px solid; margin-right: 4px; vertical-align: 3px; }
 #script-fn-info { margin-top: 10px; min-height: 20px; }
 #script-fn-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
@@ -685,8 +829,11 @@ function renderOverview() {
 
 // ---------- Tab 2: 领域蓝图 ----------
 let selectedDomain = null;
+let selectedScriptDomain = null;
 function renderBlueprint() {
   const el = document.getElementById('view-blueprint');
+  // 油猴意图适配：无目录级功能域时渲染脚本意图功能域（按函数角色分组）
+  if (!M.domains.length && M.scriptDomains) return renderScriptDomainList(el);
   const cards = M.domains.map((d, i) =>
     '<div class="card" data-idx="' + i + '"><h4>' + esc(d.name) + '</h4>'
     + '<div class="sum">' + esc(d.summary || '') + '</div>'
@@ -771,12 +918,75 @@ function renderDomainDetail() {
   });
 }
 
+// ---------- Tab 2 适配：脚本意图功能域（函数意图分组，替代目录级功能域）----------
+function renderScriptDomainList(el) {
+  const sd = M.scriptDomains;
+  const cards = sd.domains.map((d, i) =>
+    '<div class="card" data-idx="' + i + '"><h4><span class="legend-dot" style="background:' + d.color + '"></span>' + esc(d.name) + '</h4>'
+    + '<div class="sum">' + esc(d.description || '') + '</div>'
+    + '<div class="chips">'
+    + chip(d.functionCount + ' 函数', 'blue')
+    + (d.injectionCount ? chip(d.injectionCount + ' DOM 注入', 'purple') : '')
+    + (d.networkCount ? chip(d.networkCount + ' 网络调用', 'red') : '')
+    + (d.listenerCount ? chip(d.listenerCount + ' 监听/定时', 'amber') : '')
+    + (d.gmApiCount ? chip(d.gmApiCount + ' GM API', 'green') : '')
+    + '</div></div>').join('');
+  el.innerHTML =
+    '<div class="panel"><h2>脚本意图功能域（' + sd.domains.length + ' 个意图分组，点击下钻）</h2>'
+    + '<div class="grid">' + cards + '</div>'
+    + '<div class="note">单文件脚本无目录级功能域，按函数意图（渲染注入 / 数据获取 / 状态存取 / 事件监听 / 元素构建 / 纯逻辑）聚合为虚拟功能域；仅单一意图的功能增强脚本不生成本视图。</div></div>'
+    + '<div id="script-domain-detail"></div>';
+  el.querySelectorAll('.card').forEach((c) => c.addEventListener('click', () => {
+    el.querySelectorAll('.card').forEach((x) => x.classList.remove('selected'));
+    c.classList.add('selected');
+    selectedScriptDomain = sd.domains[Number(c.dataset.idx)];
+    renderScriptDomainDetail();
+  }));
+}
+function renderScriptDomainDetail() {
+  const d = selectedScriptDomain;
+  const box = document.getElementById('script-domain-detail');
+  if (!d) { box.innerHTML = ''; return; }
+  box.innerHTML =
+    '<div class="panel"><div class="back"><button class="btn" id="btn-sdback">← 收起</button></div>'
+    + '<h2><span class="legend-dot" style="background:' + d.color + '"></span>意图功能域：' + esc(d.name) + '</h2>'
+    + '<div class="sub">' + esc(d.description || '') + '</div>'
+    + '<div class="chips" style="margin:10px 0">'
+    + chip(d.functionCount + ' 函数', 'blue')
+    + (d.injectionCount ? chip(d.injectionCount + ' DOM 注入', 'purple') : '')
+    + (d.networkCount ? chip(d.networkCount + ' 网络调用', 'red') : '')
+    + (d.listenerCount ? chip(d.listenerCount + ' 监听/定时', 'amber') : '')
+    + (d.gmApiCount ? chip(d.gmApiCount + ' GM API', 'green') : '')
+    + (d.scriptNames || []).map((n) => chip(n, 'cyan')).join('')
+    + '</div>'
+    + '<h3>函数清单（按重要性 Top ' + d.functions.length + ' / ' + d.functionCount + '）</h3>'
+    + table(
+      [{ label: '函数' }, { label: '角色' }, { label: '行', num: true }, { label: '被调', num: true }, { label: '调出', num: true }, { label: 'DOM 注入', num: true }, { label: '网络', num: true }],
+      d.functions.map((f) => [
+        { v: f.name, html: '<b>' + esc(f.name) + '</b> <span class="path">L' + (f.line ?? '-') + '</span>' },
+        { v: (f.roles || []).join('/'), html: (f.roles || []).map((r) => '<span class="chip" style="color:' + roleColor([r]) + ';border-color:' + roleColor([r]) + '55">' + esc(roleLabel(r)) + '</span>').join('') },
+        { v: f.lineCount ?? '-', num: true },
+        { v: f.calledByCount, num: true },
+        { v: f.callCount, num: true },
+        { v: f.domInjectionCount || '-', num: true },
+        { v: f.networkCallCount || '-', num: true },
+      ]))
+    + '</div>';
+  box.querySelector('#btn-sdback').addEventListener('click', () => {
+    selectedScriptDomain = null;
+    document.getElementById('view-blueprint').querySelectorAll('.card').forEach((x) => x.classList.remove('selected'));
+    box.innerHTML = '';
+  });
+}
+
 // ---------- Tab 3: 业务数据图 ----------
 function renderData() {
   const el = document.getElementById('view-data');
   const d = M.dataMap;
   if (!d.stores.length) {
-    el.innerHTML = '<div class="panel"><h2>业务数据图</h2><div class="empty">未检测到状态管理（Zustand / Pinia）——纯脚本或无 Store 仓库无业务数据图。</div></div>';
+    // 油猴意图适配：无 Zustand/Pinia Store 时渲染脚本存储枢纽
+    if (M.scriptDataMap) return renderScriptDataMap(el);
+    el.innerHTML = '<div class="panel"><h2>业务数据图</h2><div class="empty">未检测到状态管理（Zustand / Pinia），也无脚本持久化信号——本仓库无业务数据图。</div></div>';
     return;
   }
   const storeCards = d.stores.map((s) =>
@@ -812,10 +1022,40 @@ function renderData() {
     + '<div class="note">数据流向：使用方域 → Store 所在域；引用数为该域导入 Store 文件的次数。</div></div>';
 }
 
+// ---------- Tab 3 适配：脚本存储枢纽（localStorage / GM 存储 / 宿主数据读取）----------
+function renderScriptDataMap(el) {
+  const sd = M.scriptDataMap;
+  const hubCards = sd.hubs.map((h) =>
+    '<div class="card" style="cursor:default"><h4>' + esc(h.name) + (h.version ? ' <span class="sub">v' + esc(h.version) + '</span>' : '') + '</h4>'
+    + '<div class="chips" style="margin:6px 0">'
+    + (h.storageUsage.localStorage ? chip('localStorage × ' + h.storageUsage.localStorage, 'green') : '')
+    + (h.storageUsage.sessionStorage ? chip('sessionStorage × ' + h.storageUsage.sessionStorage, 'cyan') : '')
+    + (h.storageUsage.indexedDB ? chip('indexedDB × ' + h.storageUsage.indexedDB, 'purple') : '')
+    + h.gmStorageApis.map((g) => chip(g.name + ' × ' + g.callCount, 'amber')).join('')
+    + '</div>'
+    + (h.unsafeWindowReads.length ? '<div class="sum">宿主数据读取：' + h.unsafeWindowReads.map((r) => '<span class="path">' + esc(typeof r === 'string' ? r : (r.prop || '')) + '</span>').join(' · ') + '</div>' : '')
+    + (h.stateFunctions.length ? '<details open><summary>状态存取函数（' + h.stateFunctions.length + '）</summary><ul class="plain">'
+      + h.stateFunctions.map((f) => '<li><b>' + esc(f.name) + '</b>'
+        + (f.gmApiCalls.length ? ' ' + f.gmApiCalls.map((g) => chip(g, 'amber')).join('') : '')
+        + ' <span class="path">L' + (f.line ?? '-') + '</span></li>').join('')
+      + '</ul></details>' : '')
+    + '<div class="sub"><span class="path">' + esc(h.filePath) + '</span></div></div>').join('');
+
+  const hasHostReads = sd.hubs.some((h) => h.unsafeWindowReads.length);
+  el.innerHTML =
+    '<div class="panel"><h2>脚本存储枢纽（' + sd.hubs.length + ' 个脚本有持久化信号）</h2>'
+    + '<div class="grid">' + hubCards + '</div>'
+    + '<div class="note">脚本无集中式状态 Store，以浏览器存储（localStorage / sessionStorage / indexedDB）与 GM 存储 API 为数据枢纽；状态存取函数为读写这些存储的入口。'
+    + (hasHostReads ? '宿主数据读取 = 脚本从页面全局变量（unsafeWindow）获取的数据。' : '') + '</div></div>';
+}
+
 // ---------- Tab 4: 业务逻辑流向 ----------
 function renderFlow() {
   const el = document.getElementById('view-flow');
   const f = M.logicFlow;
+
+  // 油猴意图适配：无模块导入（单文件）时渲染函数意图流转矩阵
+  if (!f.layerFlow.length && M.scriptFlow) return renderScriptFlow(el);
 
   // 层间流向矩阵（from 层 × to 层）
   const layerKeys = [];
@@ -871,9 +1111,54 @@ function renderFlow() {
     + '</div>';
 }
 
+// ---------- Tab 4 适配：函数意图流转矩阵（调用边按意图聚合）+ 高扇入函数 ----------
+function renderScriptFlow(el) {
+  const sf = M.scriptFlow;
+  const roles = [];
+  const flowIdx = new Map();
+  for (const e of sf.flows) {
+    for (const k of [e.from, e.to]) if (!roles.includes(k)) roles.push(k);
+    flowIdx.set(e.from + '>' + e.to, e.count);
+  }
+  roles.sort((a, b) => ROLE_FLOW_ORDER.indexOf(a) - ROLE_FLOW_ORDER.indexOf(b));
+  const maxCell = Math.max(1, ...sf.flows.map((e) => e.count));
+  const roleChip = (r) => '<span class="chip" style="color:' + roleColor([r]) + ';border-color:' + roleColor([r]) + '55">' + esc(roleLabel(r)) + '</span>';
+  const matrixRows = roles.map((from) => [
+    { v: from, html: roleChip(from) },
+    ...roles.map((to) => {
+      const c = flowIdx.get(from + '>' + to) ?? 0;
+      const cls = c === 0 ? 'cold' : (c / maxCell > 0.4 ? 'hot' : 'warm');
+      return { v: c || '·', html: '<span class="' + cls + '">' + (c || '·') + '</span>' };
+    }),
+  ]);
+
+  const hubRows = sf.hubs.map((h) => [
+    { v: h.name, html: '<b>' + esc(h.name) + '</b>' },
+    { v: (h.roles || []).map(roleLabel).join('/'), html: (h.roles || []).map((r) => roleChip(r)).join('') },
+    { v: h.calledByCount, num: true },
+    { v: h.callCount, num: true },
+    { v: h.scriptName || '-', html: h.scriptName ? chip(h.scriptName, 'cyan') : '-' },
+  ]);
+
+  el.innerHTML =
+    '<div class="panel"><h2>函数意图流转（' + fmt(sf.flowTotal) + ' 条调用边 · 跨意图 ' + sf.crossRoleEdges + ' 条）</h2>'
+    + '<table class="matrix"><thead><tr><th>from ↓ / to →</th>'
+    + roles.map((r) => '<th>' + roleChip(r) + '</th>').join('')
+    + '</tr></thead><tbody>' + matrixRows.map((r) => '<tr>' + r.map((c) => '<td class="heat">' + (c.html || esc(c.v)) + '</td>').join('') + '</tr>').join('')
+    + '</tbody></table>'
+    + '<div class="note">单文件脚本无模块导入，以函数调用边按意图聚合：行 = 调用方意图，列 = 被调方意图。典型业务流转为 事件监听 → 纯逻辑 → 数据获取/状态存取 → 渲染注入；对角线为同意图内部互调（内聚）。</div></div>'
+
+    + '<div class="panel"><h2>高扇入函数（变更影响面 Top ' + sf.hubs.length + '）</h2>'
+    + (hubRows.length ? table([{ label: '函数' }, { label: '意图' }, { label: '被调数', num: true }, { label: '调出数', num: true }, { label: '所属脚本' }], hubRows)
+      : '<div class="empty">无高扇入函数。</div>')
+    + '<div class="note">被调数最多的函数改动影响面最大——修改前优先检查其调用方。</div></div>';
+}
+
 // ---------- Tab 5: 脚本蓝图（油猴脚本函数调用图 + 逻辑注入链）----------
 const ROLE = {};
 ((M.scriptBlueprint && M.scriptBlueprint.roleMeta) || []).forEach((r) => { ROLE[r.key] = r; });
+// 角色流向矩阵的展示顺序：事件驱动 → 逻辑 → 数据/状态 → 构建 → 渲染
+const ROLE_FLOW_ORDER = ['event', 'logic', 'data', 'state', 'ui', 'render'];
 const roleColor = (roles) => ((ROLE[(roles || ['logic'])[0]] || {}).color) || '#8b949e';
 const roleLabel = (r) => (ROLE[r] ? ROLE[r].label : r);
 
@@ -1168,13 +1453,18 @@ function renderScriptDetail() {
 }
 
 // ---------- 初始化 ----------
+// Tab 显隐：视图无有效数据时隐藏（含油猴意图适配视图；纯功能增强脚本分析不出业务结构）
+const hideTab = (tab) => { const t = document.querySelector('.tab[data-tab="' + tab + '"]'); if (t) t.style.display = 'none'; };
 document.getElementById('v-title').textContent = M.project.name + ' — 本体蓝图查看器';
 document.getElementById('v-sub').textContent =
   (M.project.frameworkLabel || M.project.framework || 'unknown') + ' · ' + fmt(M.project.fileCount) + ' 源文件 · '
   + M.domainCount + ' 功能域 · ' + (M.project.commitHash ? ('commit ' + M.project.commitHash.slice(0, 7) + ' · ') : '')
   + (M.scriptBlueprint ? M.scriptBlueprint.scriptCount + ' 油猴脚本 · ' : '')
   + '生成于 ' + (M.generatedAt || '').replace('T', ' ').slice(0, 19);
-if (!M.scriptBlueprint) document.querySelector('.tab[data-tab="scripts"]').style.display = 'none';
+if (!M.scriptBlueprint) hideTab('scripts');
+if (!M.domains.length && !M.scriptDomains) hideTab('blueprint');
+if (!M.dataMap.stores.length && !M.scriptDataMap) hideTab('data');
+if (!M.logicFlow.layerFlowTotal && !M.scriptFlow) hideTab('flow');
 renderOverview();
 renderBlueprint();
 renderData();

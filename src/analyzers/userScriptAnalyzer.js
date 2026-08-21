@@ -730,7 +730,7 @@ export function analyzeUserScript(filePath, content, projectRoot) {
     const roles = [];
     if (f.htmlInjectionCount + f.mountCount > 0) roles.push('render');      // DOM 注入（含挂载）
     if (f.networkCallCount > 0) roles.push('data');                         // 网络请求（数据获取）
-    if ((f.gmApiCalls ?? []).some((n) => STORAGE_GM.has(n))) roles.push('state'); // GM 存储（跨会话状态）
+    if ((f.gmApiCalls ?? []).some((n) => STORAGE_GM.has(n)) || (f.storageOpCount ?? 0) > 0) roles.push('state'); // GM/浏览器存储（跨会话状态）
     if (f.listenerCount + f.observerCount + f.timerCount > 0) roles.push('event'); // 监听/观察/定时
     if (f.domOpCount > 0) roles.push('ui');                                 // 元素构建
     return roles.length ? roles.slice(0, 2) : ['logic'];                    // 最多双角色，纯逻辑标 logic
@@ -749,6 +749,7 @@ export function analyzeUserScript(filePath, content, projectRoot) {
       observerCount: observers.filter((o) => inRange(o.pos)).length,
       listenerCount: listeners.filter((l) => inRange(l.pos)).length,
       timerCount: timers.filter((t) => inRange(t.pos)).length,
+      storageOpCount: storageHits.filter((s) => inRange(s.pos)).length,
       callCount: 0,
       calledByCount: 0,
     };
