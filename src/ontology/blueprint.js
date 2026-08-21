@@ -23,7 +23,7 @@ export const ONTOLOGY_META = {
 };
 
 export const OBJECT_TYPES = [
-  { type: 'Project', prefix: 'proj:', category: 'Container', level: 'L3', description: '代码仓库（含架构画像/健康度/总结）' },
+  { type: 'Project', prefix: 'proj:', category: 'Container', level: 'L3', description: '代码仓库（含框架识别/架构画像/健康度/总结；扫描子目录时含宿主定位证据）' },
   { type: 'Domain', prefix: 'dom:', category: 'Container', level: 'L3', description: '功能域（横向功能切片：路由+组件+模块聚合）' },
   { type: 'Module', prefix: 'mod:', category: 'Container', level: 'L2', description: '目录模块（含语义架构层 archLayer 与职责画像 summary）' },
   { type: 'SourceFile', prefix: 'file:', category: 'Container', level: 'L2', description: '源文件（ts/tsx/js/jsx/vue，含 archLayer）' },

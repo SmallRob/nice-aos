@@ -845,6 +845,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
     version: scan.version,
     path: scan.root,
     framework: scan.framework,
+    frameworkVariants: scan.frameworkVariants ?? [],
+    frameworkLabel: scan.frameworkLabel ?? scan.framework,
+    hostRoot: scan.hostRoot ?? null,
+    hostConfigs: scan.hostConfigs ?? [],
     language: 'TypeScript',
     commitHash: scan.commitHash,
     branch: scan.branch,
@@ -861,6 +865,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   // 9b. 项目级架构画像：分层结构 / 架构风格 / 健康度 / 能力清单 / 自然语言总结
   const profile = buildProjectProfile({
     framework: scan.framework,
+    frameworkLabel: project.frameworkLabel,
     fileObjects, modules, domains, routes,
     components, stores, hooks, services, userScripts,
     dependencies, cycles, orphanCandidates, analysisErrors,

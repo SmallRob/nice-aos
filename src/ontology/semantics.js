@@ -265,6 +265,10 @@ export function summarizeDomain(d) {
 const FRAMEWORK_LABELS = {
   react: 'React 单页应用',
   vue: 'Vue 单页应用',
+  next: 'Next.js 应用',
+  nuxt: 'Nuxt 应用',
+  'react-native': 'React Native 应用',
+  expo: 'React Native（Expo）应用',
   userscript: '油猴脚本集合',
   unknown: '前端项目',
 };
@@ -272,7 +276,7 @@ const FRAMEWORK_LABELS = {
 // 项目级架构画像：分层结构 / 架构风格 / 健康度 / 自然语言总结
 export function buildProjectProfile(ctx) {
   const {
-    framework, fileObjects, modules, domains, routes, components, stores, hooks, services,
+    framework, frameworkLabel, fileObjects, modules, domains, routes, components, stores, hooks, services,
     userScripts, dependencies, cycles, orphanCandidates, analysisErrors,
   } = ctx;
 
@@ -303,7 +307,7 @@ export function buildProjectProfile(ctx) {
   };
 
   const sentences = [];
-  sentences.push(`${FRAMEWORK_LABELS[framework] ?? framework}（${fileObjects.length} 个源文件，${modules.length} 个模块）。`);
+  sentences.push(`${frameworkLabel ?? FRAMEWORK_LABELS[framework] ?? framework}（${fileObjects.length} 个源文件，${modules.length} 个模块）。`);
   if (layers.length > 0) {
     const top = layers.slice(0, 3)
       .map((l) => `${l.label} ${l.share}%（${l.fileCount} 文件）`).join('、');

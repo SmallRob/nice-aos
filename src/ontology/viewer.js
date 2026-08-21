@@ -422,6 +422,8 @@ export function buildViewerModel(dataMap) {
     blueprint,
     project: {
       id: project.id, name: project.name, framework: project.framework,
+      frameworkLabel: project.frameworkLabel ?? project.framework,
+      hostConfigs: project.hostConfigs ?? [],
       fileCount: project.fileCount, tsxFileCount: project.tsxFileCount ?? null,
       vueFileCount: project.vueFileCount ?? null, userScriptFileCount: project.userScriptFileCount ?? null,
       commitHash: project.commitHash ?? null, branch: project.branch ?? null,
@@ -1163,7 +1165,7 @@ function renderScriptDetail() {
 // ---------- 初始化 ----------
 document.getElementById('v-title').textContent = M.project.name + ' — 本体蓝图查看器';
 document.getElementById('v-sub').textContent =
-  (M.project.framework || 'unknown') + ' · ' + fmt(M.project.fileCount) + ' 源文件 · '
+  (M.project.frameworkLabel || M.project.framework || 'unknown') + ' · ' + fmt(M.project.fileCount) + ' 源文件 · '
   + M.domainCount + ' 功能域 · ' + (M.project.commitHash ? ('commit ' + M.project.commitHash.slice(0, 7) + ' · ') : '')
   + (M.scriptBlueprint ? M.scriptBlueprint.scriptCount + ' 油猴脚本 · ' : '')
   + '生成于 ' + (M.generatedAt || '').replace('T', ' ').slice(0, 19);

@@ -101,7 +101,7 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 
 | 类型 | ID 前缀 | 层级/范畴 | 关键属性 |
 |---|---|---|---|
-| Project | `proj:` | L3 Container | framework（react/vue/userscript）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码/未声明依赖/高风险脚本/解析错误）, analysisErrors |
+| Project | `proj:` | L3 Container | framework（expo/react-native/next/nuxt/vue/react/userscript）, frameworkLabel（组合标签，含 Capacitor/Electron/Vite 变体）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码/未声明依赖/高风险脚本/解析错误）, analysisErrors |
 | Domain | `dom:` | L3 Container | **name, sources**（route/module）, routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, **capability**（路由能力描述）, **summary**（职责画像） |
 | Module | `mod:` | L2 Container | path, **archLayer**（语义架构层）, **layerComposition**（子树层构成）, fileCount, **subtreeFileCount**, parentId, **unitCounts**, **routeCount**, **summary**（职责画像） |
 | SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames |
@@ -230,7 +230,7 @@ Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**�
 - **依赖治理**：package.json 声明 vs 实际导入交叉比对，产出 `source=undeclared`（导入未声明）与 `used=false`（声明未使用）
 - **死代码候选**：零引用 + 非入口 + 非测试 + 非路由组件文件（`_meta.orphanCandidates`）
 - **循环依赖**：Tarjan SCC 算法（`_meta.cycles`）
-- **框架检测**：package.json 依赖含 vue/nuxt → `framework=vue`；含 react → `framework=react`；无前端框架依赖但存在油猴脚本 → `framework=userscript`（纯脚本仓库无需 package.json）
+- **框架检测**：package.json 依赖优先（expo / react-native / next / nuxt / vue / react，元框架优先于基座框架）；扫描子目录（如 `src/`）时自动向上定位宿主项目根（上限 4 层、不越过用户 home），用宿主依赖识别框架并回退项目名，宿主配置文件（capacitor.config / app.json(expo 键) / vite.config / electron 等）作旁证；跨端/构建变体（Capacitor/Electron/Vite/Webpack）组合为 `frameworkLabel`（如 "React 单页应用 + Capacitor 跨端（Vite 构建）"）；无任何清单时按代码信号兜底（.vue → vue，tsx/jsx → react）；存在油猴脚本且无前端框架 → `framework=userscript`
 
 ### overlay 路由（可选，自动探测）
 

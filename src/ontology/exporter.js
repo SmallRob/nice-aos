@@ -25,7 +25,7 @@ export function exportToMarkdown(dataMap) {
 
   heading('项目概览');
   out.push(table(['指标', '数值'], [
-    ['框架', proj.framework ?? 'unknown'],
+    ['框架', proj.frameworkLabel ?? proj.framework ?? 'unknown'],
     ['架构风格', proj.architecture?.styleLabel ?? '-'],
     ['语义架构层数', proj.architecture?.layerCount ?? '-'],
     ['功能域数', proj.architecture?.domainCount ?? '-'],

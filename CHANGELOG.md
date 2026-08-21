@@ -2,6 +2,24 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.6.1] - 2026-08-21
+
+### 新增
+
+- **项目框架识别增强（扫描 src 等子目录场景）**
+  - 宿主项目定位：扫描目录自身无 package.json 时，向上查找最近宿主根（上限 4 层、不越过用户 home），用宿主依赖识别框架、回退项目名/版本，宿主依赖全量进入清单（扫描 src/ 时 react 等不再误判为未声明依赖）
+  - 框架识别扩展：expo / react-native / next / nuxt 元框架优先识别，宿主 app.json 含 expo 键作旁证；无任何清单时按代码信号兜底（.vue 文件 → vue，tsx/jsx → react）
+  - 跨端/构建变体（frameworkVariants）：Capacitor / Electron / Vite / Webpack，组合标签如 "React 单页应用 + Capacitor 跨端（Vite 构建）"，Project 携带 frameworkLabel / hostRoot / hostConfigs 证据
+  - 宿主 tsconfig 路径别名重定基：扫描 src/ 时宿主的 `"@/*": "./src/*"` 重定基为 `./*`，`@/` 别名导入恢复解析（此前 600 处 `@/services` 等全部误判为未声明依赖）
+  - solution 风格 tsconfig：根文件仅含 references 时递归合并子配置（tsconfig.app.json 等）的 paths（根 paths 优先，含自引用防御），`#/` 等多别名场景恢复解析
+  - Node 内置模块（node: 前缀、裸名 fs/path/child_process/readline 等、子路径 fs/promises 与 readline/promises）识别为 builtin；Vite 虚拟模块（virtual:generated-pages / virtual:app-loading 等构建时生成）识别为 virtual，均不再计入依赖清单与未声明依赖
+- 真实仓库验证（四类项目）：
+  - nice-today-2.0（React + Capacitor + Vite，扫描 src/）：框架从 unknown → 正确识别；未声明依赖 62 → 8（剩余为真实治理点：d3 子包、@capacitor 局部插件）；别名恢复后暴露 1 组此前隐藏的循环依赖（8 → 9）
+  - qa-live-healthcare（Vue 3 + Vite）：框架正确识别为 "Vue 单页应用 + Vite 构建"；未声明依赖仅剩真实治理点（@ant-design/icons-vue 导入未声明）
+  - steam-stat（Vue 3 + Electron + Vite）：识别为 "Vue 单页应用 + Electron 桌面端（Vite 构建）"；solution tsconfig 的 `@/*` + `#/*` 双别名全部解析；virtual: 模块排除后未声明依赖归零
+  - asdm-agentlink-cli（Node CLI，commander）：不误判为前端框架（保持"前端项目"中性标签）；readline 等内置模块子路径修复后未声明依赖归零
+- 新增 12 个测试（宿主定位/框架识别/变体/别名重定基/solution tsconfig/builtin 子路径/virtual 模块），总计 62 个全部通过
+
 ## [0.6.0] - 2026-08-20
 
 ### 新增

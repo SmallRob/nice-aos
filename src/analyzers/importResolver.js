@@ -7,6 +7,30 @@ const ASSET_EXTENSIONS = new Set([
 ]);
 const PROBE_SUFFIXES = ['', '.ts', '.tsx', '.js', '.jsx', '.vue', '/index.ts', '/index.tsx', '/index.js', '/index.jsx', '/index.vue'];
 
+// Node 内置模块：非 npm 包，不参与依赖清单与未声明依赖统计
+const NODE_BUILTINS = new Set([
+  'fs', 'path', 'url', 'os', 'crypto', 'util', 'http', 'https', 'stream', 'buffer',
+  'zlib', 'querystring', 'assert', 'string_decoder', 'timers', 'net', 'tls', 'dns',
+  'dgram', 'cluster', 'readline', 'readline/promises', 'repl', 'vm', 'worker_threads', 'perf_hooks',
+  'async_hooks', 'process', 'console', 'module', 'punycode', 'v8', 'tty', 'events',
+  'child_process', 'constants', 'inspector', 'wasi', 'diagnostics_channel', 'trace_events',
+  'node:test', 'node:assert', 'node:sea', 'node:sqlite',
+]);
+
+function isNodeBuiltin(specifier) {
+  if (specifier.startsWith('node:')) return true;
+  // 子路径导入：fs/promises、readline/promises、dns/promises 等
+  if (NODE_BUILTINS.has(specifier)) return true;
+  const [base, sub] = specifier.split('/');
+  if (!sub || sub === 'promises') return NODE_BUILTINS.has(base);
+  return false;
+}
+
+// Vite 虚拟模块（virtual:generated-pages / virtual:app-loading 等）：构建时生成，非 npm 包
+function isVirtualModule(specifier) {
+  return specifier.startsWith('virtual:');
+}
+
 // 将 tsconfig paths（如 "@/*": "./src/*"）编译为前缀匹配规则，长前缀优先
 function compileAliases(tsconfigPaths, projectRoot) {
   const aliases = Object.entries(tsconfigPaths)
@@ -22,6 +46,8 @@ function compileAliases(tsconfigPaths, projectRoot) {
       if (isWildcard && targetPrefix.endsWith('/*')) {
         targetPrefix = targetPrefix.slice(0, -1);
       }
+      // 重定基后的 "./*" 目标（扫描宿主子目录场景）：目标即扫描根本身，前缀为空
+      if (targetPrefix === '*' || targetPrefix === '.') targetPrefix = '';
       return { prefix, targetPrefix, isWildcard, projectRoot };
     })
     .sort((a, b) => b.prefix.length - a.prefix.length);
@@ -52,6 +78,12 @@ export function createResolver(projectRoot, tsconfigPaths, knownFiles) {
     if (ASSET_EXTENSIONS.has(ext)) {
       return { kind: 'asset', specifier };
     }
+    if (isNodeBuiltin(specifier)) {
+      return { kind: 'builtin', module: specifier };
+    }
+    if (isVirtualModule(specifier)) {
+      return { kind: 'virtual', module: specifier };
+    }
 
     let candidateRel = null;
     if (specifier.startsWith('.')) {
@@ -64,7 +96,8 @@ export function createResolver(projectRoot, tsconfigPaths, knownFiles) {
       });
       if (hit) {
         const rest = specifier.slice(hit.prefix.length);
-        candidateRel = path.posix.normalize(hit.targetPrefix + rest);
+        // join 而非字符串拼接：目标前缀为空（重定基到扫描根）时消除 rest 的前导斜杠
+        candidateRel = path.posix.normalize(path.posix.join(hit.targetPrefix, rest));
       }
     }
 
