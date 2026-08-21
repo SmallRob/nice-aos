@@ -3,13 +3,13 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isUserScriptCandidate } from './userScriptAnalyzer.js';
 
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue']);
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue', '.rs']);
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'dist-ssr', 'build', 'out',
   'coverage', '.next', '.nuxt', 'public', 'docs',
   '.codebuddy', '.codegraph', '.asdm', '.trae', '.claude',
   '.cursor', '.kiro', '.sisyphus', '.vscode', '.idea', '__pycache__',
-  'android', 'ios',
+  'android', 'ios', 'target',
 ]);
 
 // 扫描根解析：显式 roots 优先；否则 src/ 存在则扫 src/；否则扫项目根（排除 SKIP_DIRS）
@@ -36,11 +36,68 @@ function walk(dir, projectRoot, files) {
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name);
       if (!SOURCE_EXTENSIONS.has(ext)) continue;
-      if (entry.name.endsWith('.d.ts')) continue;
       if (entry.name.endsWith('.backup')) continue;
       files.push(path.relative(projectRoot, full).split(path.sep).join('/'));
     }
   }
+}
+
+// 客户端组件自动发现：Tauri（src-tauri/tauri.conf.json → 追加 src-tauri/src）与
+// Electron（electron/ 目录含 ts/js 源码 → 追加 electron）。显式 roots 传参时同样自动追加
+// —— tauri.conf.json / electron 目录是构建工具约定的强信号，用户期望客户端组件随扫描自动包含
+function discoverClientComponentRoots(projectRoot, baseRoots) {
+  const extras = new Set();
+  const pushRel = (absDir) => {
+    const rel = path.relative(projectRoot, absDir).split(path.sep).join('/');
+    if (rel && !rel.startsWith('..')) extras.add(rel);
+  };
+  const hasSourceFiles = (dir) => {
+    const stack = [[dir, 0]];
+    while (stack.length) {
+      const [d, depth] = stack.pop();
+      if (depth > 3) continue;
+      let entries = [];
+      try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        if (e.isDirectory()) {
+          if (!SKIP_DIRS.has(e.name)) stack.push([path.join(d, e.name), depth + 1]);
+        } else if (/\.(tsx?|jsx?)$/.test(e.name) && !e.name.endsWith('.d.ts')) return true;
+      }
+    }
+    return false;
+  };
+  const findTauri = (dir, depth) => {
+    if (depth > 3) return;
+    if (fs.existsSync(path.join(dir, 'src-tauri', 'tauri.conf.json'))) {
+      pushRel(path.join(dir, 'src-tauri', 'src'));
+      return;
+    }
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory() || SKIP_DIRS.has(e.name)) continue;
+      findTauri(path.join(dir, e.name), depth + 1);
+    }
+  };
+  const findElectron = (dir, depth) => {
+    if (depth > 2) return;
+    const eDir = path.join(dir, 'electron');
+    try {
+      if (fs.statSync(eDir).isDirectory() && hasSourceFiles(eDir)) pushRel(eDir);
+    } catch { /* 不存在则跳过 */ }
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory() || SKIP_DIRS.has(e.name)) continue;
+      findElectron(path.join(dir, e.name), depth + 1);
+    }
+  };
+  const bases = new Set([projectRoot, ...baseRoots.map((r) => path.resolve(projectRoot, r))]);
+  for (const base of bases) {
+    findTauri(base, 0);
+    findElectron(base, 0);
+  }
+  return [...extras];
 }
 
 // HTML 入口探测：收集扫描根及其所在项目目录顶层 *.html 的 <script src="/src/xxx.tsx"> 引用
@@ -274,6 +331,7 @@ const FRAMEWORK_LABELS_FULL = {
 const VARIANT_LABELS = {
   capacitor: 'Capacitor 跨端',
   electron: 'Electron 桌面端',
+  tauri: 'Tauri 桌面端',
   vite: 'Vite 构建',
   webpack: 'Webpack 构建',
 };
@@ -287,7 +345,14 @@ function composeFrameworkLabel(framework, variants) {
 }
 
 export function scanProject(projectRoot, options = {}) {
-  const roots = resolveRoots(projectRoot, options);
+  const baseRoots = resolveRoots(projectRoot, options);
+  const clientRoots = discoverClientComponentRoots(projectRoot, baseRoots);
+  const roots = [...baseRoots];
+  for (const r of clientRoots) {
+    if (!roots.includes(r)) roots.push(r);
+  }
+  const tauriDetected = clientRoots.some((r) => r.includes('src-tauri'));
+  const electronDetected = clientRoots.some((r) => /(^|\/)electron$/.test(r));
   const files = [];
   for (const root of roots) {
     walk(path.join(projectRoot, root), projectRoot, files);
@@ -331,7 +396,7 @@ export function scanProject(projectRoot, options = {}) {
     }
   }
 
-  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0 };
+  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0 };
   for (const f of files) {
     const ext = path.extname(f).slice(1);
     if (counts[ext] !== undefined) counts[ext] += 1;
@@ -346,6 +411,9 @@ export function scanProject(projectRoot, options = {}) {
     codeSignals: { vueFileCount: counts.vue, tsxFileCount: counts.tsx, jsxFileCount: counts.jsx },
   });
   const frameworkVariants = detectFrameworkVariants({ deps: allDeps, configs: hostConfigs });
+  // 客户端组件发现结果并入变体（Tauri/Electron 桌面端）
+  if (tauriDetected && !frameworkVariants.includes('tauri')) frameworkVariants.push('tauri');
+  if (electronDetected && !frameworkVariants.includes('electron')) frameworkVariants.push('electron');
 
   return {
     root: projectRoot,
@@ -364,6 +432,9 @@ export function scanProject(projectRoot, options = {}) {
     tsxFileCount: counts.tsx,
     jsFileCount: counts.js + counts.jsx,
     vueFileCount: counts.vue,
+    rustFileCount: counts.rs,
+    tauriDetected,
+    electronDetected,
     userScriptFiles,
     userScriptFileCount: userScriptFiles.size,
     tsconfigPaths,

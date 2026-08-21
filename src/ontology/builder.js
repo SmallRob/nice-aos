@@ -5,6 +5,7 @@ import { createResolver } from '../analyzers/importResolver.js';
 import { analyzeFileFromDisk } from '../analyzers/tsAnalyzer.js';
 import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
 import { analyzeUserScriptFromDisk, isUserScriptCandidate } from '../analyzers/userScriptAnalyzer.js';
+import { analyzeRustFileFromDisk, analyzeRustFile, resolveRustUse } from '../analyzers/rustAnalyzer.js';
 import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
@@ -134,6 +135,7 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         fileId: fileObj.id, filePath: relPath,
         line: iface.line,
         exported: iface.exported,
+        language: iface.language ?? 'ts',
         methodIds: [],
         extendsIds: [],
         extendsNames: iface.extendsNames,
@@ -172,6 +174,11 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         fileId: fileObj.id, filePath: relPath,
         line: cls.line,
         exported: cls.exported,
+        language: cls.language ?? 'ts',
+        kind: cls.kind ?? 'class',
+        derives: cls.derives ?? [],
+        fields: cls.fields ?? [],
+        variants: cls.variants ?? [],
         isSingleton: cls.isSingleton,
         methodIds: [],
         implementsIds: [],
@@ -481,17 +488,20 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files);
 
   // 1. 逐文件解析（TypeScript Compiler API，仅词法/语法层，不做类型检查）
-  // 路由：.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（三者平级、逻辑独立）
+  // 路由：.rs → rustAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（平级、逻辑独立）
+  const rustFiles = new Set(scan.files.filter((f) => f.endsWith('.rs')));
   const factsMap = new Map();
   const analysisErrors = [];
   const getFacts = (relPath) => {
     if (factsMap.has(relPath)) return factsMap.get(relPath);
     try {
-      const facts = relPath.endsWith('.vue')
-        ? analyzeVueFileFromDisk(relPath, projectRoot)
-        : (scan.userScriptFiles?.has(relPath)
-          ? analyzeUserScriptFromDisk(relPath, projectRoot)
-          : analyzeFileFromDisk(relPath, projectRoot));
+      const facts = relPath.endsWith('.rs')
+        ? analyzeRustFileFromDisk(relPath, projectRoot)
+        : relPath.endsWith('.vue')
+          ? analyzeVueFileFromDisk(relPath, projectRoot)
+          : (scan.userScriptFiles?.has(relPath)
+            ? analyzeUserScriptFromDisk(relPath, projectRoot)
+            : analyzeFileFromDisk(relPath, projectRoot));
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
@@ -510,11 +520,20 @@ export async function buildOntologyData(projectRoot, options = {}) {
   };
   for (const file of scan.files) getFacts(file);
 
-  // 2. 依赖对象（package.json 声明 + 代码中实际导入）
+  // Rust use 路径解析器（crate::a::b::Name → 目标 .rs 文件；serde::X → Rust 外部 crate，不进 npm 依赖体系）
+  const resolveRustImport = (relPath, specifier) => resolveRustUse(relPath, specifier, rustFiles);
+
+  // 2. 依赖对象（package.json 声明 + 代码中实际导入；Rust 外部 crate 为 Cargo.toml 管辖，不计入）
   const depUsedCount = new Map();
   const externalImports = new Map(); // package -> Set<specifier>
   for (const [relPath, facts] of factsMap) {
+    const isRust = relPath.endsWith('.rs');
     for (const imp of facts.imports) {
+      if (isRust) {
+        const r = resolveRustImport(relPath, imp.specifier);
+        imp.resolved = r.kind === 'internal' || r.kind === 'unresolved' ? r : { kind: 'rust-external', package: r.package };
+        continue;
+      }
       const resolved = resolver.resolve(relPath, imp.specifier);
       imp.resolved = resolved;
       if (resolved.kind === 'external') {
@@ -574,8 +593,19 @@ export async function buildOntologyData(projectRoot, options = {}) {
     const unresolvedImports = [];
     let typeImportCount = 0;
     const seen = new Set();
+    const isRustFile = relPath.endsWith('.rs');
     for (const imp of facts.imports) {
       if (imp.isTypeOnly) typeImportCount += 1;
+      if (isRustFile) {
+        const r = imp.resolved ?? resolveRustImport(relPath, imp.specifier);
+        if (r.kind === 'internal') {
+          if (!seen.has(`file:${r.file}`)) { importIds.push(`file:${r.file}`); seen.add(`file:${r.file}`); }
+        } else if (r.kind === 'unresolved') {
+          if (!unresolvedImports.includes(imp.specifier)) unresolvedImports.push(imp.specifier);
+        }
+        // rust-external（Cargo crate）不进 npm 依赖体系
+        continue;
+      }
       const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
       if (r.kind === 'internal') {
         if (!seen.has(`file:${r.file}`)) { importIds.push(`file:${r.file}`); seen.add(`file:${r.file}`); }
@@ -596,6 +626,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       layer: dir ? moduleLayerOf(dir) : 'root',
       lineCount: facts.lineCount,
       isTest: isTestFile(relPath),
+      isDeclaration: relPath.endsWith('.d.ts'),
       isEntry: htmlEntries.has(relPath) || isEntryFile(relPath, entryRoots),
       isPageFile: stem.endsWith('Page') || (relPath.endsWith('.vue') && /\/(views|pages)\//.test(relPath)),
       importIds,
@@ -705,14 +736,37 @@ export async function buildOntologyData(projectRoot, options = {}) {
   } = collectTypeEntities(scan.files, factsMap, fileObjectByPath);
 
   // 跨文件类型引用解析：本文件声明优先；其次具名 import（含 type-only，按 local 名匹配、imported 名定位目标文件导出）
+  // Rust 文件：use crate::a::b::Name 路径解析为主，全仓库导出名唯一匹配兜底（crate 内 pub 名唯一性强）
   const exportedTypeIndex = new Map(); // `relPath#name` -> id（仅导出实体）
   for (const i of interfaces) if (i.exported) exportedTypeIndex.set(`${i.filePath}#${i.name}`, i.id);
   for (const c of classes) if (c.exported) exportedTypeIndex.set(`${c.filePath}#${c.name}`, c.id);
+  const exportedIdsByName = new Map(); // name -> [id]（全仓库重名检测，Rust 唯一名兜底用）
+  for (const e of [...interfaces, ...classes]) {
+    if (!e.exported) continue;
+    const arr = exportedIdsByName.get(e.name);
+    if (arr) arr.push(e.id);
+    else exportedIdsByName.set(e.name, [e.id]);
+  }
   const resolveTypeRef = (relPath, name) => {
     const facts = factsMap.get(relPath);
     if (!facts) return null;
     const local = localTypesByFile.get(relPath)?.get(name);
     if (local) return local;
+    if (relPath.endsWith('.rs')) {
+      // use 路径解析：crate::a::b::Name → 目标文件 → exportedTypeIndex
+      const usePath = facts.importMap.get(name);
+      if (usePath) {
+        const r = resolveRustUse(relPath, usePath, rustFiles);
+        if (r.kind === 'internal') {
+          const id = exportedTypeIndex.get(`${r.file}#${r.importedName}`);
+          if (id) return id;
+        }
+      }
+      // 全仓库唯一导出名兜底
+      const ids = exportedIdsByName.get(name);
+      if (ids && ids.length === 1) return ids[0];
+      return null;
+    }
     for (const imp of facts.imports) {
       const n = (imp.names ?? []).find((x) => x.local === name && x.imported && x.imported !== '*');
       if (!n) continue;
@@ -737,8 +791,34 @@ export async function buildOntologyData(projectRoot, options = {}) {
   // 导出符号的全仓库导入索引（export * 再导出 / 命名空间导入 / 动态 import 的目标文件——无法按名追踪，整文件豁免）
   const indirectlyReferencedFiles = new Set();
   const importedTypeRefs = new Set(); // `targetFile#importedName`
+  const rustUsedNames = new Set(); // Rust use 名字全局集合（路径解析失败时的名字级兜底豁免）
   for (const [relPath, facts] of factsMap) {
+    const isRust = relPath.endsWith('.rs');
     for (const imp of facts.imports) {
+      if (isRust) {
+        const r = imp.resolved ?? resolveRustImport(relPath, imp.specifier);
+        if (r.kind === 'internal') {
+          for (const n of imp.names ?? []) {
+            if (n.imported === '*') {
+              // 通配 use（use crate::db_v2::*）：mod.rs 可能 re-export 子模块名字（pub use schema::*），
+              // 名字不可静态枚举 → 目标文件及其所在目录全部 .rs 文件豁免（宁可漏报不误报）
+              indirectlyReferencedFiles.add(r.file);
+              const dir = path.posix.dirname(r.file);
+              for (const f of rustFiles) {
+                if (f.startsWith(dir + '/')) indirectlyReferencedFiles.add(f);
+              }
+            } else if (n.imported) {
+              importedTypeRefs.add(`${r.file}#${n.imported}`);
+              rustUsedNames.add(n.imported);
+            }
+          }
+        } else {
+          for (const n of imp.names ?? []) {
+            if (n.imported && n.imported !== '*') rustUsedNames.add(n.imported);
+          }
+        }
+        continue;
+      }
       const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
       if (r.kind !== 'internal') continue;
       if (!imp.names || imp.names.length === 0) {
@@ -757,6 +837,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     if (!e.exported || e.deadCandidate) continue;
     if (indirectlyReferencedFiles.has(e.filePath)) continue;
     if (importedTypeRefs.has(`${e.filePath}#${e.name}`)) continue;
+    if (e.filePath.endsWith('.rs') && rustUsedNames.has(e.name)) continue; // Rust use 名字级兜底豁免
     const span = typeSpanById.get(e.id);
     if (span && refsOutsideSpan(e.filePath, e.name, span.pos, span.end) === 0) {
       e.deadCandidate = true;
@@ -1114,6 +1195,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     for (const sym of facts?.exportSymbols ?? []) {
       if (!sym.isExported || sym.isDefault) continue;
       if (importedTypeRefs.has(`${f.path}#${sym.name}`)) continue;
+      if (f.path.endsWith('.rs') && rustUsedNames.has(sym.name)) continue; // Rust use 名字级兜底豁免
       const positions = facts.nameReferences?.get(sym.name) ?? [];
       if (positions.length > 1) continue; // 本文件内仍有使用，仅 export 语句冗余，不判死
       f.unusedExports.push(sym.name);
@@ -1135,7 +1217,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     frameworkLabel: scan.frameworkLabel ?? scan.framework,
     hostRoot: scan.hostRoot ?? null,
     hostConfigs: scan.hostConfigs ?? [],
-    language: 'TypeScript',
+    language: (scan.rustFileCount ?? 0) > 0 ? 'TypeScript + Rust' : 'TypeScript',
     commitHash: scan.commitHash,
     branch: scan.branch,
     fileCount: scan.fileCount,
@@ -1143,6 +1225,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
     tsxFileCount: scan.tsxFileCount,
     jsFileCount: scan.jsFileCount,
     vueFileCount: scan.vueFileCount,
+    rustFileCount: scan.rustFileCount ?? 0,
+    tauriDetected: scan.tauriDetected ?? false,
+    electronDetected: scan.electronDetected ?? false,
     userScriptFileCount: scan.userScriptFileCount ?? 0,
     analysisErrors,
     reviewed: false, notes: null,
@@ -1210,9 +1295,11 @@ export async function buildSingleFileOntology(absFilePath) {
   const fileName = path.basename(absFilePath);
   const dir = path.dirname(absFilePath);
 
-  // 路由与全仓库扫描一致：.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
+  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
   let facts;
-  if (fileName.endsWith('.vue')) {
+  if (fileName.endsWith('.rs')) {
+    facts = analyzeRustFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
+  } else if (fileName.endsWith('.vue')) {
     facts = analyzeVueFileFromDisk(fileName, dir);
   } else if (isUserScriptCandidate(absFilePath)) {
     facts = analyzeUserScriptFromDisk(fileName, dir);

@@ -1,11 +1,12 @@
 // 本体查看器（Viewer）——使用者层的"企业级知识中心"（对应参考架构中的 Web UI 消费者）
 // 数据流：snapshot.json（DataMap）→ buildViewerModel()（数据聚合）→ renderViewerHtml()（视图层渲染）
-// 五个视图：
+// 六个视图：
 //   1. 领域蓝图（Domain Blueprint）：每个功能域的业务层级构成 / 代码组织 / 单元清单
 //   2. 业务数据图（Data Map）：Store 数据枢纽 + 跨域数据依赖
 //   3. 业务逻辑流向（Logic Flow）：架构层间导入流向 + 跨域依赖 + 高扇入业务节点
-//   4. 脚本蓝图（Script Blueprint）：单脚本函数调用图 + DOM 注入锚点 + 网络端点
-//   5. 本体概览（Ontology）：概念分类体系 + 对象/链接类型清单
+//   4. 实体类图（Entity Class Diagram）：Interface/Class 实体 UML 关系图（跨语言 TS/JS/Vue/Rust）
+//   5. 脚本蓝图（Script Blueprint）：单脚本函数调用图 + DOM 注入锚点 + 网络端点
+//   6. 本体概览（Ontology）：概念分类体系 + 对象/链接类型清单
 // 油猴意图适配：无 React/Vue 结构的纯脚本仓库，视图 1/2/3 按函数意图（roles）重建
 //   （意图功能域 / 存储枢纽 / 意图流转矩阵）；意图信号不足时视图置空并隐藏 Tab
 // 原则：视图模型（JSON）独立于渲染，可被 AI agent 直接消费；HTML 自包含零依赖，可离线打开；
@@ -26,6 +27,12 @@ const SCRIPT_NODE_CAP = 50;
 const SCRIPT_TABLE_CAP = 40;
 const SCRIPT_INJECT_CAP = 20;
 const SCRIPT_NET_CAP = 12;
+
+// 实体类图保护：图节点 / 实体清单 / 每框成员上限（大仓库类实体可达数百个）
+const ENTITY_NODE_CAP = 48;
+const ENTITY_GRAPH_MIN = 24;
+const ENTITY_TABLE_CAP = 120;
+const ENTITY_MEMBER_CAP = 6;
 
 // 脚本函数业务角色（与解析器 inferRoles 对应）；desc 为意图描述，供脚本意图功能域展示
 const SCRIPT_ROLE_META = {
@@ -548,6 +555,165 @@ export function buildViewerModel(dataMap) {
     return { flows, flowTotal: totalEdges, crossRoleEdges, hubs };
   })();
 
+  // ---- 7. 实体类图：Class/Interface 实体 UML 关系图（跨语言 TS/JS/Vue/Rust；implements/extends 边）----
+  // 大仓库保护：关系活跃度 Top N 进图；每框字段/方法截断；清单独立截断；无类型实体时置 null 隐藏 Tab
+  const entities = (() => {
+    const classEntities = dataMap.Class ?? [];
+    const ifaceEntities = dataMap.Interface ?? [];
+    const methodEntities = dataMap.Method ?? [];
+    const all = [...ifaceEntities, ...classEntities];
+    if (!all.length) return null;
+
+    const methodsById = new Map(methodEntities.map((m) => [m.id, m]));
+    const entityById = new Map(all.map((e) => [e.id, e]));
+
+    // 已解析关系边：implements（类→接口）/ extends（子→父），目标必须在本仓库实体内
+    const edges = [];
+    for (const c of classEntities) {
+      for (const tid of c.implementsIds ?? []) {
+        if (entityById.has(tid) && tid !== c.id) edges.push({ from: c.id, to: tid, kind: 'implements' });
+      }
+      if (c.extendsId && entityById.has(c.extendsId) && c.extendsId !== c.id) {
+        edges.push({ from: c.id, to: c.extendsId, kind: 'extends' });
+      }
+    }
+    for (const i of ifaceEntities) {
+      for (const tid of i.extendsIds ?? []) {
+        if (entityById.has(tid) && tid !== i.id) edges.push({ from: i.id, to: tid, kind: 'extends' });
+      }
+    }
+
+    const degree = new Map();
+    for (const e of edges) {
+      degree.set(e.from, (degree.get(e.from) ?? 0) + 1);
+      degree.set(e.to, (degree.get(e.to) ?? 0) + 1);
+    }
+
+    const methodCountOf = (e) => (e.methodIds ?? []).length;
+    const langOf = (e) => e.language ?? 'ts';
+    const kindOf = (e) => (e.id.startsWith('iface:') ? 'interface' : (e.kind ?? 'class'));
+    const KIND_LABEL = { class: '类', struct: '结构体', enum: '枚举', interface: '接口', trait: 'Trait' };
+    const LANG_LABEL = { ts: 'TS/JS', vue: 'Vue', rust: 'Rust' };
+
+    // 图节点携带成员明细（字段/变体/方法截断）；清单行仅携带计数
+    const toNode = (e) => {
+      const ms = (e.methodIds ?? []).map((id) => methodsById.get(id)).filter(Boolean);
+      const kind = kindOf(e);
+      return {
+        id: e.id,
+        name: e.name,
+        entityType: e.id.startsWith('iface:') ? 'interface' : 'class',
+        kind,
+        kindLabel: KIND_LABEL[kind] ?? kind,
+        language: langOf(e),
+        filePath: e.filePath,
+        line: e.line ?? null,
+        module: fileByPath.get(e.filePath)?.module ?? '',
+        archLayer: e.archLayer ?? fileByPath.get(e.filePath)?.archLayer ?? null,
+        exported: !!e.exported,
+        deadCandidate: !!e.deadCandidate,
+        isSingleton: !!e.isSingleton,
+        derives: (e.derives ?? []).slice(0, 4),
+        fields: (e.fields ?? []).slice(0, ENTITY_MEMBER_CAP).map((f) => ({ name: f.name, type: f.type ?? null })),
+        fieldCount: (e.fields ?? []).length,
+        variants: (e.variants ?? []).slice(0, ENTITY_MEMBER_CAP),
+        variantCount: (e.variants ?? []).length,
+        methods: ms.slice(0, ENTITY_MEMBER_CAP).map((m) => ({ name: m.name, isStatic: !!m.isStatic, isAsync: !!m.isAsync })),
+        methodCount: ms.length,
+        degree: degree.get(e.id) ?? 0,
+        implementsNames: e.implementsNames ?? [],
+        extendsName: e.extendsName ?? null,
+      };
+    };
+    const toRow = (e) => {
+      const n = toNode(e);
+      return {
+        id: n.id, name: n.name, kind: n.kind, kindLabel: n.kindLabel, language: n.language,
+        filePath: n.filePath, line: n.line, module: n.module, archLayer: n.archLayer,
+        exported: n.exported, deadCandidate: n.deadCandidate, isSingleton: n.isSingleton,
+        fieldCount: n.fieldCount, variantCount: n.variantCount, methodCount: n.methodCount,
+        degree: n.degree, implementsNames: n.implementsNames, extendsName: n.extendsName,
+      };
+    };
+
+    // 图节点：关系活跃度优先（出入边数，其次方法数）；不足最小规模时按语言轮转补齐成员规模
+    // 最大的实体，确保每种语言的代表性实体（如无继承关系的 Rust struct）都能进入类图
+    const related = all
+      .filter((e) => (degree.get(e.id) ?? 0) > 0)
+      .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0) || methodCountOf(b) - methodCountOf(a));
+    const graphEntities = related.slice(0, ENTITY_NODE_CAP);
+    if (graphEntities.length < ENTITY_GRAPH_MIN) {
+      const chosen = new Set(graphEntities.map((e) => e.id));
+      const pools = [...new Set(all.map((e) => langOf(e)))]
+        .map((lang) => ({
+          list: all
+            .filter((e) => !chosen.has(e.id) && langOf(e) === lang)
+            .sort((a, b) => methodCountOf(b) - methodCountOf(a) || (b.fields ?? []).length - (a.fields ?? []).length),
+        }))
+        .filter((p) => p.list.length)
+        .sort((a, b) => b.list.length - a.list.length);
+      let need = ENTITY_GRAPH_MIN - graphEntities.length;
+      while (need > 0 && pools.some((p) => p.list.length)) {
+        for (const p of pools) {
+          if (need <= 0) break;
+          const e = p.list.shift();
+          if (e) { graphEntities.push(e); need -= 1; }
+        }
+      }
+    }
+    const graphIds = new Set(graphEntities.map((e) => e.id));
+    const graphEdges = edges
+      .filter((e) => graphIds.has(e.from) && graphIds.has(e.to))
+      .map((e) => ({ from: e.from, to: e.to, kind: e.kind }));
+
+    // 统计分布：语言 / 类型 / 架构层（label 服务端备好，前端零依赖）
+    const tally = (get, labels) => {
+      const counts = new Map();
+      for (const e of all) {
+        const key = get(e) ?? 'unknown';
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      return [...counts.entries()]
+        .map(([key, count]) => ({ key, label: labels[key] ?? layerLabel(key), count }))
+        .sort((a, b) => b.count - a.count);
+    };
+    const moduleCounts = new Map();
+    for (const e of all) {
+      const mod = fileByPath.get(e.filePath)?.module ?? '';
+      moduleCounts.set(mod, (moduleCounts.get(mod) ?? 0) + 1);
+    }
+    const crossLanguageEdges = edges.filter((e) => {
+      const a = entityById.get(e.from);
+      const b = entityById.get(e.to);
+      return a && b && langOf(a) !== langOf(b);
+    }).length;
+
+    const tableRows = all
+      .slice()
+      .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0) || methodCountOf(b) - methodCountOf(a))
+      .slice(0, ENTITY_TABLE_CAP)
+      .map(toRow);
+
+    return {
+      totalCount: all.length,
+      classCount: classEntities.length,
+      interfaceCount: ifaceEntities.length,
+      methodCount: methodEntities.length,
+      edgeCount: edges.length,
+      implementsCount: edges.filter((e) => e.kind === 'implements').length,
+      extendsCount: edges.filter((e) => e.kind === 'extends').length,
+      crossLanguageEdges,
+      relatedEntityCount: related.length,
+      deadCandidateCount: all.filter((e) => e.deadCandidate).length,
+      byLanguage: tally(langOf, LANG_LABEL),
+      byKind: tally(kindOf, KIND_LABEL),
+      byLayer: tally((e) => e.archLayer ?? fileByPath.get(e.filePath)?.archLayer ?? 'shared', {}),
+      moduleOptions: [...moduleCounts.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count })),
+      graph: { nodes: graphEntities.map(toNode), edges: graphEdges },
+      table: tableRows,
+    };
+  })();
+
   return {
     viewerVersion: '1.0',
     generatedAt: meta.generatedAt ?? new Date().toISOString(),
@@ -572,6 +738,7 @@ export function buildViewerModel(dataMap) {
     logicFlow,
     scriptFlow,
     scriptBlueprint,
+    entities,
     quality: {
       cycles: meta.cycles ?? [],
       orphanCandidateCount: (meta.orphanCandidates ?? []).length,
@@ -713,6 +880,24 @@ svg .col-label { fill: var(--fg-faint); font-size: 11px; font-family: -apple-sys
 .legend .line { display: inline-block; width: 18px; height: 0; border-top: 1.5px solid; margin-right: 4px; vertical-align: 3px; }
 #script-fn-info { margin-top: 10px; min-height: 20px; }
 #script-fn-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
+/* ---- 实体类图：UML 类框 + 关系边 ---- */
+.uml-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); padding: 12px; }
+.uml-wrap svg { display: block; max-width: 100%; height: auto; }
+svg .uml rect.box { fill: var(--panel); stroke-width: 1.5; transition: opacity .12s; }
+svg .uml rect.hdr { stroke: none; }
+svg .uml text.uname { font-size: 12px; font-weight: 700; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg); }
+svg .uml text.uname.it { font-style: italic; }
+svg .uml text.ustereo { font-size: 10px; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg-faint); }
+svg .uml text.umember { font-size: 10px; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg-dim); }
+svg .uml text.umore { font-size: 10px; fill: var(--fg-faint); }
+svg .uml line.usep { stroke: var(--border); }
+svg .ge.impl { stroke: rgba(57,197,207,.65); stroke-dasharray: 6 4; }
+svg .ge.ext { stroke: rgba(188,140,255,.7); }
+.filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+.filter-bar select, .filter-bar input { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+.filter-bar input { width: 200px; }
+#entity-info { margin-top: 10px; min-height: 20px; }
+#entity-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
 </style>
 </head>
 <body>
@@ -724,6 +909,7 @@ svg .col-label { fill: var(--fg-faint); font-size: 11px; font-family: -apple-sys
     <div class="tab" data-tab="blueprint">领域蓝图</div>
     <div class="tab" data-tab="data">业务数据图</div>
     <div class="tab" data-tab="flow">业务逻辑流向</div>
+    <div class="tab" data-tab="entities">实体类图</div>
     <div class="tab" data-tab="scripts">脚本蓝图</div>
   </nav>
 </header>
@@ -732,6 +918,7 @@ svg .col-label { fill: var(--fg-faint); font-size: 11px; font-family: -apple-sys
   <section class="view" id="view-blueprint"></section>
   <section class="view" id="view-data"></section>
   <section class="view" id="view-flow"></section>
+  <section class="view" id="view-entities"></section>
   <section class="view" id="view-scripts"></section>
 </main>
 <script id="viewer-data" type="application/json">${dataJson}</script>
@@ -1452,6 +1639,308 @@ function renderScriptDetail() {
   });
 }
 
+// ---------- Tab 6: 实体类图（UML 类框 + implements/extends 关系边，跨语言 TS/Vue/Rust）----------
+const LANG_META = {
+  ts: { label: 'TS/JS', color: '#58a6ff', hdr: 'rgba(88,166,255,.10)' },
+  vue: { label: 'Vue', color: '#3fb950', hdr: 'rgba(63,185,80,.10)' },
+  rust: { label: 'Rust', color: '#d29922', hdr: 'rgba(210,153,34,.12)' },
+};
+const langColor = (l) => (LANG_META[l] || LANG_META.ts).color;
+const langHdr = (l) => (LANG_META[l] || LANG_META.ts).hdr;
+const langLabel = (l) => (LANG_META[l] || { label: l }).label;
+
+// 布局：父（被实现/继承）在左、子类在右按派生层级分列；无关系实体沉到最右列
+function buildEntitiesSvg(nodes, edges) {
+  if (!nodes.length) return '<div class="empty">无匹配实体（调整过滤条件试试）。</div>';
+  const parentsOf = {};
+  edges.forEach((e) => { (parentsOf[e.from] = parentsOf[e.from] || []).push(e.to); });
+  const level = {};
+  const computeLevel = (id, seen) => {
+    if (level[id] !== undefined) return level[id];
+    if (seen[id]) return 0;
+    seen[id] = 1;
+    let lv = 0;
+    for (const p of parentsOf[id] || []) lv = Math.max(lv, computeLevel(p, seen) + 1);
+    delete seen[id];
+    level[id] = lv;
+    return lv;
+  };
+  nodes.forEach((n) => computeLevel(n.id, {}));
+  const hasEdge = {};
+  edges.forEach((e) => { hasEdge[e.from] = 1; hasEdge[e.to] = 1; });
+  let maxLv = 0;
+  nodes.forEach((n) => { if (level[n.id] > maxLv) maxLv = level[n.id]; });
+  const noEdgeLevel = maxLv + 1;
+  nodes.forEach((n) => { if (!hasEdge[n.id]) level[n.id] = noEdgeLevel; });
+  // 压缩空层级（过滤后中间层可能为空）
+  const usedLevels = [...new Set(nodes.map((n) => level[n.id]))].sort((a, b) => a - b);
+  const colIdx = {};
+  usedLevels.forEach((lv, i) => { colIdx[lv] = i; });
+  const cols = [];
+  nodes.forEach((n) => { const i = colIdx[level[n.id]]; (cols[i] = cols[i] || []).push(n); });
+  cols.forEach((c) => c.sort((a, b) => (b.methodCount + b.fieldCount + b.variantCount) - (a.methodCount + a.fieldCount + a.variantCount)));
+
+  const W = 232, HDR = 24, ROW = 15, GAPY = 16, PADX = 26, PADY = 44, COLW = W + 84;
+  const boxHeight = (n) => HDR + 6
+    + (n.fields.length ? n.fields.length * ROW + 5 : 0)
+    + (n.variants.length ? n.variants.length * ROW + 5 : 0)
+    + (n.methods.length ? n.methods.length * ROW + 5 : 0)
+    + 3;
+  const pos = {};
+  let colX = PADX, maxH = PADY;
+  for (let i = 0; i < cols.length; i++) {
+    const colNodes = cols[i] || [];
+    let y = PADY;
+    colNodes.forEach((n) => {
+      pos[n.id] = { x: colX, y, h: boxHeight(n) };
+      y += boxHeight(n) + GAPY;
+    });
+    colX += COLW;
+    if (y > maxH) maxH = y;
+  }
+  const svgW = colX - COLW + W + PADX;
+  const svgH = maxH + 8;
+  const trunc = (s, len) => (String(s ?? '').length > len ? String(s).slice(0, len - 1) + '…' : String(s ?? ''));
+
+  let s = '<svg width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '" class="uml">';
+  s += '<defs>'
+    + '<marker id="arr-impl" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M2,2 L10,6 L2,10 z" fill="#0d1117" stroke="#39c5cf" stroke-width="1.4"/></marker>'
+    + '<marker id="arr-ext" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M2,2 L10,6 L2,10 z" fill="#bc8cff"/></marker>'
+    + '</defs>';
+  // 列标签：首列 = 契约/父类，末列（若为无关系列）= 未关联实体
+  for (let i = 0; i < cols.length; i++) {
+    const lv = usedLevels[i];
+    let label = '派生第 ' + lv + ' 层';
+    if (i === 0 && lv === 0) label = '契约 / 父类（被实现与继承）';
+    if (lv === noEdgeLevel) label = '未关联实体';
+    s += '<text class="col-label" x="' + (PADX + i * COLW) + '" y="16">' + esc(label) + '</text>';
+  }
+  // 关系边：子类左缘 → 父类右缘（UML 箭头指向接口/父类）
+  edges.forEach((e) => {
+    const a = pos[e.from], b = pos[e.to];
+    if (!a || !b) return;
+    const y1 = a.y + HDR / 2, y2 = b.y + HDR / 2;
+    const x1 = a.x - 2, x2 = b.x + W + 2;
+    const mx = (x1 + x2) / 2;
+    const d = 'M' + x1 + ' ' + y1 + ' C' + mx + ' ' + y1 + ',' + mx + ' ' + y2 + ',' + (x2 - 2) + ' ' + y2;
+    s += '<path class="ge ' + (e.kind === 'implements' ? 'impl' : 'ext') + '" data-e="' + esc(e.from) + '§' + esc(e.to) + '" d="' + d + '" marker-end="url(#' + (e.kind === 'implements' ? 'arr-impl' : 'arr-ext') + ')"><title>' + esc(e.kind) + '</title></path>';
+  });
+  // UML 类框：头部（名称+构造型）→ 字段/变体 → 分隔线 → 方法
+  nodes.forEach((n) => {
+    const p = pos[n.id];
+    const c = langColor(n.language);
+    const stereo = n.kind === 'class' ? '' : '«' + n.kind + '»';
+    let g = '<g class="gn" data-n="' + esc(n.id) + '">'
+      + '<rect class="box" x="' + p.x + '" y="' + p.y + '" width="' + W + '" height="' + p.h + '" rx="5" stroke="' + c + '"' + (n.deadCandidate ? ' stroke-dasharray="4 3"' : '') + '/>'
+      + '<rect class="hdr" x="' + p.x + '" y="' + p.y + '" width="' + W + '" height="' + HDR + '" rx="5" fill="' + langHdr(n.language) + '"/>'
+      + '<text class="uname' + (n.entityType === 'interface' ? ' it' : '') + '" x="' + (p.x + 9) + '" y="' + (p.y + 16) + '">' + esc(trunc(n.name, 22)) + '</text>'
+      + (stereo ? '<text class="ustereo" x="' + (p.x + W - 8) + '" y="' + (p.y + 16) + '" text-anchor="end">' + esc(stereo) + '</text>' : '');
+    let cy = p.y + HDR + 6;
+    n.fields.forEach((f) => {
+      g += '<text class="umember" x="' + (p.x + 9) + '" y="' + cy + '">' + esc(trunc('+ ' + f.name + (f.type ? ': ' + f.type : ''), 34)) + '</text>';
+      cy += ROW;
+    });
+    if (n.fieldCount > n.fields.length) {
+      g += '<text class="umore" x="' + (p.x + 9) + '" y="' + cy + '">… 另有 ' + (n.fieldCount - n.fields.length) + ' 字段</text>';
+      cy += ROW;
+    }
+    n.variants.forEach((v) => {
+      g += '<text class="umember" x="' + (p.x + 9) + '" y="' + cy + '">' + esc(trunc('· ' + v, 34)) + '</text>';
+      cy += ROW;
+    });
+    if (n.variantCount > n.variants.length) {
+      g += '<text class="umore" x="' + (p.x + 9) + '" y="' + cy + '">… 另有 ' + (n.variantCount - n.variants.length) + ' 变体</text>';
+      cy += ROW;
+    }
+    if (n.fields.length || n.variants.length || n.fieldCount > n.fields.length || n.variantCount > n.variants.length) {
+      g += '<line class="usep" x1="' + (p.x + 1) + '" y1="' + (cy - 5) + '" x2="' + (p.x + W - 1) + '" y2="' + (cy - 5) + '"/>';
+      cy += 2;
+    }
+    n.methods.forEach((m) => {
+      g += '<text class="umember" x="' + (p.x + 9) + '" y="' + cy + '">' + esc(trunc((m.isStatic ? '$ ' : '+ ') + m.name + '()', 34)) + '</text>';
+      cy += ROW;
+    });
+    if (n.methodCount > n.methods.length) {
+      g += '<text class="umore" x="' + (p.x + 9) + '" y="' + cy + '">… 另有 ' + (n.methodCount - n.methods.length) + ' 方法</text>';
+      cy += ROW;
+    }
+    const rel = []
+      .concat(n.extendsName ? ['extends ' + n.extendsName] : [])
+      .concat((n.implementsNames || []).map((x) => 'impl ' + x));
+    g += '<title>' + esc(n.name + ' · ' + n.kindLabel + ' · ' + langLabel(n.language) + '\\n' + n.filePath + (n.line ? ':' + n.line : '')
+      + '\\n模块 ' + (n.module || '（根）') + ' · 字段 ' + n.fieldCount + ' · 变体 ' + n.variantCount + ' · 方法 ' + n.methodCount
+      + (rel.length ? '\\n关系: ' + rel.join('、') : '') + (n.derives.length ? '\\nderives: ' + n.derives.join(', ') : '')) + '</title>';
+    g += '</g>';
+    s += g;
+  });
+  s += '</svg>';
+  return s;
+}
+
+function bindEntityGraphEvents(svgEl) {
+  const info = document.getElementById('entity-info');
+  svgEl.querySelectorAll('.gn').forEach((g) => {
+    g.addEventListener('mouseenter', () => {
+      svgEl.classList.add('focus');
+      const n = g.dataset.n;
+      const related = {};
+      related[n] = 1;
+      svgEl.querySelectorAll('.ge').forEach((e) => {
+        const parts = e.dataset.e.split('§');
+        if (parts[0] === n || parts[1] === n) {
+          e.classList.add('hl');
+          related[parts[0]] = 1;
+          related[parts[1]] = 1;
+        }
+      });
+      svgEl.querySelectorAll('.gn').forEach((x) => { if (related[x.dataset.n]) x.classList.add('hl'); });
+    });
+    g.addEventListener('mouseleave', () => {
+      svgEl.classList.remove('focus');
+      svgEl.querySelectorAll('.hl').forEach((x) => x.classList.remove('hl'));
+    });
+    g.addEventListener('click', () => {
+      const node = E_NODES_BY_ID[g.dataset.n];
+      if (!node) return;
+      const rel = [].concat(node.extendsName ? ['extends ' + node.extendsName] : [], (node.implementsNames || []).map((x) => 'impl ' + x));
+      info.innerHTML = '<b class="name">' + esc(node.name) + '</b> '
+        + chip(node.kindLabel, node.kind === 'interface' || node.kind === 'trait' ? 'cyan' : 'blue')
+        + chip(langLabel(node.language), node.language === 'rust' ? 'amber' : '')
+        + chip('关系度 ' + node.degree, node.degree > 0 ? 'purple' : '')
+        + (node.exported ? chip('导出', 'green') : chip('内部', ''))
+        + (node.isSingleton ? chip('单例', 'amber') : '')
+        + (node.deadCandidate ? chip('死代码候选', 'red') : '')
+        + '<div class="sub">' + esc(node.filePath) + (node.line ? ':' + node.line : '') + ' · 模块 ' + esc(node.module || '（根）')
+        + ' · 字段 ' + node.fieldCount + ' · 变体 ' + node.variantCount + ' · 方法 ' + node.methodCount + '</div>'
+        + (rel.length ? '<div class="sub">关系：' + rel.map(esc).join('、') + '</div>' : '')
+        + (node.derives.length ? '<div class="sub">derives: ' + esc(node.derives.join(', ')) + '</div>' : '');
+    });
+  });
+}
+
+let E_NODES_BY_ID = {};
+function currentEntityFilter() {
+  const mod = document.getElementById('ent-mod').value;
+  const kind = document.getElementById('ent-kind').value;
+  const lang = document.getElementById('ent-lang').value;
+  const q = document.getElementById('ent-search').value.trim().toLowerCase();
+  return (n) => (!mod || n.module === mod)
+    && (!kind || n.kind === kind)
+    && (!lang || n.language === lang)
+    && (!q || n.name.toLowerCase().includes(q));
+}
+
+function renderEntityGraph() {
+  const E = M.entities;
+  const match = currentEntityFilter();
+  const shown = E.graph.nodes.filter(match);
+  const shownIds = {};
+  shown.forEach((n) => { shownIds[n.id] = 1; });
+  const edges = E.graph.edges.filter((e) => shownIds[e.from] && shownIds[e.to]);
+  E_NODES_BY_ID = {};
+  shown.forEach((n) => { E_NODES_BY_ID[n.id] = n; });
+  const wrap = document.getElementById('entity-graph');
+  wrap.innerHTML = buildEntitiesSvg(shown, edges);
+  const svgEl = wrap.querySelector('svg');
+  if (svgEl) bindEntityGraphEvents(svgEl);
+}
+
+function renderEntityTable() {
+  const E = M.entities;
+  const match = currentEntityFilter();
+  const rows = E.table.filter(match).map((n) => [
+    { html: '<b>' + esc(n.name) + '</b>' },
+    { html: chip(n.kindLabel, n.kind === 'interface' || n.kind === 'trait' ? 'cyan' : 'blue') },
+    { html: chip(langLabel(n.language), n.language === 'rust' ? 'amber' : (n.language === 'vue' ? 'green' : '')) },
+    { v: n.module || '（根）' },
+    { html: '<span class="path">' + esc(n.filePath) + (n.line ? ':' + n.line : '') + '</span>' },
+    { v: n.fieldCount + (n.variantCount ? ' (+' + n.variantCount + 'v)' : ''), num: true },
+    { v: n.methodCount, num: true },
+    { v: n.degree, num: true },
+    { v: [].concat(n.extendsName ? ['extends ' + n.extendsName] : [], (n.implementsNames || []).map((x) => x)).join('、') || '—' },
+    { html: (n.deadCandidate ? chip('死代码候选', 'red') + ' ' : '') + (n.exported ? chip('导出', 'green') : '') + (n.isSingleton ? chip('单例', 'amber') : '') || '—' },
+  ]);
+  document.getElementById('entity-table').innerHTML = rows.length
+    ? table([
+      { label: '实体' }, { label: '类型' }, { label: '语言' }, { label: '模块' }, { label: '文件' },
+      { label: '字段', num: true }, { label: '方法', num: true }, { label: '关系度', num: true },
+      { label: '实现/继承' }, { label: '状态' },
+    ], rows)
+    : '<div class="empty">无匹配实体。</div>';
+}
+
+function renderEntities() {
+  const el = document.getElementById('view-entities');
+  const E = M.entities;
+  if (!E) {
+    el.innerHTML = '<div class="panel"><h2>实体类图</h2><div class="empty">未检测到 Class/Interface 类型实体。</div></div>';
+    return;
+  }
+  const maxLang = E.byLanguage.length ? E.byLanguage[0].count : 0;
+  const maxLayer = E.byLayer.length ? E.byLayer[0].count : 0;
+  const modOptions = E.moduleOptions.map((m) => '<option value="' + esc(m.name) + '">' + esc(m.name || '（根）') + ' (' + m.count + ')</option>').join('');
+  const kindOptions = E.byKind.map((k) => '<option value="' + esc(k.key) + '">' + esc(k.label) + ' (' + k.count + ')</option>').join('');
+  const langOptions = E.byLanguage.map((l) => '<option value="' + esc(l.key) + '">' + esc(l.label) + ' (' + l.count + ')</option>').join('');
+
+  el.innerHTML =
+    '<div class="panel"><h2>实体类图（' + fmt(E.totalCount) + ' 实体 · ' + fmt(E.methodCount) + ' 方法 · ' + fmt(E.edgeCount) + ' 关系边）</h2>'
+    + '<div class="chips" style="margin-bottom:12px">'
+    + chip('类 ' + fmt(E.classCount), 'blue')
+    + chip('接口/Trait ' + fmt(E.interfaceCount), 'cyan')
+    + chip('implements ' + fmt(E.implementsCount), 'cyan')
+    + chip('extends ' + fmt(E.extendsCount), 'purple')
+    + (E.crossLanguageEdges ? chip('跨语言关系 ' + fmt(E.crossLanguageEdges), 'amber') : '')
+    + (E.deadCandidateCount ? chip('死代码候选 ' + fmt(E.deadCandidateCount), 'red') : '')
+    + '</div>'
+    + '<div class="note">实体 = Interface / Class（Rust struct/enum/trait 映射为同构实体）。图展示 '
+    + E.graph.nodes.length + ' 个实体：关系活跃实体优先，各语言代表性实体按成员规模轮转补齐（共 '
+    + fmt(E.relatedEntityCount) + ' 个参与关系的实体）；完整清单见下方表格。</div>'
+    + '<div class="split" style="margin-top:12px">'
+    + '<div><h3>语言分布</h3>' + E.byLanguage.map((l) => barRow(l.label, l.count, maxLang, l.key === 'rust' ? 'amber' : (l.key === 'vue' ? 'green' : 'blue'))).join('') + '</div>'
+    + '<div><h3>架构层分布</h3>' + E.byLayer.map((l) => barRow(l.label, l.count, maxLayer, 'cyan')).join('') + '</div>'
+    + '</div>'
+    + '<div class="legend" style="margin-top:14px">'
+    + '<span class="legend-dot" style="background:#58a6ff"></span>TS/JS'
+    + '<span class="legend-dot" style="background:#3fb950"></span>Vue'
+    + '<span class="legend-dot" style="background:#d29922"></span>Rust'
+    + '<span class="line" style="border-color:#39c5cf;border-top-style:dashed"></span>implements（虚线箭头）'
+    + '<span class="line" style="border-color:#bc8cff"></span>extends（实线箭头）'
+    + '</div>'
+    + '</div>'
+
+    + '<div class="panel"><h3>UML 类图</h3>'
+    + '<div class="filter-bar">'
+    + '<select id="ent-mod"><option value="">全部模块</option>' + modOptions + '</select>'
+    + '<select id="ent-kind"><option value="">全部类型</option>' + kindOptions + '</select>'
+    + '<select id="ent-lang"><option value="">全部语言</option>' + langOptions + '</select>'
+    + '<input id="ent-search" placeholder="搜索实体名…">'
+    + '<button class="btn" id="ent-reset">重置</button>'
+    + '</div>'
+    + '<div class="uml-wrap" id="entity-graph"></div>'
+    + '<div id="entity-info"></div>'
+    + '</div>'
+
+    + '<div class="panel"><h3>实体清单（Top ' + E.table.length + '，按关系活跃度排序）</h3>'
+    + '<div id="entity-table"></div>'
+    + (E.totalCount > E.table.length ? '<div class="note">共 ' + fmt(E.totalCount) + ' 个实体，此处展示前 ' + E.table.length + ' 个；完整数据见 snapshot.json。</div>' : '')
+    + '</div>';
+
+  ['ent-mod', 'ent-kind', 'ent-lang'].forEach((id) => {
+    document.getElementById(id).addEventListener('change', () => { renderEntityGraph(); renderEntityTable(); });
+  });
+  document.getElementById('ent-search').addEventListener('input', () => { renderEntityGraph(); renderEntityTable(); });
+  document.getElementById('ent-reset').addEventListener('click', () => {
+    document.getElementById('ent-mod').value = '';
+    document.getElementById('ent-kind').value = '';
+    document.getElementById('ent-lang').value = '';
+    document.getElementById('ent-search').value = '';
+    renderEntityGraph();
+    renderEntityTable();
+  });
+  renderEntityGraph();
+  renderEntityTable();
+}
+
 // ---------- 初始化 ----------
 // Tab 显隐：视图无有效数据时隐藏（含油猴意图适配视图；纯功能增强脚本分析不出业务结构）
 const hideTab = (tab) => { const t = document.querySelector('.tab[data-tab="' + tab + '"]'); if (t) t.style.display = 'none'; };
@@ -1465,10 +1954,12 @@ if (!M.scriptBlueprint) hideTab('scripts');
 if (!M.domains.length && !M.scriptDomains) hideTab('blueprint');
 if (!M.dataMap.stores.length && !M.scriptDataMap) hideTab('data');
 if (!M.logicFlow.layerFlowTotal && !M.scriptFlow) hideTab('flow');
+if (!M.entities) hideTab('entities');
 renderOverview();
 renderBlueprint();
 renderData();
 renderFlow();
+if (M.entities) renderEntities();
 if (M.scriptBlueprint) renderScripts();
 </script>
 </body>

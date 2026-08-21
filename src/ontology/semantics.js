@@ -8,6 +8,8 @@ export const ARCH_LAYERS = {
   presentation: { label: '表现层', role: 'UI 呈现', description: '页面、组件与路由等用户界面' },
   state: { label: '状态层', role: '共享状态', description: '跨组件共享状态（Zustand / Pinia Store）' },
   service: { label: '业务层', role: '业务逻辑', description: '领域服务、引擎与业务编排' },
+  tauri: { label: 'Tauri 原生层', role: '桌面原生', description: 'Rust 桌面原生组件（src-tauri：数据模型 / 命令 / 系统集成）' },
+  electron: { label: 'Electron 主进程', role: '桌面主进程', description: 'Electron 主进程组件（窗口 / 系统 API / 本地服务）' },
   integration: { label: '集成层', role: '外部集成', description: 'API 客户端与外部系统访问' },
   shared: { label: '共享层', role: '通用复用', description: '通用 Hook、工具函数与复用逻辑' },
   types: { label: '类型层', role: '类型定义', description: '类型、模型与接口定义' },
@@ -48,6 +50,7 @@ const TECH_DIR_NAMES = new Set([
   'tests', 'test', '__tests__', 'e2e', 'spec', 'specs', 'mocks', 'fixtures', 'testing',
   'scripts', 'userscripts', 'assets', 'styles', 'style', 'scss', 'css', 'static', 'public',
   'entry', 'bootstrap', 'startup', 'main', 'dist', 'build', 'coverage', 'docs', 'examples', 'demo', 'demos',
+  'src-tauri', 'electron',
 ]);
 
 function stemOf(relPath) {
@@ -71,6 +74,9 @@ export function inferFileArchLayer(input) {
   const { relPath, isUserScript, isTest, isEntry, componentCount = 0, storeCount = 0, hookCount = 0 } = input;
   if (isUserScript) return 'script';
   if (isTest) return 'test';
+  // 桌面客户端组件路径强信号（构建工具约定目录，直判）
+  if (relPath.endsWith('.rs') || /\/src-tauri\//.test(relPath)) return 'tauri';
+  if (/^electron\/|\/electron\//.test(relPath)) return 'electron';
   if (relPath.endsWith('.d.ts')) return 'types';
   if (isEntry) return 'entry';
   const serviceish = SERVICE_NAME_RE.test(stemOf(relPath)) || /\/services\//.test(relPath);

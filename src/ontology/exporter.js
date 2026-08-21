@@ -35,6 +35,7 @@ export function exportToMarkdown(dataMap) {
     ['ts 文件', proj.tsFileCount],
     ['js/jsx 文件', proj.jsFileCount],
     ['vue 文件', proj.vueFileCount ?? 0],
+    ['Rust 文件（src-tauri）', proj.rustFileCount ?? 0],
     ['油猴脚本文件', proj.userScriptFileCount ?? 0],
     ['模块数', counts.Module],
     ['功能域对象数', counts.Domain ?? 0],
@@ -176,8 +177,8 @@ export function exportToMarkdown(dataMap) {
     if (ifaces.length === 0) {
       out.push('（未提取到接口实体）');
     } else {
-      out.push(table(['接口', '文件:行', 'extends', '方法数', '被实现数', '实现类', '死代码候选'], ifaces.slice(0, 300).map((i) => [
-        i.name, loc(i), extendsCell(i), (i.methodIds ?? []).length,
+      out.push(table(['接口', '语言', '文件:行', 'extends', '方法数', '被实现数', '实现类', '死代码候选'], ifaces.slice(0, 300).map((i) => [
+        i.name, i.language === 'rust' ? 'Rust' : 'TS', loc(i), extendsCell(i), (i.methodIds ?? []).length,
         (implementersByIface.get(i.id) ?? []).length,
         (implementersByIface.get(i.id) ?? []).join(', ') || '-',
         i.deadCandidate ? `⚠️ ${i.deadReason}` : '-',
@@ -210,11 +211,16 @@ export function exportToMarkdown(dataMap) {
     if (allClasses.length === 0) {
       out.push('（未提取到类实体）');
     } else {
-      out.push(table(['类', '文件:行', 'implements', 'extends', '单例', '方法数', '死代码候选'], allClasses.slice(0, 300).map((c) => [
-        c.name, loc(c),
+      out.push(table(['类', '类型', '语言', '文件:行', 'derives', 'implements', 'extends', '单例', '字段', '方法数', '死代码候选'], allClasses.slice(0, 300).map((c) => [
+        c.name,
+        c.kind ?? 'class',
+        c.language === 'rust' ? 'Rust' : 'TS', loc(c),
+        (c.derives ?? []).length > 0 ? c.derives.join(', ') : '-',
         (c.implementsNames ?? []).length > 0 ? `${c.implementsNames.join(', ')}（${(c.implementsIds ?? []).length}/${c.implementsNames.length} 解析）` : '-',
         c.extendsName ? `${c.extendsName}${c.extendsId ? '' : '（未解析）'}` : '-',
-        c.isSingleton ? '✓' : '-', (c.methodIds ?? []).length,
+        c.isSingleton ? '✓' : '-',
+        (c.fields ?? []).length + (c.variants ?? []).length > 0 ? `${(c.fields ?? []).length}字段${(c.variants ?? []).length ? `+${(c.variants ?? []).length}变体` : ''}` : '-',
+        (c.methodIds ?? []).length,
         c.deadCandidate ? `⚠️ ${c.deadReason}` : '-',
       ])));
       if (allClasses.length > 300) out.push(`> 仅显示前 300 个类，共 ${allClasses.length} 个。`);

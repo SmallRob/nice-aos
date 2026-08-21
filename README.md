@@ -107,7 +107,7 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 
 | 类型 | ID 前缀 | 层级/范畴 | 关键属性 |
 |---|---|---|---|
-| Project | `proj:` | L3 Container | framework（expo/react-native/next/nuxt/vue/react/userscript）, frameworkLabel（组合标签，含 Capacitor/Electron/Vite 变体）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
+| Project | `proj:` | L3 Container | framework（expo/react-native/next/nuxt/vue/react/userscript）, frameworkVariants（tauri/electron/capacitor/vite 等变体）, frameworkLabel（组合标签）, language（TypeScript / TypeScript + Rust 等）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, fileCount, tsxFileCount, vueFileCount, **rustFileCount**, **tauriDetected/electronDetected**, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
 | Domain | `dom:` | L3 Container | **name, sources**（route/module）, routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, **capability**（路由能力描述）, **summary**（职责画像） |
 | Module | `mod:` | L2 Container | path, **archLayer**（语义架构层）, **layerComposition**（子树层构成）, fileCount, **subtreeFileCount**, parentId, **unitCounts**, **routeCount**, **summary**（职责画像） |
 | SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames, **unusedExports**（导出级死代码候选） |
@@ -115,9 +115,9 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 | Hook | `hook:` | L1 CodeUnit | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属）, **archLayer**, **domainIds** |
 | Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, location（Zustand 与 Pinia 统一归属）, **archLayer**, **domainIds** |
 | Service | `svc:` | L1 CodeUnit | pattern（singleton/class/functions）, exportsCount, **archLayer**, **domainIds** |
-| Interface | `iface:` | L1 CodeUnit | exported, methodIds, extendsIds/extendsNames（接口继承，跨文件解析）, **deadCandidate/deadReason** |
-| Class | `class:` | L1 CodeUnit | exported, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入）, **deadCandidate/deadReason** |
-| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, exported, **deadCandidate/deadReason**（函数级死代码候选） |
+| Interface | `iface:` | L1 CodeUnit | exported, **language**（ts/rust）, methodIds, extendsIds/extendsNames（接口继承，跨文件解析；Rust trait 的 supertrait → extends）, **deadCandidate/deadReason** |
+| Class | `class:` | L1 CodeUnit | exported, **language**（ts/rust）, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入；Rust struct/enum → kind 区分，含 fields/derives/variants）, **deadCandidate/deadReason** |
+| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, exported（Rust impl fn 与模块级 fn 同构映射）, **deadCandidate/deadReason**（函数级死代码候选） |
 | ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **deadCandidate/deadReason**（函数级死代码候选）, **archLayer=script** |
 | Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue）, domain, **domainIds**, componentFileId, navigatesToIds |
 | UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **deadFunctionCount**, **archLayer=script**, **domainIds** |
@@ -132,7 +132,7 @@ Method ID 约定：类/接口方法 `method:<file>#<Owner>#<name>`，模块函�
 
 每个文件/模块推断一个语义架构层，**以内容信号为准**（单元构成、路由归属、引用结构），目录名仅作弱信号回退：
 
-`entry`（入口）→ `presentation`（表现）→ `state`（状态）→ `service`（业务）→ `integration`（集成）→ `shared`（共享）→ `types`（类型）→ `config`（配置）→ `script`（油猴脚本）→ `test`（测试）→ `mixed`（混合，单一模块内构成分散、主导层 < 60% 时如实标记）
+`entry`（入口）→ `presentation`（表现）→ `state`（状态）→ `service`（业务）→ `integration`（集成）→ `shared`（共享）→ `types`（类型）→ `config`（配置）→ `tauri`（Tauri 原生层，src-tauri Rust 代码强信号直判）→ `electron`（Electron 主进程，electron/ 目录强信号直判）→ `script`（油猴脚本）→ `test`（测试）→ `mixed`（混合，单一模块内构成分散、主导层 < 60% 时如实标记）
 
 功能域（Domain）与架构层**正交**：架构层是纵向技术切片，功能域是横向业务切片（由路由域段 + 业务命名目录聚合而成）。
 
@@ -245,6 +245,7 @@ Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**�
 | **业务数据图** | Store 数据枢纽（state/action 键、持久化、被哪些域使用）、跨域数据依赖、持久化状态汇总；无 Store 时自动切换为**脚本存储枢纽**（localStorage/sessionStorage/indexedDB/GM 存储信号 + 状态存取函数 + 宿主数据读取） | 业务数据在哪、谁依赖谁 |
 | **业务逻辑流向** | 架构层间导入流向矩阵（行=来源层，列=目标层）、跨域依赖边、高扇入 Service/Store 枢纽；无模块导入时自动切换为**函数意图流转矩阵**（调用边按「调用方意图 → 被调方意图」聚合）+ 高扇入函数 | 业务逻辑怎么流、哪些节点是枢纽 |
 | **脚本蓝图** | 每个油猴脚本的**函数调用关系图**（SVG，从左到右为调用深度）、DOM 注入锚点、网络端点、函数业务角色分布（render/data/state/event/ui/logic） | 这个脚本怎么注入页面的：谁调谁、注入到哪个页面锚点、请求哪些域 |
+| **实体类图** | **UML 风格类图**（SVG）：类框（名称 + 字段/变体 + 方法摘要，Rust struct 含 derives）、关系边（implements 虚线 / extends 实线 / 接口继承）、按派生层级分列布局；语言/类型/架构层分布条形图；模块/类型/语言/关键词过滤与实体清单表格 | 类型体系长什么样：谁实现谁、谁继承谁、跨语言（TS ↔ Rust）实体各占多少 |
 
 生成的 HTML 自包含零依赖（数据内嵌为 JSON，无外链），可直接离线打开分享；大仓库单元清单带截断保护（计数保留全量）；**宽屏分档适配**（1600/1920/2240/2560px 断点扩展内容宽度并居中，SVG 图等比缩放不截断）；**油猴意图适配**：无 React/Vue 结构的纯脚本仓库三视图按函数意图重建，分析不出有效数据（纯功能增强脚本：单一意图/无调用流转/无持久化）时对应 Tab 自动隐藏，不显示空壳。
 
@@ -259,6 +260,8 @@ Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**�
 - **Store 识别**：Zustand `create(...)`（含 `create<T>()(...)`、`persist(...)` 包装）与 Pinia `defineStore(...)`（setup 写法 + options 写法，含 `persist` 插件第三参数），统一提取 state/action 键与 storageKey
 - **Service 识别**：`/services/` 目录或名称含 Service/Engine/Manager/Repository/Factory 后缀
 - **类型实体（Interface/Class/Method）**：接口/类/方法/模块函数全量提取；跨文件 `implements`/`extends` 解析（本文件声明优先，其次具名导入——含 `import type` 与 `IStorage as StorageContract` 别名导入，解析失败留存原名不报错）；方法级 `overrides`/`overriddenBy` 双向链接（实现类方法与接口/父类方法按名匹配）；`query Method --where "name~xxx"` 一次命中声明与实现
+- **Rust 实体（Tauri src-tauri，独立解析器）**：`rustAnalyzer` 与 tsAnalyzer/vueAnalyzer 平级共存——`pub struct`/`pub enum` → Class（kind: struct/enum，含 fields/derives/variants）、`pub trait` → Interface（supertrait → extends）、`impl` 块内 `fn` → Method（ownerKind=class）、模块级 `fn` → Method（ownerKind=module）、`use` → imports；跨文件路径解析以 `use crate::a::B` 模块路径映射为主、全仓库唯一名匹配兜底（含 `use a::{B, C}` 花括号组与 `super::` 相对路径）；Rust 类型引用即使用（`Vec<Game>` / `-> Game` / `impl Game` 均计入引用），同样参与类型级死代码判定
+- **客户端组件自动发现（Tauri/Electron）**：显式 roots 之外自动发现项目内的桌面客户端组件——`src-tauri/tauri.conf.json` 存在时把 `src-tauri/src` 纳入扫描（.rs 文件），`electron/` 目录含 TS/JS 文件时纳入扫描；`tauriDetected`/`electronDetected` 落到 Project 画像，架构层新增 `tauri`（Rust 原生层）与 `electron`（主进程层）强信号直判；Java/Go 等后端代码不在扫描范围（`.rs` 仅在 Tauri 组件语境下扫描）
 - **死代码候选（四级）**：文件级（零引用 + 非入口 + 非测试 + 非路由组件，`_meta.orphanCandidates`）+ 导出级（导出符号全仓库零导入且本文件零使用 → `SourceFile.unusedExports` / `_meta.deadExportCandidates`，入口/re-export/动态 import 豁免）+ 类型级/函数级（保守引用计数：非导出实体本文件零引用、导出实体全仓库零导入且本文件零引用 → `deadCandidate/deadReason`；接口方法为契约声明永不判死；排除声明处与自递归，宁可漏报不误报）；油猴 ScriptFunction 同样判函数级死代码（额外排除事件回调与 unsafeWindow 暴露）
 - **依赖治理**：package.json 声明 vs 实际导入交叉比对，产出 `source=undeclared`（导入未声明）与 `used=false`（声明未使用）
 - **循环依赖**：Tarjan SCC 算法（`_meta.cycles`）
@@ -305,6 +308,7 @@ Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**�
 
 - 基于 TypeScript Compiler API 的**语法级**解析（不跑类型检查）；动态拼接的 import 与动态 `navigate(path)` 变量导航无法解析
 - 类型实体提取覆盖 `.ts/.tsx/.js/.jsx` 与 `.d.ts`；**Vue SFC `<script>` 内的 interface/class 本期不提取**（Vue 侧已有 Hook/Composable/Store 实体体系）；TS 方法级调用图（calls/calledBy）未扩展到 Method（调用图仅油猴 ScriptFunction 有）
+- Rust 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 rustc）：泛型约束 / 关联类型 / macro 生成代码不解析；`mod` 声明文件树按目录约定映射（`mod models;` → `models.rs` 或 `models/mod.rs`）；`.rs` 文件仅在 Tauri 组件语境下扫描，独立 Rust 工程（纯后端 crate）不纳入
 - 跨文件 implements/extends 按具名导入静态解析；命名空间导入、`export *` 再导出与动态 `import()` 的目标文件整体豁免死代码判定（无法按名追踪，保守不误报）；仅被测试文件使用的导出符号会被判为死代码候选（测试文件不入扫描范围，删除前请人工确认）
 - `renders` 归属文件主组件（default export 优先），同文件多组件不细分
 - 函数透传式导航（`onOpenOverlay: app.setActiveOverlay`）不产生跳转边

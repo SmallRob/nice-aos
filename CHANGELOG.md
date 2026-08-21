@@ -2,6 +2,29 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.9.0] - 2026-08-21
+
+### 新增
+
+- **Rust 实体分析器（`rustAnalyzer`，Tauri src-tauri 组件）**：与 tsAnalyzer/vueAnalyzer/userScriptAnalyzer 平级共存的轻量语法级解析器（深度状态机 + 等长噪声剥离，不依赖 rustc），实体映射对齐 TS 语义：
+  - `pub struct`/`pub enum` → Class（kind: struct/enum，含 fields/derives/variants）；`pub trait` → Interface（supertrait → extends）；`impl` 块内 `fn` → Method（ownerKind=class，含 trait impl 关联）；模块级 `fn` → Method（ownerKind=module）
+  - 跨文件路径解析：`use crate::a::B` 模块路径映射为主（`crate::a::b::Name` → `<crateRoot>/a/b.rs` 或 `a/b/mod.rs`）、`super::` 相对路径、全仓库唯一名匹配兜底；支持 `use a::{B, C}` 花括号组与 `use crate::x::*` 通配（目标文件及同目录整体豁免死代码判定）
+  - Rust 类型引用即使用（`Vec<Game>` / `-> Game` / `impl Game` 均计入引用），Interface/Class 同样参与类型级死代码判定
+- **客户端组件自动发现（Tauri/Electron）**：显式 roots 之外自动发现桌面客户端组件——`src-tauri/tauri.conf.json` 存在时把 `src-tauri/src` 纳入扫描，`electron/` 目录含 TS/JS 文件时纳入扫描；`Project` 画像新增 `rustFileCount`/`tauriDetected`/`electronDetected`/`language`（如 "TypeScript + Rust"），`frameworkVariants` 携带 tauri/electron；架构层新增 `tauri`（Rust 原生层）与 `electron`（主进程层）路径强信号直判；Java/Go 等后端代码不入扫描范围
+- **实体类图（蓝图查看器新 Tab）**：UML 风格 SVG 类图——类框（名称 + 字段/变体 + 方法摘要，Rust struct 含 derives 徽标）、关系边（implements 虚线 / extends 实线 / 接口继承）、按派生层级分列布局；语言（TS/Vue/Rust）/类型/架构层分布条形图与跨语言关系计数；模块/类型/语言/关键词过滤 + 实体清单表格（字段/方法/关系度/实现继承/死代码状态）；图节点选取：关系活跃实体优先 + 各语言代表性实体按成员规模轮转补齐（无继承关系的 Rust struct 也能进入类图）；悬停高亮相邻节点与关系边、点击查看实体详情
+
+### 变更
+
+- 扫描扩展名新增 `.rs`；SKIP_DIRS 新增 `target`（Rust 构建产物）；`.backup` 后缀文件跳过
+- Markdown 报告实体表格新增「语言」列（TS/Rust），项目概览新增 Rust 文件计数行
+- 本体蓝图对象描述更新：Interface/Class/Method 标注 Rust 同构映射（trait → Interface、struct/enum → Class、impl fn → Method）
+
+### 验证
+
+- 新增 `test/rustEntities.test.mjs`（10 个用例）：struct/enum/trait 提取（derives/字段/变体/方法合并）、use 花括号组解析、crate/super 路径映射、通配 use 豁免、Rust 死代码判定
+- 新增实体类图 viewmodel/渲染测试（跨语言 UML 类框 + 关系边 + 内嵌脚本可执行）
+- 总计 96 个测试全部通过；真实项目回归：steam-game-hub-2.0（React + Tauri，44 个 .rs 文件 → 151 个 Rust 实体入图）与 steam-stat（Vue + Electron，electron/ 目录 7 文件入 electron 层）
+
 ## [0.8.0] - 2026-08-21
 
 ### 新增

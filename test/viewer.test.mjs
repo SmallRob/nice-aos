@@ -197,6 +197,102 @@ test('架构分层条形图：层名不换行压缩、描述独立副行（无�
   }
 });
 
+// 实体类图 Tab：跨语言（TS + Rust/Tauri）fixture，执行内嵌渲染脚本验证 UML 类框与关系边输出
+function buildEntityFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-viewer-ent-'));
+  const w = (rel, content) => {
+    const p = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  };
+  w('package.json', JSON.stringify({ name: 'entity-fixture', dependencies: { react: '^18.0.0' } }));
+  w('src-tauri/tauri.conf.json', '{}');
+  w('src-tauri/src/models.rs', [
+    '#[derive(Debug, Clone)]',
+    'pub struct GameInfo {',
+    '    pub name: String,',
+    '    pub appid: u64,',
+    '}',
+    'pub trait StorageProvider {',
+    '    fn get(&self, key: &str) -> String;',
+    '}',
+  ].join('\n'));
+  w('src-tauri/src/services.rs', [
+    'use crate::models::StorageProvider;',
+    'pub struct CacheService {',
+    '    pub size: usize,',
+    '}',
+    'impl StorageProvider for CacheService {',
+    '    fn get(&self, key: &str) -> String { String::new() }',
+    '}',
+  ].join('\n'));
+  w('src/storage.ts', [
+    'export interface IStorage {',
+    '  get(key: string): string | null;',
+    '}',
+    'export class LocalStorage implements IStorage {',
+    '  get(key: string): string | null { return null; }',
+    '}',
+    'export const storage: LocalStorage = new LocalStorage();',
+  ].join('\n'));
+  w('src/main.tsx', [
+    "import { storage } from './storage';",
+    'console.log(storage);',
+  ].join('\n'));
+  return dir;
+}
+
+test('实体类图 Tab：跨语言 UML 类框 + 关系边渲染（内嵌脚本可执行）', async () => {
+  const dir = buildEntityFixture();
+  try {
+    const dataMap = await buildOntologyData(dir);
+    const model = buildViewerModel(dataMap);
+    assert.ok(model.entities, '跨语言 fixture 应产出 entities 视图模型');
+    assert.ok(model.entities.graph.edges.length >= 2, '应有 TS 与 Rust 两条 implements 边');
+    const html = renderViewerHtml(model);
+    assert.ok(html.includes('data-tab="entities"'), 'HTML 应含实体类图 Tab');
+
+    const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const elements = new Map();
+    const makeEl = (id) => {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          innerHTML: '', textContent: id === 'viewer-data' ? dataJson : '',
+          dataset: {}, style: {}, value: '', addEventListener() {},
+          classList: { add() {}, remove() {} },
+          querySelectorAll: () => [], querySelector: () => null,
+        });
+      }
+      return elements.get(id);
+    };
+    const prevDocument = globalThis.document;
+    globalThis.document = {
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+    };
+    try {
+      new Function(script)();
+    } finally {
+      globalThis.document = prevDocument;
+    }
+
+    const view = makeEl('view-entities').innerHTML;
+    assert.ok(view.includes('实体类图（'), '实体类图总览面板应渲染');
+    assert.ok(view.includes('Rust'), '语言分布应含 Rust');
+    const graph = makeEl('entity-graph').innerHTML;
+    assert.ok(graph.includes('<svg'), 'UML 类图应输出 SVG');
+    assert.ok(graph.includes('LocalStorage'), 'TS 类框应出现');
+    assert.ok(graph.includes('CacheService'), 'Rust 结构体类框应出现');
+    assert.ok(graph.includes('«interface»'), '接口应带 UML 构造型标记');
+    assert.ok(/class="ge impl"/.test(graph), 'implements 边应为虚线箭头');
+    const tbl = makeEl('entity-table').innerHTML;
+    assert.ok(tbl.includes('GameInfo'), '实体清单应含 GameInfo');
+    assert.ok(tbl.includes('Rust'), '清单语言列应标注 Rust');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('viewmodel 对空数据仓库的降级（无 Store / 无路由）', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-viewer-empty-'));
   try {
