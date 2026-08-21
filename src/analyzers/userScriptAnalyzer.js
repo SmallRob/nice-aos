@@ -269,6 +269,14 @@ export function analyzeUserScript(filePath, content, projectRoot) {
     }
   }
 
+  // 标识符出现位置（函数级死代码判定的引用计数基础：排除声明范围后剩余出现数）
+  const nameReferences = new Map();
+  function recordNameRef(name, pos) {
+    const arr = nameReferences.get(name);
+    if (arr) arr.push(pos);
+    else nameReferences.set(name, [pos]);
+  }
+
   // 记录网络调用（GM_xhr / fetch / xhr / websocket / beacon 统一入口）
   function recordNetwork(kind, extracted, pos) {
     networkCalls.push({ kind, url: extracted.url, domain: domainOfUrlText(extracted.url), method: extracted.method, interpolated: extracted.interpolated, pos });
@@ -351,8 +359,13 @@ export function analyzeUserScript(filePath, content, projectRoot) {
       if (HOST_MARKERS.react.includes(prop)) hostMarkers.add(`react:${prop}`);
     }
     if (T.isIdentifier(node)) {
+      recordNameRef(node.text, node.getStart(sourceFile));
       if (HOST_MARKERS.vue.includes(node.text)) hostMarkers.add(`vue:${node.text}`);
       if (HOST_MARKERS.react.includes(node.text)) hostMarkers.add(`react:${node.text}`);
+    }
+    // obj['name'] 元素访问：字符串键计为引用（与 tsAnalyzer 同规则）
+    if (T.isElementAccessExpression(node) && node.argumentExpression && T.isStringLiteralLike(node.argumentExpression)) {
+      recordNameRef(node.argumentExpression.text, node.argumentExpression.getStart(sourceFile));
     }
 
     // ---- 变量声明：函数/类/对象 → 逻辑单元；querySelector 变量 → 页面锚点 ----
@@ -842,6 +855,7 @@ export function analyzeUserScript(filePath, content, projectRoot) {
     vueRouteMeta: null,
     // ---- 油猴脚本专有事实 ----
     isUserScript: true,
+    nameReferences,
     meta,
     isIife,
     usesStrict,

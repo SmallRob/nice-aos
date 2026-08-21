@@ -38,6 +38,7 @@
   },
   "files": [
     "src/**",
+    "skills/**/SKILL.md",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"

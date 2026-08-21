@@ -13,7 +13,8 @@
 |---------|----------|
 | grep 谁导入了 ai.ts（遍历全部文件） | `link importedBy --src file:src/services/ai.ts`（毫秒） |
 | 人工追页面跳转关系 | `link navigatesTo --src route:dietary_health` |
-| 不知道哪些文件是死代码 | 快照内置 orphanCandidates |
+| 不知道哪些文件是死代码 | 快照内置四级死代码（文件/导出/类型/函数级） |
+| 单个独立脚本/文件想快速体检（不建快照） | `action analyzeFile` 不落盘直接输出本体 JSON |
 | 循环依赖靠运气发现 | 快照内置 Tarjan SCC（`_meta.cycles`） |
 | 不知道 store 被谁用了 | `link usesStore --src store:useThemeStore` |
 | 接口方法有哪些实现类（实现关系记录在实现类里，正向查不到） | `link implementedBy --src "iface:src/types/storage.ts#IStorage"` |
@@ -56,6 +57,9 @@ nice-aos export --format markdown --output report.md
 
 # 5. 生成可交互蓝图 HTML（浏览器直接打开，离线可用）
 nice-aos export --format html --output blueprint.html
+
+# 6. 单文件分析（不建快照，stdout 直接输出本体 JSON，可与 jq/findstr 管道组合）
+nice-aos action analyzeFile --params '{"file":"Steam-License-Classifier.js"}' | jq '.ScriptFunction[] | select(.deadCandidate)'
 ```
 
 > **快照目录解析优先级**：`--snapshot-dir` 参数 > `NICE_AOS_SNAPSHOT_DIR` 环境变量 > `cwd/.nice-aos/data` > `~/.nice-aos/data`。
@@ -103,10 +107,10 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 
 | 类型 | ID 前缀 | 层级/范畴 | 关键属性 |
 |---|---|---|---|
-| Project | `proj:` | L3 Container | framework（expo/react-native/next/nuxt/vue/react/userscript）, frameworkLabel（组合标签，含 Capacitor/Electron/Vite 变体）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码三级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
+| Project | `proj:` | L3 Container | framework（expo/react-native/next/nuxt/vue/react/userscript）, frameworkLabel（组合标签，含 Capacitor/Electron/Vite 变体）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
 | Domain | `dom:` | L3 Container | **name, sources**（route/module）, routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, **capability**（路由能力描述）, **summary**（职责画像） |
 | Module | `mod:` | L2 Container | path, **archLayer**（语义架构层）, **layerComposition**（子树层构成）, fileCount, **subtreeFileCount**, parentId, **unitCounts**, **routeCount**, **summary**（职责画像） |
-| SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames |
+| SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames, **unusedExports**（导出级死代码候选） |
 | Component | `comp:` | L1 CodeUnit | kind（page/modal/card/…）, propsCount, hooksUsed, stateCount, rendersIds, routeIds, **archLayer**, **domainIds** |
 | Hook | `hook:` | L1 CodeUnit | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属）, **archLayer**, **domainIds** |
 | Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, location（Zustand 与 Pinia 统一归属）, **archLayer**, **domainIds** |
@@ -114,9 +118,9 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 | Interface | `iface:` | L1 CodeUnit | exported, methodIds, extendsIds/extendsNames（接口继承，跨文件解析）, **deadCandidate/deadReason** |
 | Class | `class:` | L1 CodeUnit | exported, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入）, **deadCandidate/deadReason** |
 | Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, exported, **deadCandidate/deadReason**（函数级死代码候选） |
-| ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **archLayer=script** |
+| ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **deadCandidate/deadReason**（函数级死代码候选）, **archLayer=script** |
 | Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue）, domain, **domainIds**, componentFileId, navigatesToIds |
-| UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **archLayer=script**, **domainIds** |
+| UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **deadFunctionCount**, **archLayer=script**, **domainIds** |
 | Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared）, importCount |
 | GmApiUsage | `gm:` | L0 AuditFact | name, category（network/storage/style/…）, callCount, declared（与 @grant 比对） |
 | InjectionPoint | `inject:` | L0 AuditFact | kind（mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom）, target, interpolated（动态插值 XSS 面） |
@@ -176,6 +180,9 @@ query Method --where "ownerKind=interface" --pretty  # 全部接口方法签名
 query Interface --where "exported=true"              # 导出接口清单
 query Class --where "isSingleton=true"               # 单例类
 query Method --where "deadCandidate=true"            # 函数级死代码候选（保守判定）
+query Interface --where "deadCandidate=true"         # 死接口（类型级）
+query Class --where "deadCandidate=true"             # 死类（类型级）
+query ScriptFunction --where "deadCandidate=true"    # 油猴死函数（函数级）
 ```
 
 `--where` 语法：逗号分隔多条件 AND；`k=v`（或 `k:v`）精确相等，`k~v` 模糊包含；值为数组时精确做成员包含、模糊做任一成员包含（如 `hooksUsed=useEffect`）。默认返回前 50 条，`--all` 全量、`--limit <n>` 限制。
@@ -209,9 +216,12 @@ link contains --src "iface:src/types/storage.ts#IStorage"      # 接口下钻其
 
 ```bash
 action refreshRepo --params '{"repoPath":"."}'
+action analyzeFile --params '{"file":"Steam-License-Classifier.js"}'   # 单文件分析（不落盘，stdout 输出本体 JSON）
 action markReviewed --params '{"objectId":"comp:TalentResultPage"}'
 action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页面"}'
 ```
+
+`analyzeFile` 支持 .ts/.tsx/.js/.jsx/.mjs/.vue 与油猴脚本（相对 cwd 或绝对路径）；油猴文件输出 UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction 五类，其余文件输出 Interface/Class/Method；单文件模式下仅"本文件内零引用"的非导出实体判死（导出实体无法判定跨文件使用，一律不判死）。
 
 ### export — 导出
 
@@ -222,7 +232,7 @@ export --format html --output blueprint.html    # 自包含蓝图 HTML（本体�
 export --format viewmodel                       # 视图模型 JSON（聚合数据，供 agent 消费）
 ```
 
-Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）、**接口与实现**（接口清单 + implementedBy 实现类 + 方法覆盖矩阵）、**类与方法**（类清单含 implements/extends/单例 + 契约热点 Top 30）与**死代码候选三级**（文件级 + 类型级 + 函数级）等章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。
+Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）、**接口与实现**（接口清单 + implementedBy 实现类 + 方法覆盖矩阵）、**类与方法**（类清单含 implements/extends/单例 + 契约热点 Top 30）与**死代码候选四级**（文件级 + 导出级 + 类型级 + 函数级）等章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。
 
 ### 本体查看器（blueprint HTML / viewmodel）
 
@@ -249,7 +259,7 @@ Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**�
 - **Store 识别**：Zustand `create(...)`（含 `create<T>()(...)`、`persist(...)` 包装）与 Pinia `defineStore(...)`（setup 写法 + options 写法，含 `persist` 插件第三参数），统一提取 state/action 键与 storageKey
 - **Service 识别**：`/services/` 目录或名称含 Service/Engine/Manager/Repository/Factory 后缀
 - **类型实体（Interface/Class/Method）**：接口/类/方法/模块函数全量提取；跨文件 `implements`/`extends` 解析（本文件声明优先，其次具名导入——含 `import type` 与 `IStorage as StorageContract` 别名导入，解析失败留存原名不报错）；方法级 `overrides`/`overriddenBy` 双向链接（实现类方法与接口/父类方法按名匹配）；`query Method --where "name~xxx"` 一次命中声明与实现
-- **死代码候选（三级）**：文件级（零引用 + 非入口 + 非测试 + 非路由组件，`_meta.orphanCandidates`）+ 类型级/函数级（保守引用计数：非导出实体本文件零引用、导出实体全仓库零导入且本文件零引用 → `deadCandidate/deadReason`；接口方法为契约声明永不判死；排除声明处与自递归，宁可漏报不误报）
+- **死代码候选（四级）**：文件级（零引用 + 非入口 + 非测试 + 非路由组件，`_meta.orphanCandidates`）+ 导出级（导出符号全仓库零导入且本文件零使用 → `SourceFile.unusedExports` / `_meta.deadExportCandidates`，入口/re-export/动态 import 豁免）+ 类型级/函数级（保守引用计数：非导出实体本文件零引用、导出实体全仓库零导入且本文件零引用 → `deadCandidate/deadReason`；接口方法为契约声明永不判死；排除声明处与自递归，宁可漏报不误报）；油猴 ScriptFunction 同样判函数级死代码（额外排除事件回调与 unsafeWindow 暴露）
 - **依赖治理**：package.json 声明 vs 实际导入交叉比对，产出 `source=undeclared`（导入未声明）与 `used=false`（声明未使用）
 - **循环依赖**：Tarjan SCC 算法（`_meta.cycles`）
 - **框架检测**：package.json 依赖优先（expo / react-native / next / nuxt / vue / react，元框架优先于基座框架）；扫描子目录（如 `src/`）时自动向上定位宿主项目根（上限 4 层、不越过用户 home），用宿主依赖识别框架并回退项目名，宿主配置文件（capacitor.config / app.json(expo 键) / vite.config / electron 等）作旁证；跨端/构建变体（Capacitor/Electron/Vite/Webpack）组合为 `frameworkLabel`（如 "React 单页应用 + Capacitor 跨端（Vite 构建）"）；无任何清单时按代码信号兜底（.vue → vue，tsx/jsx → react）；存在油猴脚本且无前端框架 → `framework=userscript`
@@ -302,6 +312,18 @@ Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**�
 - 油猴脚本：调用图为脚本内静态调用（变量间接调用/回调透传不解析）；动态拼接的请求 URL 域名记为 `(dynamic)`，不做 @connect 比对；宿主框架仅按代码内 `__vue__`/`__reactContainer$` 等标记推断，未触碰宿主内部的脚本记为 unknown
 - 快照为全量重建（无增量）；多进程并发写快照无保护；方法级实体化后大仓库（1000+ 文件）快照体积约增至 2-3 倍（万级 Method 实体），全量 JSON 载入仍在数百毫秒级
 - `--where` 为全表扫描：`=`/`:` 精确相等、`~` 模糊包含（不支持数值比较，数值过滤请配合 jq）
+
+## Skills（AI agent 场景工作流）
+
+CLI 保持原子普适（只提供对象/链接/字段/动作级通用能力），场景工作流下沉到 Skill。npm 包携带三个 SKILL.md（`skills/**`），随包分发：
+
+| Skill | 职责 | 典型场景 |
+|-------|------|---------|
+| `nice-aos`（核心查询） | 快照构建、通用本体查询、变更影响分析、接口/类/方法导航、蓝图导出 | "项目架构是什么样" / "IStorage 被谁实现" / "修改这个 service 影响谁" |
+| `nice-aos-userscript`（油猴审计） | GM API 越权 / @connect 白名单 / XSS 面 / 风险分级五步审计 + 修复模板；单文件与仓库双模式 | "这个油猴脚本安全吗" / "@connect 齐不齐" / "哪里有 XSS 面" |
+| `nice-aos-deadcode`（死代码清理） | 四级死代码（文件/导出/类型/函数）检测 → 分级复核 → 清理 → 验证工作流；单文件死函数查询 | "哪些文件没人用" / "哪些函数没人调用" / "这个文件能删吗" |
+
+三者共享同一份 CLI 与快照（`<REPO_ROOT>/.nice-aos/data`），无独立安装步骤。
 
 ## 开发
 

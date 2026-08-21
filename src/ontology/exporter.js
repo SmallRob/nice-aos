@@ -66,8 +66,9 @@ export function exportToMarkdown(dataMap) {
     out.push(table(['健康指标', '数值'], [
       ['循环依赖组数', proj.health.cycleCount ?? 0],
       ['死代码候选文件数', proj.health.orphanFileCount ?? 0],
+      ['死代码候选导出数（unused exports）', proj.health.deadExportCount ?? 0],
       ['死代码候选类型数（接口/类）', proj.health.deadTypeCount ?? 0],
-      ['死代码候选函数数（方法/模块函数）', proj.health.deadFunctionCount ?? 0],
+      ['死代码候选函数数（方法/模块函数/脚本函数）', proj.health.deadFunctionCount ?? 0],
       ['未声明依赖数', proj.health.undeclaredDependencyCount ?? 0],
       ['高风险油猴脚本数', proj.health.highRiskScriptCount ?? 0],
       ['解析错误数', proj.health.analysisErrorCount ?? 0],
@@ -331,7 +332,7 @@ export function exportToMarkdown(dataMap) {
   }
   out.push('');
 
-  heading('死代码候选（文件级 + 类型级 + 函数级）');
+  heading('死代码候选（文件级 + 导出级 + 类型级 + 函数级）');
   const orphans = meta.orphanCandidates ?? [];
   if (orphans.length === 0) {
     out.push('未发现零引用文件。');
@@ -340,6 +341,19 @@ export function exportToMarkdown(dataMap) {
     out.push('');
     for (const f of orphans.slice(0, 200)) out.push(`- ${f}`);
     if (orphans.length > 200) out.push(`- ……（其余 ${orphans.length - 200} 个略）`);
+  }
+  out.push('');
+
+  const deadExports = meta.deadExportCandidates ?? [];
+  out.push(`导出级（unused exports，共 ${deadExports.reduce((a, d) => a + d.names.length, 0)} 个，仅 export 冗余或可删符号）：`);
+  out.push('');
+  if (deadExports.length > 0) {
+    out.push(table(['文件', '未使用的导出'], deadExports.slice(0, 200).map((d) => [
+      d.file, d.names.join(', '),
+    ])));
+    if (deadExports.length > 200) out.push(`> 仅显示前 200 个文件，共 ${deadExports.length} 个。`);
+  } else {
+    out.push('未发现未使用的导出。');
   }
   out.push('');
 
@@ -357,14 +371,22 @@ export function exportToMarkdown(dataMap) {
   out.push('');
 
   const deadFns = (dataMap.Method ?? []).filter((m) => m.deadCandidate);
-  out.push(`函数级（方法/模块函数，保守判定，共 ${deadFns.length} 个；接口方法为契约声明不判死）：`);
+  const deadScriptFns = (dataMap.ScriptFunction ?? []).filter((f) => f.deadCandidate);
+  out.push(`函数级（方法/模块函数/脚本函数，保守判定，共 ${deadFns.length + deadScriptFns.length} 个；接口方法为契约声明不判死）：`);
   out.push('');
-  if (deadFns.length > 0) {
-    out.push(table(['方法/函数', 'owner', '文件:行', '理由'], deadFns.slice(0, 300).map((m) => [
-      m.name, m.ownerKind === 'module' ? '模块函数' : `${m.ownerKind}:${m.ownerName ?? '-'}`,
-      `${m.filePath}:${m.line}`, m.deadReason,
-    ])));
-    if (deadFns.length > 300) out.push(`> 仅显示前 300 个，共 ${deadFns.length} 个。`);
+  if (deadFns.length > 0 || deadScriptFns.length > 0) {
+    const rows = [
+      ...deadFns.slice(0, 300).map((m) => [
+        m.name,
+        m.ownerKind === 'module' ? '模块函数' : `${m.ownerKind}:${m.ownerName ?? '-'}`,
+        `${m.filePath}:${m.line}`, m.deadReason,
+      ]),
+      ...deadScriptFns.slice(0, 300).map((f) => [
+        f.name, `脚本函数(${f.scriptName})`, `${f.filePath}:${f.line}`, f.deadReason,
+      ]),
+    ];
+    out.push(table(['方法/函数', 'owner', '文件:行', '理由'], rows));
+    if (deadFns.length + deadScriptFns.length > rows.length) out.push(`> 仅显示前 ${rows.length} 个，共 ${deadFns.length + deadScriptFns.length} 个。`);
   } else {
     out.push('未发现死代码候选函数。');
   }

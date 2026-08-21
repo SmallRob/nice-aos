@@ -2,6 +2,29 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.8.0] - 2026-08-21
+
+### 新增
+
+- **单文件分析（`action analyzeFile`）**：不落盘、不建快照，stdout 直接输出 dataMap 形状 JSON（`_meta.mode === 'single-file'`），可与 jq/findstr 管道组合——独立油猴脚本与单个 TS/JS/Vue 文件的零成本体检入口：
+  - 参数：`{"file": "path/to/x.js"}`（相对 cwd 或绝对路径；支持 .ts/.tsx/.js/.jsx/.mjs/.vue 与油猴脚本）
+  - 油猴文件自动路由 userScriptAnalyzer 链（输出 UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction 五类），其余走 tsAnalyzer/vueAnalyzer 链（输出 Interface/Class/Method）
+  - 单文件模式判定边界：仅"本文件内零引用"的非导出实体判死；导出实体一律不判死（单文件视角无法判定跨文件使用）
+- **导出级死代码（unusedExports）**：每文件导出符号 × 全仓库具名导入对照 → `SourceFile.unusedExports[]` + `_meta.deadExportCandidates` 汇总；入口文件、re-export 链、动态 `import()` 引用保守豁免。死代码检测升级为**四级**（文件级 orphanCandidates / 导出级 unusedExports / 类型级 Interface/Class deadCandidate / 函数级 Method/ScriptFunction deadCandidate），`Project.health` 汇总四级计数（orphanFileCount/deadExportCount/deadTypeCount/deadFunctionCount）
+- **油猴脚本函数级死代码（ScriptFunction.deadCandidate）**：复用保守引用计数规则——函数名全文出现次数（排除声明处与自身函数体）为 0，且 calledByCount=0、非 topLevelCalls 命中、非 constructor、非事件回调角色、未暴露到 unsafeWindow → `deadCandidate/deadReason`；UserScript 画像新增 deadFunctionCount
+- **Skill 拆分（3 个）**：场景工作流从 CLI/Skill 分离——`nice-aos`（核心查询：快照/影响分析/蓝图导出，瘦身重写）、`nice-aos-userscript`（油猴审计：GM 越权/@connect 白名单/XSS 面/风险分级五步工作流 + 实战修复模板）、`nice-aos-deadcode`（四级死代码清理：检测 → 分级复核 → 清理 → 验证）。三者共享同一份 CLI 与快照；CLI 保持原子普适，场景编排全部下沉 Skill
+- Markdown 报告「死代码候选」升级为四级章节（文件级 + 导出级 + 类型级 + 函数级，函数级含油猴 ScriptFunction）
+
+### 变更
+
+- 快照目录约定统一为 `<REPO_ROOT>/.nice-aos/data`（CLI 默认回退链第一候选），三个 skill 共享一份快照；`--snapshot-dir` 显式传参与 `NICE_AOS_SNAPSHOT_DIR` 环境变量继续支持任意路径
+- package.json `files` 追加 `skills/**/SKILL.md`（npm 包携带三个 skill 文件，`npx nice-aos` 用户可直接取用）
+
+### 验证
+
+- 新增 `test/deadcode.test.mjs`（7 个用例）：导出级命中与豁免（入口文件/本文件使用不误报）、ScriptFunction deadCandidate（零引用死函数命中、事件回调/被调用函数不误报）、analyzeFile 动作（TS 文件与油猴文件输出形状、不落盘）
+- 总计 85 个测试全部通过；自举验证（refreshRepo + query Class/Method 定位自身代码）与真实项目回归见发布流程
+
 ## [0.7.0] - 2026-08-21
 
 ### 新增

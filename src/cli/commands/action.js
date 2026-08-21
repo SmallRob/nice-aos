@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { Command } from 'commander';
 import { loadSnapshot, saveSnapshot } from '../../ontology/snapshot.js';
 import { createBlueprint, ACTION_NAMES } from '../../ontology/blueprint.js';
-import { buildOntologyData } from '../../ontology/builder.js';
+import { buildOntologyData, buildSingleFileOntology } from '../../ontology/builder.js';
 import { fail } from '../shared.js';
 
 export const actionCommand = new Command('action')
@@ -39,6 +39,18 @@ export const actionCommand = new Command('action')
         orphanCandidates: meta.orphanCandidates.length,
         analysisErrors: dataMap.Project[0].analysisErrors.length,
       }, null, 2));
+      return;
+    }
+
+    if (name === 'analyzeFile') {
+      const file = params.file ?? params.path;
+      if (!file) fail('缺少参数 file（相对 cwd 或绝对路径，支持 .ts/.tsx/.js/.jsx/.mjs/.vue）');
+      const filePath = path.resolve(file);
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        fail(`文件不存在或不是普通文件: ${filePath}`);
+      }
+      const dataMap = await buildSingleFileOntology(filePath);
+      console.log(JSON.stringify(dataMap, null, 2));
       return;
     }
 

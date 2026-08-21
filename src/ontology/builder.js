@@ -1,9 +1,10 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { scanProject } from '../analyzers/projectScanner.js';
 import { createResolver } from '../analyzers/importResolver.js';
 import { analyzeFileFromDisk } from '../analyzers/tsAnalyzer.js';
 import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
-import { analyzeUserScriptFromDisk } from '../analyzers/userScriptAnalyzer.js';
+import { analyzeUserScriptFromDisk, isUserScriptCandidate } from '../analyzers/userScriptAnalyzer.js';
 import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
@@ -97,6 +98,378 @@ function findCycles(fileObjects) {
     if (!index.has(v)) strongConnect(v);
   }
   return cycles;
+}
+
+// 类型实体收集（Interface/Class/Method）：单文件分析（buildSingleFileOntology）与全仓库扫描共用
+// 引用计数：名字在本文件出现、且位于实体声明范围之外的位置数（排除声明自身与自递归，宁可漏报不误报）
+function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
+  const interfaces = [];
+  const classes = [];
+  const methods = [];
+  const ifaceIdUsed = new Set();
+  const classIdUsed = new Set();
+  const methodIdUsed = new Set();
+  const localTypesByFile = new Map(); // relPath -> Map(name -> id)，本文件全部类型（含未导出）
+  const typeSpanById = new Map();     // id -> {pos, end}，声明范围（用于引用计数，不进快照）
+  const refsOutsideSpan = (relPath, name, start, end) => {
+    const positions = factsMap.get(relPath)?.nameReferences?.get(name) ?? [];
+    return positions.filter((p) => p < start || p >= end).length;
+  };
+  const registerLocalType = (relPath, name, id) => {
+    if (!localTypesByFile.has(relPath)) localTypesByFile.set(relPath, new Map());
+    localTypesByFile.get(relPath).set(name, id);
+  };
+
+  for (const relPath of relPaths) {
+    const facts = factsMap.get(relPath);
+    const fileObj = fileObjectByPath.get(relPath);
+    if (!fileObj) continue;
+
+    for (const iface of facts.interfaces ?? []) {
+      const id = uniqueId(`iface:${relPath}#${iface.name}`, ifaceIdUsed);
+      registerLocalType(relPath, iface.name, id);
+      typeSpanById.set(id, { pos: iface.pos, end: iface.end });
+      const entity = {
+        id, name: iface.name,
+        fileId: fileObj.id, filePath: relPath,
+        line: iface.line,
+        exported: iface.exported,
+        methodIds: [],
+        extendsIds: [],
+        extendsNames: iface.extendsNames,
+        deadCandidate: false, deadReason: null,
+        reviewed: false, notes: null,
+      };
+      for (const m of iface.methods) {
+        const mid = uniqueId(`method:${relPath}#${iface.name}#${m.name}`, methodIdUsed);
+        methods.push({
+          id: mid, name: m.name,
+          ownerKind: 'interface', ownerId: id, ownerName: iface.name,
+          fileId: fileObj.id, filePath: relPath,
+          line: m.line,
+          isStatic: false, isAsync: false, isOverride: false, exported: false,
+          signature: m.signature,
+          overridesId: null, overriddenByIds: [],
+          deadCandidate: false, deadReason: null, // 接口方法为契约声明，永不判死
+          reviewed: false, notes: null,
+        });
+        entity.methodIds.push(mid);
+      }
+      // 非导出接口：本文件内零引用 → 死代码候选（导出实体的全仓库零导入检测在调用方统一做）
+      if (!iface.exported && refsOutsideSpan(relPath, iface.name, iface.pos, iface.end) === 0) {
+        entity.deadCandidate = true;
+        entity.deadReason = '本文件内零引用';
+      }
+      interfaces.push(entity);
+    }
+
+    for (const cls of facts.classes ?? []) {
+      const id = uniqueId(`class:${relPath}#${cls.name}`, classIdUsed);
+      registerLocalType(relPath, cls.name, id);
+      typeSpanById.set(id, { pos: cls.pos, end: cls.end });
+      const entity = {
+        id, name: cls.name,
+        fileId: fileObj.id, filePath: relPath,
+        line: cls.line,
+        exported: cls.exported,
+        isSingleton: cls.isSingleton,
+        methodIds: [],
+        implementsIds: [],
+        implementsNames: cls.implementsNames,
+        extendsId: null, extendsName: cls.extendsName,
+        deadCandidate: false, deadReason: null,
+        reviewed: false, notes: null,
+      };
+      for (const m of cls.methods) {
+        const mid = uniqueId(`method:${relPath}#${cls.name}#${m.name}`, methodIdUsed);
+        const methodEntity = {
+          id: mid, name: m.name,
+          ownerKind: 'class', ownerId: id, ownerName: cls.name,
+          fileId: fileObj.id, filePath: relPath,
+          line: m.line,
+          isStatic: m.isStatic, isAsync: m.isAsync, isOverride: m.isOverride, exported: false,
+          signature: m.signature,
+          overridesId: null, overriddenByIds: [],
+          deadCandidate: false, deadReason: null,
+          reviewed: false, notes: null,
+        };
+        // 非导出类的方法可能仅被本文件调用：本文件内零引用才判死（导出类方法可能被外部调用，不判死）
+        if (!cls.exported && refsOutsideSpan(relPath, m.name, m.pos, m.end) === 0) {
+          methodEntity.deadCandidate = true;
+          methodEntity.deadReason = '本文件内零引用';
+        }
+        methods.push(methodEntity);
+        entity.methodIds.push(mid);
+      }
+      if (!cls.exported && refsOutsideSpan(relPath, cls.name, cls.pos, cls.end) === 0) {
+        entity.deadCandidate = true;
+        entity.deadReason = '本文件内零引用';
+      }
+      classes.push(entity);
+    }
+
+    for (const fn of facts.moduleFunctions ?? []) {
+      const id = uniqueId(`method:${relPath}#${fn.name}`, methodIdUsed);
+      typeSpanById.set(id, { pos: fn.pos, end: fn.end });
+      const entity = {
+        id, name: fn.name,
+        ownerKind: 'module', ownerId: fileObj.id, ownerName: null,
+        fileId: fileObj.id, filePath: relPath,
+        line: fn.line,
+        isStatic: false, isAsync: fn.isAsync, isOverride: false,
+        exported: fn.exported,
+        signature: fn.signature,
+        overridesId: null, overriddenByIds: [],
+        deadCandidate: false, deadReason: null,
+        reviewed: false, notes: null,
+      };
+      // 非导出函数：本文件零引用即死；导出函数的判定在调用方全仓库零导入检测统一做
+      if (!fn.exported && refsOutsideSpan(relPath, fn.name, fn.pos, fn.end) === 0) {
+        entity.deadCandidate = true;
+        entity.deadReason = '本文件内零引用';
+      }
+      methods.push(entity);
+    }
+  }
+  return { interfaces, classes, methods, localTypesByFile, typeSpanById, refsOutsideSpan };
+}
+
+// 方法级 overrides：实现类方法与其实现接口/父类中的同名方法建立双向链接
+function linkMethodOverrides(interfaces, classes, methods) {
+  const methodById = new Map(methods.map((m) => [m.id, m]));
+  const ifaceById = new Map(interfaces.map((i) => [i.id, i]));
+  const classById = new Map(classes.map((c) => [c.id, c]));
+  const linkOverride = (implId, contractId) => {
+    const impl = methodById.get(implId);
+    const contract = methodById.get(contractId);
+    if (!impl || !contract || impl.id === contract.id) return;
+    impl.overridesId = contract.id;
+    if (!contract.overriddenByIds.includes(impl.id)) contract.overriddenByIds.push(impl.id);
+  };
+  for (const cls of classes) {
+    const parents = [
+      ...cls.implementsIds.map((id) => ifaceById.get(id)),
+      ...(cls.extendsId ? [classById.get(cls.extendsId)] : []),
+    ].filter(Boolean);
+    for (const parent of parents) {
+      for (const mid of cls.methodIds) {
+        const m = methodById.get(mid);
+        const parentMethod = parent.methodIds
+          .map((id) => methodById.get(id))
+          .find((pm) => pm && pm.name === m.name);
+        if (parentMethod) linkOverride(mid, parentMethod.id);
+      }
+    }
+  }
+}
+
+// 单个油猴脚本的五类对象（UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction）
+// 单文件分析（buildSingleFileOntology）与全仓库扫描共用
+function buildUserScriptObjects(relPath, facts, fileObj) {
+  const meta = facts.meta ?? {};
+  const stem = path.posix.basename(relPath).replace(/\.user\.js$|\.m?js$/, '');
+  const scriptName = meta.name ?? stem;
+  const usId = `us:${relPath}`;
+
+  // 函数对象（先建，调用边依赖 id 映射）
+  const fnIdUsed = new Set();
+  const fnIds = [];
+  const fnIdMap = new Map();
+  for (const fn of facts.functions ?? []) {
+    const fnId = uniqueId(`fn:${relPath}#${fn.name}`, fnIdUsed);
+    fnIdMap.set(fn.name, fnId);
+    fnIds.push(fnId);
+  }
+  // 函数级死代码候选：名字在声明范围外零出现（直调 / 回调传值 / 顶层调用均会留下标识符引用）；
+  // 调用图零入边兜底（obj['fn']() 字符串键调用不产生标识符引用）；constructor 与事件角色函数豁免
+  const topLevelCalled = new Set((facts.topLevelCalls ?? []).map((t) => t.name));
+  const scriptFunctions = [];
+  for (const fn of facts.functions ?? []) {
+    const shortName = fn.name.includes('.') ? fn.name.slice(fn.name.lastIndexOf('.') + 1) : fn.name;
+    const positions = facts.nameReferences?.get(shortName) ?? [];
+    const outside = positions.filter((p) => p < fn.pos || p >= fn.end).length;
+    let deadCandidate = false;
+    let deadReason = null;
+    if (outside === 0 && fn.calledByCount === 0 && !topLevelCalled.has(fn.name)
+      && !fn.name.endsWith('.constructor') && !(fn.roles ?? []).includes('event')) {
+      deadCandidate = true;
+      deadReason = '全文零引用（排除声明与自身函数体）';
+    }
+    scriptFunctions.push({
+      id: fnIdMap.get(fn.name),
+      name: fn.name,
+      kind: fn.kind,
+      owner: fn.owner ?? null,
+      isTopLevel: fn.isTopLevel,
+      line: fn.line,
+      lineCount: fn.lineCount,
+      callCount: fn.callCount,
+      calledByCount: fn.calledByCount,
+      roles: fn.roles ?? ['logic'],
+      gmApiCalls: fn.gmApiCalls ?? [],
+      gmApiCount: (fn.gmApiCalls ?? []).length,
+      domOpCount: fn.domOpCount ?? 0,
+      htmlInjectionCount: fn.htmlInjectionCount ?? 0,
+      mountCount: fn.mountCount ?? 0,
+      networkCallCount: fn.networkCallCount ?? 0,
+      observerCount: fn.observerCount ?? 0,
+      listenerCount: fn.listenerCount ?? 0,
+      timerCount: fn.timerCount ?? 0,
+      deadCandidate,
+      deadReason,
+      callIds: [],
+      calledByIds: [],
+      scriptId: usId,
+      scriptName,
+      filePath: relPath,
+      reviewed: false, notes: null,
+    });
+  }
+  // 调用边回填（from/to 均为已收集函数）
+  const fnById = new Map(scriptFunctions.map((f) => [f.id, f]));
+  for (const edge of facts.callEdges ?? []) {
+    const fromFn = fnById.get(fnIdMap.get(edge.from));
+    if (!fromFn) continue;
+    for (const t of edge.to) {
+      const toId = fnIdMap.get(t.to);
+      if (!toId || toId === fromFn.id) continue;
+      if (!fromFn.callIds.includes(toId)) fromFn.callIds.push(toId);
+      const toFn = fnById.get(toId);
+      if (toFn && !toFn.calledByIds.includes(fromFn.id)) toFn.calledByIds.push(fromFn.id);
+    }
+  }
+
+  // GM API 使用对象
+  const gmApiUsages = [];
+  const gmIds = [];
+  for (const gm of facts.gmApiCalls ?? []) {
+    const gmId = `gm:${relPath}#${gm.name}`;
+    gmIds.push(gmId);
+    gmApiUsages.push({
+      id: gmId,
+      name: gm.name,
+      category: gm.category,
+      callCount: gm.callCount,
+      lines: gm.lines,
+      declared: gm.declared,
+      scriptId: usId,
+      scriptName,
+      filePath: relPath,
+      reviewed: false, notes: null,
+    });
+  }
+
+  // DOM 注入点对象（fnIds = 执行注入的函数，逻辑注入链）
+  const injectionPoints = [];
+  const injectIds = [];
+  const injectSorted = [...(facts.domInjections ?? [])].sort((a, b) => (b.callCount - a.callCount) || String(a.kind).localeCompare(String(b.kind)) || String(a.target).localeCompare(String(b.target)));
+  injectSorted.forEach((inj, i) => {
+    const injId = `inject:${relPath}#${i + 1}`;
+    injectIds.push(injId);
+    injectionPoints.push({
+      id: injId,
+      kind: inj.kind,
+      target: inj.target,
+      callCount: inj.callCount,
+      lines: inj.lines,
+      interpolated: !!inj.interpolated,
+      fns: inj.fns ?? [],
+      fnIds: (inj.fns ?? []).map((n) => fnIdMap.get(n)).filter(Boolean),
+      scriptId: usId,
+      scriptName,
+      filePath: relPath,
+      reviewed: false, notes: null,
+    });
+  });
+
+  // 网络端点对象（fnIds = 发起请求的函数）
+  const networkEndpoints = [];
+  const netIds = [];
+  for (const net of facts.networkRequests ?? []) {
+    const netId = `net:${relPath}#${net.kind}:${net.domain}`;
+    netIds.push(netId);
+    networkEndpoints.push({
+      id: netId,
+      kind: net.kind,
+      domain: net.domain,
+      urls: net.urls,
+      methods: net.methods,
+      callCount: net.callCount,
+      lines: net.lines,
+      allowedByConnect: net.allowedByConnect,
+      fns: net.fns ?? [],
+      fnIds: (net.fns ?? []).map((n) => fnIdMap.get(n)).filter(Boolean),
+      scriptId: usId,
+      scriptName,
+      filePath: relPath,
+      reviewed: false, notes: null,
+    });
+  }
+
+  const observerCount = (facts.observers ?? []).length;
+  const intervalCount = (facts.timers ?? []).filter((t) => t.kind === 'interval').length;
+  const timeoutCount = (facts.timers ?? []).filter((t) => t.kind === 'timeout').length;
+  const userScript = {
+    id: usId,
+    name: scriptName,
+    namespace: meta.namespace ?? null,
+    version: meta.version ?? null,
+    author: meta.author ?? null,
+    description: meta.description ? meta.description.slice(0, 200) : null,
+    license: meta.license ?? null,
+    filePath: relPath,
+    fileId: fileObj ? fileObj.id : `file:${relPath}`,
+    matches: meta.matches ?? [],
+    excludes: meta.excludes ?? [],
+    grants: meta.grants ?? [],
+    grantNone: !!meta.grantNone,
+    connects: meta.connects ?? [],
+    requires: meta.requires ?? [],
+    resources: (meta.resources ?? []).map((r) => r.name),
+    runAt: meta.runAt ?? 'document-idle(默认)',
+    noframes: !!meta.noframes,
+    lineCount: facts.lineCount,
+    isIife: facts.isIife,
+    usesStrict: facts.usesStrict,
+    hostFramework: facts.hostFramework,
+    hostMarkers: facts.hostMarkers ?? [],
+    functionCount: (facts.functions ?? []).length,
+    topLevelFunctionCount: (facts.functions ?? []).filter((f) => f.isTopLevel).length,
+    deadFunctionCount: scriptFunctions.filter((f) => f.deadCandidate).length,
+    gmApiCount: (facts.gmApiCalls ?? []).length,
+    gmApiCallCount: (facts.gmApiCalls ?? []).reduce((a, g) => a + g.callCount, 0),
+    injectionCount: (facts.domInjections ?? []).length,
+    mountCount: (facts.domInjections ?? []).filter((d) => d.kind === 'mount').length,
+    htmlInjectionCount: (facts.domInjections ?? []).filter((d) => d.kind === 'inner-html' || d.kind === 'insert-adjacent' || d.kind === 'document-write').length,
+    networkEndpointCount: (facts.networkRequests ?? []).length,
+    networkCallCount: (facts.networkRequests ?? []).reduce((a, n) => a + n.callCount, 0),
+    hijackCount: (facts.hijacks ?? []).length,
+    mutationObserverCount: observerCount,
+    intervalCount,
+    timeoutCount,
+    listenerCount: (facts.listeners ?? []).length,
+    lifecycleEvents: facts.lifecycleEvents ?? [],
+    customEventsEmitted: facts.customEventsEmitted ?? [],
+    customEventsListened: facts.customEventsListened ?? [],
+    usesUnsafeWindow: (facts.unsafeWindowReads?.length ?? 0) + (facts.unsafeWindowWrites?.length ?? 0) > 0,
+    unsafeWindowReads: facts.unsafeWindowReads ?? [],
+    unsafeWindowWrites: facts.unsafeWindowWrites ?? [],
+    windowExposes: facts.windowExposes ?? [],
+    storageUsage: facts.storageUsage ?? {},
+    createElementCount: facts.createElementCount ?? 0,
+    styleElementCount: facts.styleElementCount ?? 0,
+    gmAddStyleCount: facts.gmAddStyleCount ?? 0,
+    topLevelCalls: facts.topLevelCalls ?? [],
+    risks: facts.risks ?? [],
+    riskCount: (facts.risks ?? []).length,
+    riskLevel: facts.riskLevel ?? 'none',
+    gmApiIds: gmIds,
+    injectionIds: injectIds,
+    networkIds: netIds,
+    functionIds: fnIds,
+    reviewed: false, notes: null,
+  };
+  return { userScript, gmApiUsages, injectionPoints, networkEndpoints, scriptFunctions };
 }
 
 export async function buildOntologyData(projectRoot, options = {}) {
@@ -327,136 +700,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
   }
 
   // 5b-0. 类型实体：Interface / Class / Method（跨文件 implements/extends/overrides + 函数级死代码候选）
-  // 引用计数：名字在本文件出现、且位于实体声明范围之外的位置数（排除声明自身与自递归，宁可漏报不误报）
-  const refsOutsideSpan = (relPath, name, start, end) => {
-    const positions = factsMap.get(relPath)?.nameReferences?.get(name) ?? [];
-    return positions.filter((p) => p < start || p >= end).length;
-  };
-
-  const interfaces = [];
-  const classes = [];
-  const methods = [];
-  const ifaceIdUsed = new Set();
-  const classIdUsed = new Set();
-  const methodIdUsed = new Set();
-  const localTypesByFile = new Map(); // relPath -> Map(name -> id)，本文件全部类型（含未导出）
-  const typeSpanById = new Map();     // id -> {pos, end}，声明范围（用于引用计数，不进快照）
-  const registerLocalType = (relPath, name, id) => {
-    if (!localTypesByFile.has(relPath)) localTypesByFile.set(relPath, new Map());
-    localTypesByFile.get(relPath).set(name, id);
-  };
-
-  for (const relPath of scan.files) {
-    const facts = factsMap.get(relPath);
-    const fileObj = fileObjectByPath.get(relPath);
-    if (!fileObj) continue;
-
-    for (const iface of facts.interfaces ?? []) {
-      const id = uniqueId(`iface:${relPath}#${iface.name}`, ifaceIdUsed);
-      registerLocalType(relPath, iface.name, id);
-      typeSpanById.set(id, { pos: iface.pos, end: iface.end });
-      const entity = {
-        id, name: iface.name,
-        fileId: fileObj.id, filePath: relPath,
-        line: iface.line,
-        exported: iface.exported,
-        methodIds: [],
-        extendsIds: [],
-        extendsNames: iface.extendsNames,
-        deadCandidate: false, deadReason: null,
-        reviewed: false, notes: null,
-      };
-      for (const m of iface.methods) {
-        const mid = uniqueId(`method:${relPath}#${iface.name}#${m.name}`, methodIdUsed);
-        methods.push({
-          id: mid, name: m.name,
-          ownerKind: 'interface', ownerId: id, ownerName: iface.name,
-          fileId: fileObj.id, filePath: relPath,
-          line: m.line,
-          isStatic: false, isAsync: false, isOverride: false, exported: false,
-          signature: m.signature,
-          overridesId: null, overriddenByIds: [],
-          deadCandidate: false, deadReason: null, // 接口方法为契约声明，永不判死
-          reviewed: false, notes: null,
-        });
-        entity.methodIds.push(mid);
-      }
-      // 非导出接口：本文件内零引用 → 死代码候选（导出实体的全仓库零导入检测在下方统一做）
-      if (!iface.exported && refsOutsideSpan(relPath, iface.name, iface.pos, iface.end) === 0) {
-        entity.deadCandidate = true;
-        entity.deadReason = '本文件内零引用';
-      }
-      interfaces.push(entity);
-    }
-
-    for (const cls of facts.classes ?? []) {
-      const id = uniqueId(`class:${relPath}#${cls.name}`, classIdUsed);
-      registerLocalType(relPath, cls.name, id);
-      typeSpanById.set(id, { pos: cls.pos, end: cls.end });
-      const entity = {
-        id, name: cls.name,
-        fileId: fileObj.id, filePath: relPath,
-        line: cls.line,
-        exported: cls.exported,
-        isSingleton: cls.isSingleton,
-        methodIds: [],
-        implementsIds: [],
-        implementsNames: cls.implementsNames,
-        extendsId: null, extendsName: cls.extendsName,
-        deadCandidate: false, deadReason: null,
-        reviewed: false, notes: null,
-      };
-      for (const m of cls.methods) {
-        const mid = uniqueId(`method:${relPath}#${cls.name}#${m.name}`, methodIdUsed);
-        const methodEntity = {
-          id: mid, name: m.name,
-          ownerKind: 'class', ownerId: id, ownerName: cls.name,
-          fileId: fileObj.id, filePath: relPath,
-          line: m.line,
-          isStatic: m.isStatic, isAsync: m.isAsync, isOverride: m.isOverride, exported: false,
-          signature: m.signature,
-          overridesId: null, overriddenByIds: [],
-          deadCandidate: false, deadReason: null,
-          reviewed: false, notes: null,
-        };
-        // 非导出类的方法可能仅被本文件调用：本文件内零引用才判死（导出类方法可能被外部调用，不判死）
-        if (!cls.exported && refsOutsideSpan(relPath, m.name, m.pos, m.end) === 0) {
-          methodEntity.deadCandidate = true;
-          methodEntity.deadReason = '本文件内零引用';
-        }
-        methods.push(methodEntity);
-        entity.methodIds.push(mid);
-      }
-      if (!cls.exported && refsOutsideSpan(relPath, cls.name, cls.pos, cls.end) === 0) {
-        entity.deadCandidate = true;
-        entity.deadReason = '本文件内零引用';
-      }
-      classes.push(entity);
-    }
-
-    for (const fn of facts.moduleFunctions ?? []) {
-      const id = uniqueId(`method:${relPath}#${fn.name}`, methodIdUsed);
-      typeSpanById.set(id, { pos: fn.pos, end: fn.end });
-      const entity = {
-        id, name: fn.name,
-        ownerKind: 'module', ownerId: fileObj.id, ownerName: null,
-        fileId: fileObj.id, filePath: relPath,
-        line: fn.line,
-        isStatic: false, isAsync: fn.isAsync, isOverride: false,
-        exported: fn.exported,
-        signature: fn.signature,
-        overridesId: null, overriddenByIds: [],
-        deadCandidate: false, deadReason: null,
-        reviewed: false, notes: null,
-      };
-      // 非导出函数：本文件零引用即死；导出函数的判定在下方全仓库零导入检测统一做
-      if (!fn.exported && refsOutsideSpan(relPath, fn.name, fn.pos, fn.end) === 0) {
-        entity.deadCandidate = true;
-        entity.deadReason = '本文件内零引用';
-      }
-      methods.push(entity);
-    }
-  }
+  const {
+    interfaces, classes, methods, localTypesByFile, typeSpanById, refsOutsideSpan,
+  } = collectTypeEntities(scan.files, factsMap, fileObjectByPath);
 
   // 跨文件类型引用解析：本文件声明优先；其次具名 import（含 type-only，按 local 名匹配、imported 名定位目标文件导出）
   const exportedTypeIndex = new Map(); // `relPath#name` -> id（仅导出实体）
@@ -486,31 +732,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   }
 
   // 方法级 overrides：实现类方法与其实现接口/父类中的同名方法建立双向链接
-  const methodById = new Map(methods.map((m) => [m.id, m]));
-  const ifaceById = new Map(interfaces.map((i) => [i.id, i]));
-  const classById = new Map(classes.map((c) => [c.id, c]));
-  const linkOverride = (implId, contractId) => {
-    const impl = methodById.get(implId);
-    const contract = methodById.get(contractId);
-    if (!impl || !contract || impl.id === contract.id) return;
-    impl.overridesId = contract.id;
-    if (!contract.overriddenByIds.includes(impl.id)) contract.overriddenByIds.push(impl.id);
-  };
-  for (const cls of classes) {
-    const parents = [
-      ...cls.implementsIds.map((id) => ifaceById.get(id)),
-      ...(cls.extendsId ? [classById.get(cls.extendsId)] : []),
-    ].filter(Boolean);
-    for (const parent of parents) {
-      for (const mid of cls.methodIds) {
-        const m = methodById.get(mid);
-        const parentMethod = parent.methodIds
-          .map((id) => methodById.get(id))
-          .find((pm) => pm && pm.name === m.name);
-        if (parentMethod) linkOverride(mid, parentMethod.id);
-      }
-    }
-  }
+  linkMethodOverrides(interfaces, classes, methods);
 
   // 导出符号的全仓库导入索引（export * 再导出 / 命名空间导入 / 动态 import 的目标文件——无法按名追踪，整文件豁免）
   const indirectlyReferencedFiles = new Set();
@@ -552,190 +774,12 @@ export async function buildOntologyData(projectRoot, options = {}) {
   for (const relPath of scan.files) {
     const facts = factsMap.get(relPath);
     if (!facts?.isUserScript) continue;
-    const meta = facts.meta ?? {};
-    const fileObj = fileObjectByPath.get(relPath);
-    const stem = path.posix.basename(relPath).replace(/\.user\.js$|\.m?js$/, '');
-    const scriptName = meta.name ?? stem;
-    const usId = `us:${relPath}`;
-
-    // 函数对象（先建，调用边依赖 id 映射）
-    const fnIdUsed = new Set();
-    const fnIds = [];
-    const fnIdMap = new Map();
-    for (const fn of facts.functions ?? []) {
-      const fnId = uniqueId(`fn:${relPath}#${fn.name}`, fnIdUsed);
-      fnIdMap.set(fn.name, fnId);
-      fnIds.push(fnId);
-    }
-    for (const fn of facts.functions ?? []) {
-      scriptFunctions.push({
-        id: fnIdMap.get(fn.name),
-        name: fn.name,
-        kind: fn.kind,
-        owner: fn.owner ?? null,
-        isTopLevel: fn.isTopLevel,
-        line: fn.line,
-        lineCount: fn.lineCount,
-        callCount: fn.callCount,
-        calledByCount: fn.calledByCount,
-        roles: fn.roles ?? ['logic'],
-        gmApiCalls: fn.gmApiCalls ?? [],
-        gmApiCount: (fn.gmApiCalls ?? []).length,
-        domOpCount: fn.domOpCount ?? 0,
-        htmlInjectionCount: fn.htmlInjectionCount ?? 0,
-        mountCount: fn.mountCount ?? 0,
-        networkCallCount: fn.networkCallCount ?? 0,
-        observerCount: fn.observerCount ?? 0,
-        listenerCount: fn.listenerCount ?? 0,
-        timerCount: fn.timerCount ?? 0,
-        callIds: [],
-        calledByIds: [],
-        scriptId: usId,
-        scriptName,
-        filePath: relPath,
-        reviewed: false, notes: null,
-      });
-    }
-    // 调用边回填（from/to 均为已收集函数）
-    for (const edge of facts.callEdges ?? []) {
-      const fromId = fnIdMap.get(edge.from);
-      if (!fromId) continue;
-      const fromFn = scriptFunctions.find((f) => f.id === fromId);
-      for (const t of edge.to) {
-        const toId = fnIdMap.get(t.to);
-        if (!toId || toId === fromId) continue;
-        if (!fromFn.callIds.includes(toId)) fromFn.callIds.push(toId);
-        const toFn = scriptFunctions.find((f) => f.id === toId);
-        if (toFn && !toFn.calledByIds.includes(fromId)) toFn.calledByIds.push(fromId);
-      }
-    }
-
-    // GM API 使用对象
-    const gmIds = [];
-    for (const gm of facts.gmApiCalls ?? []) {
-      const gmId = `gm:${relPath}#${gm.name}`;
-      gmIds.push(gmId);
-      gmApiUsages.push({
-        id: gmId,
-        name: gm.name,
-        category: gm.category,
-        callCount: gm.callCount,
-        lines: gm.lines,
-        declared: gm.declared,
-        scriptId: usId,
-        scriptName,
-        filePath: relPath,
-        reviewed: false, notes: null,
-      });
-    }
-
-    // DOM 注入点对象（fnIds = 执行注入的函数，逻辑注入链）
-    const injectIds = [];
-    const injectSorted = [...(facts.domInjections ?? [])].sort((a, b) => (b.callCount - a.callCount) || String(a.kind).localeCompare(String(b.kind)) || String(a.target).localeCompare(String(b.target)));
-    injectSorted.forEach((inj, i) => {
-      const injId = `inject:${relPath}#${i + 1}`;
-      injectIds.push(injId);
-      injectionPoints.push({
-        id: injId,
-        kind: inj.kind,
-        target: inj.target,
-        callCount: inj.callCount,
-        lines: inj.lines,
-        interpolated: !!inj.interpolated,
-        fns: inj.fns ?? [],
-        fnIds: (inj.fns ?? []).map((n) => fnIdMap.get(n)).filter(Boolean),
-        scriptId: usId,
-        scriptName,
-        filePath: relPath,
-        reviewed: false, notes: null,
-      });
-    });
-
-    // 网络端点对象（fnIds = 发起请求的函数）
-    const netIds = [];
-    for (const net of facts.networkRequests ?? []) {
-      const netId = `net:${relPath}#${net.kind}:${net.domain}`;
-      netIds.push(netId);
-      networkEndpoints.push({
-        id: netId,
-        kind: net.kind,
-        domain: net.domain,
-        urls: net.urls,
-        methods: net.methods,
-        callCount: net.callCount,
-        lines: net.lines,
-        allowedByConnect: net.allowedByConnect,
-        fns: net.fns ?? [],
-        fnIds: (net.fns ?? []).map((n) => fnIdMap.get(n)).filter(Boolean),
-        scriptId: usId,
-        scriptName,
-        filePath: relPath,
-        reviewed: false, notes: null,
-      });
-    }
-
-    const observerCount = (facts.observers ?? []).length;
-    const intervalCount = (facts.timers ?? []).filter((t) => t.kind === 'interval').length;
-    const timeoutCount = (facts.timers ?? []).filter((t) => t.kind === 'timeout').length;
-    userScripts.push({
-      id: usId,
-      name: scriptName,
-      namespace: meta.namespace ?? null,
-      version: meta.version ?? null,
-      author: meta.author ?? null,
-      description: meta.description ? meta.description.slice(0, 200) : null,
-      license: meta.license ?? null,
-      filePath: relPath,
-      fileId: fileObj ? fileObj.id : `file:${relPath}`,
-      matches: meta.matches ?? [],
-      excludes: meta.excludes ?? [],
-      grants: meta.grants ?? [],
-      grantNone: !!meta.grantNone,
-      connects: meta.connects ?? [],
-      requires: meta.requires ?? [],
-      resources: (meta.resources ?? []).map((r) => r.name),
-      runAt: meta.runAt ?? 'document-idle(默认)',
-      noframes: !!meta.noframes,
-      lineCount: facts.lineCount,
-      isIife: facts.isIife,
-      usesStrict: facts.usesStrict,
-      hostFramework: facts.hostFramework,
-      hostMarkers: facts.hostMarkers ?? [],
-      functionCount: (facts.functions ?? []).length,
-      topLevelFunctionCount: (facts.functions ?? []).filter((f) => f.isTopLevel).length,
-      gmApiCount: (facts.gmApiCalls ?? []).length,
-      gmApiCallCount: (facts.gmApiCalls ?? []).reduce((a, g) => a + g.callCount, 0),
-      injectionCount: (facts.domInjections ?? []).length,
-      mountCount: (facts.domInjections ?? []).filter((d) => d.kind === 'mount').length,
-      htmlInjectionCount: (facts.domInjections ?? []).filter((d) => d.kind === 'inner-html' || d.kind === 'insert-adjacent' || d.kind === 'document-write').length,
-      networkEndpointCount: (facts.networkRequests ?? []).length,
-      networkCallCount: (facts.networkRequests ?? []).reduce((a, n) => a + n.callCount, 0),
-      hijackCount: (facts.hijacks ?? []).length,
-      mutationObserverCount: observerCount,
-      intervalCount,
-      timeoutCount,
-      listenerCount: (facts.listeners ?? []).length,
-      lifecycleEvents: facts.lifecycleEvents ?? [],
-      customEventsEmitted: facts.customEventsEmitted ?? [],
-      customEventsListened: facts.customEventsListened ?? [],
-      usesUnsafeWindow: (facts.unsafeWindowReads?.length ?? 0) + (facts.unsafeWindowWrites?.length ?? 0) > 0,
-      unsafeWindowReads: facts.unsafeWindowReads ?? [],
-      unsafeWindowWrites: facts.unsafeWindowWrites ?? [],
-      windowExposes: facts.windowExposes ?? [],
-      storageUsage: facts.storageUsage ?? {},
-      createElementCount: facts.createElementCount ?? 0,
-      styleElementCount: facts.styleElementCount ?? 0,
-      gmAddStyleCount: facts.gmAddStyleCount ?? 0,
-      topLevelCalls: facts.topLevelCalls ?? [],
-      risks: facts.risks ?? [],
-      riskCount: (facts.risks ?? []).length,
-      riskLevel: facts.riskLevel ?? 'none',
-      gmApiIds: gmIds,
-      injectionIds: injectIds,
-      networkIds: netIds,
-      functionIds: fnIds,
-      reviewed: false, notes: null,
-    });
+    const set = buildUserScriptObjects(relPath, facts, fileObjectByPath.get(relPath));
+    userScripts.push(set.userScript);
+    gmApiUsages.push(...set.gmApiUsages);
+    injectionPoints.push(...set.injectionPoints);
+    networkEndpoints.push(...set.networkEndpoints);
+    scriptFunctions.push(...set.scriptFunctions);
   }
 
   // 6. renders 关系：文件主组件的 JSX 标签 → 导入来源文件的组件
@@ -1057,6 +1101,27 @@ export async function buildOntologyData(projectRoot, options = {}) {
       && !lazyReferencedFiles.has(f.path)
       && (importedByCount.get(f.id) ?? 0) === 0)
     .map((f) => f.path);
+  // 导出级死代码：导出符号全仓库零导入且本文件零使用（仅 export 冗余，代码可安全去导出/删除）
+  // 保守豁免：入口/测试文件、被 export */命名空间/无子句动态 import 整体引用的文件、
+  // 零导入文件（文件级 orphan 已覆盖）、default 导出（消费方按 default 导入，名字不可对照）
+  const deadExportCandidates = [];
+  for (const f of fileObjects) {
+    f.unusedExports = [];
+    if (f.isEntry || f.isTest) continue;
+    if (indirectlyReferencedFiles.has(f.path)) continue;
+    if ((importedByCount.get(f.id) ?? 0) === 0) continue;
+    const facts = factsMap.get(f.path);
+    for (const sym of facts?.exportSymbols ?? []) {
+      if (!sym.isExported || sym.isDefault) continue;
+      if (importedTypeRefs.has(`${f.path}#${sym.name}`)) continue;
+      const positions = facts.nameReferences?.get(sym.name) ?? [];
+      if (positions.length > 1) continue; // 本文件内仍有使用，仅 export 语句冗余，不判死
+      f.unusedExports.push(sym.name);
+    }
+    if (f.unusedExports.length > 0) {
+      deadExportCandidates.push({ file: f.path, names: f.unusedExports });
+    }
+  }
   const cycles = findCycles(fileObjects);
 
   // 9. 汇总
@@ -1091,7 +1156,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
     components, stores, hooks, services, userScripts,
     dependencies, cycles, orphanCandidates, analysisErrors,
     deadTypeCount: interfaces.filter((i) => i.deadCandidate).length + classes.filter((c) => c.deadCandidate).length,
-    deadFunctionCount: methods.filter((m) => m.deadCandidate).length,
+    deadFunctionCount: methods.filter((m) => m.deadCandidate).length + scriptFunctions.filter((f) => f.deadCandidate).length,
+    deadExportCount: deadExportCandidates.reduce((a, d) => a + d.names.length, 0),
   });
   project.architecture = profile.architecture;
   project.health = profile.health;
@@ -1104,6 +1170,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       durationMs: Date.now() - startedAt,
       cycles,
       orphanCandidates,
+      deadExportCandidates,
       objectCounts: {
         Module: modules.length, SourceFile: fileObjects.length, Component: components.length,
         Hook: hooks.length, Store: stores.length, Service: services.length,
@@ -1132,6 +1199,97 @@ export async function buildOntologyData(projectRoot, options = {}) {
     NetworkEndpoint: networkEndpoints,
     ScriptFunction: scriptFunctions,
     Domain: domains,
+  };
+  return dataMap;
+}
+
+// 单文件分析（不落盘快照）：action analyzeFile 的核心实现
+// 原子性：分析即输出 dataMap 形状 JSON，供 jq/findstr 管道组合；场景工作流（油猴审计/死代码清理）由 skill 编排
+export async function buildSingleFileOntology(absFilePath) {
+  const startedAt = Date.now();
+  const fileName = path.basename(absFilePath);
+  const dir = path.dirname(absFilePath);
+
+  // 路由与全仓库扫描一致：.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
+  let facts;
+  if (fileName.endsWith('.vue')) {
+    facts = analyzeVueFileFromDisk(fileName, dir);
+  } else if (isUserScriptCandidate(absFilePath)) {
+    facts = analyzeUserScriptFromDisk(fileName, dir);
+  } else {
+    facts = analyzeFileFromDisk(fileName, dir);
+  }
+
+  const fileObj = {
+    id: `file:${fileName}`,
+    name: fileName,
+    path: fileName,
+    ext: facts.ext,
+    module: '',
+    moduleId: null,
+    layer: 'root',
+    lineCount: facts.lineCount,
+    isTest: false,
+    isEntry: !!facts.isUserScript || ENTRY_BASENAMES.has(fileName),
+    isPageFile: false,
+    importIds: [],
+    typeImportCount: 0,
+    unresolvedImports: [],
+    exportNames: facts.exportNames ?? [],
+    opensOverlayIds: [],
+    unusedExports: [], // 单文件模式无法判定跨文件使用，导出级判定仅全仓库扫描提供
+    reviewed: false,
+    notes: null,
+  };
+  const factsMap = new Map([[fileName, facts]]);
+  const fileObjectByPath = new Map([[fileName, fileObj]]);
+
+  // 类型实体：非导出实体按本文件引用计数判死；导出实体不判死（单文件模式无法判定跨文件使用）
+  const { interfaces, classes, methods, localTypesByFile } = collectTypeEntities([fileName], factsMap, fileObjectByPath);
+
+  // 本文件内 implements/extends 解析（本文件声明的类型；跨文件导入名留存原名不报错）
+  const localType = (name) => localTypesByFile.get(fileName)?.get(name) ?? null;
+  for (const iface of interfaces) {
+    iface.extendsIds = iface.extendsNames.map(localType).filter(Boolean);
+  }
+  for (const cls of classes) {
+    cls.implementsIds = cls.implementsNames.map(localType).filter(Boolean);
+    if (cls.extendsName) cls.extendsId = localType(cls.extendsName);
+  }
+  linkMethodOverrides(interfaces, classes, methods);
+
+  // 油猴文件：五类脚本对象（含函数级死代码候选）
+  const us = facts.isUserScript
+    ? buildUserScriptObjects(fileName, facts, fileObj)
+    : { userScript: null, gmApiUsages: [], injectionPoints: [], networkEndpoints: [], scriptFunctions: [] };
+
+  const dataMap = {
+    _meta: {
+      generatedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+      mode: 'single-file',
+      file: absFilePath,
+      objectCounts: {
+        SourceFile: 1,
+        Interface: interfaces.length,
+        Class: classes.length,
+        Method: methods.length,
+        UserScript: us.userScript ? 1 : 0,
+        GmApiUsage: us.gmApiUsages.length,
+        InjectionPoint: us.injectionPoints.length,
+        NetworkEndpoint: us.networkEndpoints.length,
+        ScriptFunction: us.scriptFunctions.length,
+      },
+    },
+    SourceFile: [fileObj],
+    Interface: interfaces,
+    Class: classes,
+    Method: methods,
+    UserScript: us.userScript ? [us.userScript] : [],
+    GmApiUsage: us.gmApiUsages,
+    InjectionPoint: us.injectionPoints,
+    NetworkEndpoint: us.networkEndpoints,
+    ScriptFunction: us.scriptFunctions,
   };
   return dataMap;
 }

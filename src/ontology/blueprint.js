@@ -49,7 +49,7 @@ export const LINK_TYPES = [
   'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy', 'belongsTo',
 ];
 
-export const ACTION_NAMES = ['refreshRepo', 'markReviewed', 'addNote'];
+export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addNote'];
 
 export function createIndex(dataMap) {
   const byId = new Map();
