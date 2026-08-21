@@ -146,6 +146,57 @@ test('renderViewerHtml：自包含 HTML + 嵌入数据可无损解析', async ()
   }
 });
 
+// 执行内嵌渲染脚本（DOM stub），验证架构分层排版：层名单行 + 描述副行，无双括号拼接
+test('架构分层条形图：层名不换行压缩、描述独立副行（无括号拼接）', async () => {
+  const dir = buildFixture();
+  try {
+    const dataMap = await buildOntologyData(dir);
+    const model = buildViewerModel(dataMap);
+    const html = renderViewerHtml(model);
+
+    const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const elements = new Map();
+    const makeEl = (id) => {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          innerHTML: '', textContent: id === 'viewer-data' ? dataJson : '',
+          dataset: {}, style: {}, addEventListener() {},
+          classList: { add() {}, remove() {} }, querySelectorAll: () => [],
+        });
+      }
+      return elements.get(id);
+    };
+    const prevDocument = globalThis.document;
+    globalThis.document = {
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+    };
+    try {
+      new Function(script)();
+    } finally {
+      globalThis.document = prevDocument;
+    }
+
+    const overview = makeEl('view-overview').innerHTML;
+    const archIdx = overview.indexOf('<h2>架构分层</h2>');
+    const section = overview.slice(archIdx, overview.indexOf('<h2>功能域清单'));
+    const layers = model.project.architecture.layers;
+    assert.ok(layers.length >= 2, 'fixture 应有多层');
+    // 每层一个主行 + 一条描述副行
+    assert.equal((section.match(/lr-main/g) || []).length, layers.length);
+    assert.equal((section.match(/lr-desc/g) || []).length, layers.length);
+    // 层名在标签列内完整呈现（不被描述文字撑爆）
+    for (const l of layers) {
+      assert.ok(section.includes(`>${l.label}</span>`), `层名 ${l.label} 应独立成标签`);
+    }
+    // 描述不再与层名括号拼接
+    assert.ok(!/（[^（）]*（/.test(section), '不应出现括号嵌套拼接');
+    assert.ok(section.includes(layers[0].description), '描述应出现在副行');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('viewmodel 对空数据仓库的降级（无 Store / 无路由）', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-viewer-empty-'));
   try {

@@ -104,6 +104,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const scan = scanProject(projectRoot, options);
   // 入口识别使用实际扫描根（显式 roots 或默认 src/）；根级入口名在每个根顶层均有效
   const entryRoots = scan.roots ?? ['src'];
+  const htmlEntries = new Set(scan.htmlEntryFiles ?? []);
   const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files);
 
   // 1. 逐文件解析（TypeScript Compiler API，仅词法/语法层，不做类型检查）
@@ -221,7 +222,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       layer: dir ? moduleLayerOf(dir) : 'root',
       lineCount: facts.lineCount,
       isTest: isTestFile(relPath),
-      isEntry: isEntryFile(relPath, entryRoots),
+      isEntry: htmlEntries.has(relPath) || isEntryFile(relPath, entryRoots),
       isPageFile: stem.endsWith('Page') || (relPath.endsWith('.vue') && /\/(views|pages)\//.test(relPath)),
       importIds,
       typeImportCount,

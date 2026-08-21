@@ -43,6 +43,42 @@ function walk(dir, projectRoot, files) {
   }
 }
 
+// HTML 入口探测：收集扫描根及其所在项目目录顶层 *.html 的 <script src="/src/xxx.tsx"> 引用
+// （Vite 多页应用，如与 src 同级的 managed-agent.html），指向的源码文件为硬证据入口
+// （嵌套 main.tsx 等文件名启发式覆盖不到的场景）
+function collectHtmlEntryFiles(projectRoot, roots) {
+  const searchDirs = new Map(); // dir -> true
+  for (const root of roots) {
+    const rootDir = path.resolve(projectRoot, root);
+    searchDirs.set(rootDir, true);
+    searchDirs.set(path.dirname(rootDir), true); // 扫描 src/ 时宿主根顶层的 HTML（Vite 约定位置）
+  }
+  const htmlFiles = [];
+  for (const dir of searchDirs.keys()) {
+    let names = [];
+    try {
+      names = fs.readdirSync(dir, { withFileTypes: true });
+    } catch { continue; }
+    for (const n of names) {
+      if (n.isFile() && n.name.endsWith('.html')) htmlFiles.push(path.join(dir, n.name));
+    }
+  }
+  const entries = new Set();
+  for (const htmlPath of htmlFiles) {
+    let text = '';
+    try {
+      text = fs.readFileSync(htmlPath, 'utf-8');
+    } catch { continue; }
+    for (const m of text.matchAll(/<script[^>]*\ssrc=["']([^"']+\.[cm]?[jt]sx?)["']/g)) {
+      const src = m[1];
+      if (!src.startsWith('/')) continue; // 仅处理根绝对路径引用（Vite 约定）
+      const rel = src.slice(1);
+      if (fs.existsSync(path.join(projectRoot, rel))) entries.add(rel);
+    }
+  }
+  return [...entries];
+}
+
 // 剥离 JSON 文件中的注释（// 行注释与 /* */ 块注释），字符串内的序列已保护
 // 部分项目的 tsconfig.json 含注释（如 shadcn-vue CLI 生成的文件），标准 JSON.parse 会失败
 function stripJsonComments(text) {
@@ -257,6 +293,7 @@ export function scanProject(projectRoot, options = {}) {
     walk(path.join(projectRoot, root), projectRoot, files);
   }
   files.sort();
+  const htmlEntryFiles = collectHtmlEntryFiles(projectRoot, roots);
 
   // 油猴脚本探测：.user.js 扩展名，或 .js 文件头部含 ==UserScript== 元数据块（仅读首 4KB）
   const userScriptFiles = new Set();
@@ -322,6 +359,7 @@ export function scanProject(projectRoot, options = {}) {
     hostConfigs,
     files,
     fileCount: files.length,
+    htmlEntryFiles,
     tsFileCount: counts.ts,
     tsxFileCount: counts.tsx,
     jsFileCount: counts.js + counts.jsx,

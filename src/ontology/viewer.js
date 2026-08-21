@@ -520,10 +520,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bar.purple { background: var(--purple); }
 .bar.cyan { background: var(--cyan); }
 .bar.red { background: var(--red); }
-.layer-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
-.layer-row .lbl { width: 90px; color: var(--fg-dim); font-size: 12px; flex-shrink: 0; }
+.layer-row { margin: 6px 0; }
+.layer-row .lr-main { display: flex; align-items: center; gap: 10px; }
+.layer-row .lbl { width: 90px; color: var(--fg-dim); font-size: 12px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .layer-row .bar-wrap { flex: 1; }
-.layer-row .val { width: 120px; font-size: 12px; color: var(--fg-dim); text-align: right; flex-shrink: 0; }
+.layer-row .val { width: 120px; font-size: 12px; color: var(--fg-dim); text-align: right; flex-shrink: 0; white-space: nowrap; }
+.layer-row .lr-desc { margin: 3px 0 0 100px; font-size: 11px; color: var(--fg-dim); opacity: 0.85; line-height: 1.5; }
+@media (max-width: 720px) { .layer-row .lr-desc { margin-left: 0; } }
 .kv { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 12px; }
 .kv .item { text-align: center; min-width: 80px; }
 .kv .item .v { font-size: 22px; font-weight: 700; }
@@ -603,11 +606,13 @@ document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () 
 
 // ---------- 通用组件 ----------
 const chip = (text, cls) => '<span class="chip ' + (cls || '') + '">' + esc(text) + '</span>';
-function barRow(label, value, max, cls) {
+function barRow(label, value, max, cls, desc) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
-  return '<div class="layer-row"><span class="lbl">' + esc(label) + '</span>'
+  return '<div class="layer-row"><div class="lr-main"><span class="lbl">' + esc(label) + '</span>'
     + '<div class="bar-wrap"><div class="bar ' + (cls || '') + '" style="width:' + pct + '%"></div></div>'
-    + '<span class="val">' + fmt(value) + ' · ' + pct + '%</span></div>';
+    + '<span class="val">' + fmt(value) + ' · ' + pct + '%</span></div>'
+    + (desc ? '<div class="lr-desc">' + esc(desc) + '</div>' : '')
+    + '</div>';
 }
 function table(headers, rows, opts) {
   opts = opts || {};
@@ -640,7 +645,7 @@ function renderOverview() {
     + '</div></div>'
 
     + '<div class="panel"><h2>架构分层</h2>'
-    + layers.map((l) => barRow(l.label + '（' + l.description + '）', l.fileCount, maxLayer)).join('')
+    + layers.map((l) => barRow(l.label, l.fileCount, maxLayer, '', l.description)).join('')
     + '</div>'
 
     + '<div class="panel"><h2>功能域清单（' + M.domainCount + ' 个）</h2>'

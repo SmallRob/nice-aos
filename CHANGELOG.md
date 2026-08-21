@@ -2,6 +2,18 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.6.2] - 2026-08-21
+
+### 修复
+
+- **HTML 入口引用盲区（Vite 多页应用）**：扫描器探测扫描根及宿主根顶层 `*.html` 的 `<script src="/src/xxx.tsx">` 根绝对路径引用，作为硬证据入口（`htmlEntryFiles`）；嵌套入口文件（如 `src/managed-agent/main.tsx`）不再被误判为死代码候选（asdm-agentlink/web：死代码候选 20 → 19，剩余经抽查为真实死代码）
+- **蓝图架构分层排版压缩换行**：此前层名与描述拼接（如 `状态层（前端状态共享比如（Zustand / Pinia Store））`）挤在 90px 标签列内，被压缩成 3-5 行竖排堆叠、括号双重嵌套；现改为层名单行标签 + 描述作为条形图下方独立副行（与柱条对齐、小字号弱化），标签列加 `white-space: nowrap` 防压缩，窄屏下副行左对齐
+
+### 验证
+
+- asdm-agentlink monorepo 双子包端到端：web（React + Vite，202 文件，HTML 入口修复生效）+ server（Express 后端，254 文件，子包依赖清单正确，2 个未声明依赖均为真实治理点：@jest/globals 未声明、vitest 与 jest 混用残留）
+- 新增 2 个测试（HTML 入口探测 / 架构分层排版 DOM stub 渲染验证），总计 64 个全部通过
+
 ## [0.6.1] - 2026-08-21
 
 ### 新增

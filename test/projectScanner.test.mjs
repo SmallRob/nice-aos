@@ -163,3 +163,29 @@ test('solution 风格 tsconfig：合并 references 子配置的 paths 别名', (
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// HTML 入口探测：Vite 多页应用 <script src="/src/xxx/main.tsx">，嵌套入口文件名启发式覆盖不到
+test('HTML 入口探测：script src 根绝对路径引用的源文件记为入口', () => {
+  const root = tmpProject();
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'mpa-app',
+      dependencies: { react: '18.0.0' },
+    }));
+    fs.writeFileSync(path.join(root, 'admin.html'), [
+      '<!DOCTYPE html><html><body>',
+      '<script type="module" src="/src/managed-agent/main.tsx"></script>',
+      '</body></html>',
+    ].join('\n'));
+    fs.mkdirSync(path.join(root, 'src', 'managed-agent'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'managed-agent', 'main.tsx'), 'export const x = 1;\n');
+    fs.writeFileSync(path.join(root, 'src', 'managed-agent', 'unused.tsx'), 'export const y = 2;\n');
+
+    const scan = scanProject(root);
+    assert.deepEqual(scan.htmlEntryFiles, ['src/managed-agent/main.tsx']);
+    // 相对路径引用与不存在文件不进入入口清单
+    assert.ok(!scan.htmlEntryFiles.includes('src/managed-agent/unused.tsx'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
