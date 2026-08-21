@@ -2,6 +2,31 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.11.0] - 2026-08-21
+
+### 新增
+
+- **Dart/Flutter 实体分析器（`dartAnalyzer`，lib/ 组件）**：与 tsAnalyzer/vueAnalyzer/userScriptAnalyzer/rustAnalyzer 平级共存的轻量语法级解析器（深度状态机 + 等长噪声剥离 + 注解行剥离，不依赖 dart analyzer），实体映射对齐 TS 语义：
+  - `abstract class` → Interface、`class/enum/mixin` → Class（extends/implements/with 关系、字段、方法、构造器不实体化为 Method）；类方法/顶层 fn → Method（含 `@override` 标记、signature 归一）
+  - **Widget 基类（StatelessWidget/StatefulWidget/ConsumerWidget 等）→ Component**（kind: page/widget、dartdoc 描述、文件名匹配主组件）；**ChangeNotifier/Notifier 子类与 Riverpod Provider 变量（`final xxxProvider = NotifierProvider<...>.new(X.new)`，含 notifierClass 提取）→ Store**（stateKeys/actionKeys）
+  - `GoRoute(path/builder)` → dartRoutes：路径常量引用回填（`path: AppRoutes.dashboard`）、builderWidget 跨文件组件解析；`context.go/push('/path' 或 AppRoutes.xxx 常量引用)` → overlayOpens → 路由导航边（`navigatesToIds`）
+  - **方法逻辑调用链**：方法体内调用 → callEdges → `Method.callIds/calledByIds/compCallIds`——本类方法/顶层函数/跨文件静态方法（importMap 解析 + 全仓库唯一名兜底）双向链接，Widget 构造调用 → compCallIds 渲染链
+- **Flutter 项目扫描与框架识别**：`pubspec.yaml` + `lib/` 自动发现（monorepo 多包递归发现）并把 `lib` 纳入扫描（`.dart`）；pubspec 依赖解析（`flutter: sdk: flutter` 无值键拼接）；`framework=flutter`（依赖含 flutter sdk）/ `framework=dart`（纯 Dart 包）；`frameworkVariants` 新增 riverpod/provider/bloc/getx/go_router；`Project` 画像新增 `dartFileCount`/`flutterDetected`；SKIP_DIRS 新增 android/ios/.dart_tool/linux/macos/windows
+- **导入解析扩展**：`package:` 导入（自身包名 → 项目内 lib/ 路径，其余 → pub 依赖）、`dart:` 内置库跳过、Dart 无 `./` 前缀裸相对导入解析
+- **蓝图查看器 Dart 展示**：语言标签/分布新增 Dart（teal 色系）；实体类图节点方法与详情面板新增「方法调用链」（方法 → 调用目标/被调方，Widget 渲染链并入）；Route 一览支持 Flutter GoRoute 展示
+- **Markdown 导出 Dart 统计**：项目概览新增 Dart 文件数行、Store/路由/依赖标题含 Riverpod/GoRoute/pub；接口/类表语言列支持 Dart；新增「方法调用链 Top 30」章节（出边数/被调用数/调用目标/调用组件）
+- **`action analyzeFile` 支持 .dart**（dartAnalyzer 链，输出 Interface/Class/Method）
+
+### 修复
+
+- dartAnalyzer：`@override` 等注解行破坏块状态机行首分类导致带注解方法（如 build）被吞（stripAnnotations 预处理，方法数显著修复）；类构造器误判为 Method；Riverpod Provider 变量正则转义失效（模板字面量 `\\s` 产生字面反斜杠）；`NotifierProvider<X, Y>.new(X.new)` 形式 notifierClass 提取；`_PrivateWidget(...)` 私有类构造归类为 self 调用；signature 残留 CRLF
+- dartAnalyzer：GoRouter 常量引用导航（`context.push(AppRoutes.xxx)` / `context.go(home)`）未解析为导航边（navRe 仅匹配字符串字面量参数；顶层函数的导航调用未进 overlayOpens）——扩展参数形式为字符串/常量引用两种，builder 侧用全仓库路由常量表（常量名 → path）跨文件回填，动态变量（`feature.route`）查不到即忽略
+
+### 验证
+
+- 新增 `test/dartEntities.test.mjs`（12 个用例）：Widget 组件/`@override` 回归/抽象类→Interface/ChangeNotifier→Store/Riverpod Provider 变量/GoRoute 常量回填（含 `context.push(AppRoutes.xxx)` 常量引用导航）/调用链分类/Flutter 框架识别/实体入快照/导航边（字符串 + 跨文件常量回填双向）+调用链/蓝图视图模型/Markdown 导出
+- 总计 110 个测试全部通过；真实项目回归：steam-game-flutter（186 文件/89 组件/63 Store/15 路由/1624 方法，175 个方法产生 250 条调用边）与 nice-today-flutter（121 文件/103 组件/12 Store/47 路由/1608 方法，288 个方法产生 364 条调用边、4 条路由导航边含 `AppRouter.xxx` 常量回填）
+
 ## [0.10.0] - 2026-08-21
 
 ### 新增

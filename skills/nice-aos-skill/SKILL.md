@@ -1,18 +1,19 @@
 ---
 name: nice-aos
 description: |
-  Nice AOS（Nice Anterior Ontology Service）是通用的 React/Vue/油猴脚本前端项目的代码本体分析组件（核心查询 Skill）。
-  它将 React/TypeScript、Vue 3（SFC/vue-router/Pinia）源码与油猴脚本（Tampermonkey UserScript）
-  预先分析为结构化本体快照，把"代码文件"转化为 AI agent 可直接查询的"关系图谱"——包含模块、组件、
-  Hook/Composable、Zustand/Pinia Store、Service、接口/类/方法（Interface/Class/Method，含跨文件
-  implements/extends/overrides 关系）、路由（Overlay / vue-router）、npm 依赖、
+  Nice AOS（Nice Anterior Ontology Service）是通用的 React/Vue/Flutter/油猴脚本前端项目的代码本体分析组件（核心查询 Skill）。
+  它将 React/TypeScript、Vue 3（SFC/vue-router/Pinia）、Flutter（Dart Widget + GoRouter + Riverpod）源码与
+  油猴脚本（Tampermonkey UserScript）预先分析为结构化本体快照，把"代码文件"转化为 AI agent 可直接查询的
+  "关系图谱"——包含模块、组件、Hook/Composable、Zustand/Pinia/Riverpod Store、Service、
+  接口/类/方法（Interface/Class/Method，含跨文件 implements/extends/overrides 关系与 Dart 方法逻辑调用链）、
+  路由（Overlay / vue-router / GoRoute）、npm/pub 依赖、
   油猴脚本（UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction），以及 import 依赖、
   JSX/template 渲染、页面跳转（navigatesTo）、Store/Hook 使用、接口实现/类继承/方法覆盖、
   GM API 使用/DOM 注入/网络端点/脚本函数调用图等 21 种关系。
   语义本体引擎：18 种对象按概念范畴与抽象层级（L3 架构/L2 结构/L1 单元/L0 事实）组织，
   架构分层（archLayer）按内容信号推断而非目录名直译，功能域（Domain）聚合横向业务切片，
   Project/Domain/Module 自动生成职责画像与自然语言总结（summary/architecture/health）。
-  单文件分析（action analyzeFile）：不落盘直接输出单文件本体 JSON（类型实体 + 油猴五类对象 + 死代码候选）。
+  单文件分析（action analyzeFile）：不落盘直接输出单文件本体 JSON（类型实体 + 油猴五类对象 + 死代码候选；支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart）。
   本体查看器（viewer）：export --format html 生成自包含蓝图 HTML（领域蓝图/业务数据图/
   业务逻辑流向/脚本蓝图，零依赖可离线打开，宽屏分档适配），--format viewmodel 输出聚合视图模型 JSON 供 agent 直接消费。
   基于 TypeScript Compiler API 静态解析，不做类型检查；React/Vue 项目全量分析约 3.5 秒
@@ -37,8 +38,9 @@ description: |
 # Nice AOS Skill — 前端代码本体分析（核心查询）
 
 > Nice AOS 参考 asdm-aos（Java 代码本体分析）的设计，针对 React（React 19 + TS + Vite + Zustand + 自研 overlay 路由）、
-> Vue 3（SFC + vue-router + Pinia + unplugin-vue-router）与油猴脚本（Tampermonkey UserScript）三类前端源码重新建模，
-> 三个解析器（tsAnalyzer / vueAnalyzer / userScriptAnalyzer）平级共存、逻辑完全独立。
+> Vue 3（SFC + vue-router + Pinia + unplugin-vue-router）、Flutter（Dart Widget + GoRouter + Riverpod）与
+> 油猴脚本（Tampermonkey UserScript）四类前端源码重新建模，五个解析器（tsAnalyzer / vueAnalyzer / dartAnalyzer /
+> rustAnalyzer / userScriptAnalyzer）平级共存、逻辑完全独立（rustAnalyzer 覆盖 Tauri 客户端 Rust 侧，dartAnalyzer 覆盖 Flutter 客户端 Dart 侧）。
 > **核心价值**：把"逐文件 grep + LLM 推理"降级为"毫秒级本体查询"，在 1700+ 源文件的项目中保障 agent 的响应速度和结构理解准确度。
 > **分工**：本 Skill 承载通用查询/快照/影响分析/蓝图导出；油猴审计工作流见 `nice-aos-userscript` skill；死代码清理工作流见 `nice-aos-deadcode` skill。三者共享同一份快照与 CLI。
 
@@ -64,6 +66,7 @@ description: |
 | **这个组件渲染了什么** | "HealthStatsPage 里用了哪些子组件？" | `link renders --src comp:HealthStatsPage` |
 | **变更影响分析** | "修改 exerciseService 会影响哪些文件？" | `link importedBy --src file:src/services/exerciseService.ts` |
 | **Store 分析** | "项目有哪些 store？" / "useThemeStore 被谁用了？" / "storage key 是什么？" | `query Store` / `link usesStore --src store:useThemeStore` |
+| **Flutter 客户端分析** | "这个 Flutter 页面用了哪些 store？" / "GoRoute 跳转到哪？" / "这个方法调用了谁？" | `query Route --where "routeType=flutter"` / `link navigatesTo --src route:xxx` / `query Method --where "name~xxx"` 看 callIds/compCallIds |
 | **Hook 分析** | "有哪些自定义 Hook？" / "useEnergySystem 被谁用了？" | `query Hook` / `link usesHook --src hook:useEnergySystem` |
 | **接口实现关系** | "IStorage 有哪些实现类？" / "这个接口被谁实现了？" | `link implementedBy --src "iface:src/types/storage.ts#IStorage"`（实现关系记录在实现类里，grep 接口文件查不到——本体已双向化） |
 | **方法定位** | "createinterface 方法在哪定义？" / "这个方法的签名和实现？" | `query Method --where "name~createinterface"`（一次命中接口签名/类实现/模块函数） |
@@ -162,19 +165,19 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 
 | 类型 | 说明 | 典型属性 | ID 前缀 |
 |------|------|---------|---------|
-| Project | 代码仓库（含架构画像） | name, framework(react/vue/userscript/unknown), fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, summary（框架定位+分层画像+功能域清单）, architecture（语义分层占比）, health（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors | `proj:` |
+| Project | 代码仓库（含架构画像） | name, framework(react/vue/flutter/dart/userscript/unknown), fileCount, tsxFileCount, vueFileCount, dartFileCount, userScriptFileCount, rustFileCount, flutterDetected/tauriDetected, commitHash, branch, summary（框架定位+分层画像+功能域清单）, architecture（语义分层占比）, health（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors | `proj:` |
 | Domain | 功能域（横向业务切片） | name, sources(route/module), routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, capability（路由能力描述）, summary（职责画像） | `dom:` |
 | Module | 目录模块（含语义分层） | name, path, archLayer, archLayerLabel, layerComposition（子树层构成）, fileCount, subtreeFileCount, parentId, unitCounts, routeCount, summary（职责画像） | `mod:` |
-| SourceFile | 源文件 | path, ext(ts/tsx/js/jsx/vue), archLayer, layer, lineCount, isTest, isEntry, importIds, exportNames, unusedExports（导出级死代码候选）, opensOverlayIds | `file:` |
-| Component | 前端组件（React / Vue SFC） | name, filePath, kind(page/modal/card/...), isDefaultExport, propsCount, hooksUsed, stateCount, lineCount, rendersIds, routeIds, archLayer, domainIds, description | `comp:` |
+| SourceFile | 源文件 | path, ext(ts/tsx/js/jsx/vue/dart/rs), archLayer, layer, lineCount, isTest, isEntry, importIds, exportNames, unusedExports（导出级死代码候选）, opensOverlayIds | `file:` |
+| Component | 前端组件（React / Vue SFC / Flutter Widget） | name, filePath, kind(page/modal/card/.../widget), isDefaultExport, propsCount, hooksUsed, stateCount, lineCount, rendersIds, routeIds, archLayer, domainIds, description | `comp:` |
 | Hook | 自定义 Hook / Composable | name, filePath, lineCount, archLayer, domainIds, description | `hook:` |
-| Store | Zustand / Pinia Store | name, stateKeys, actionKeys, hasPersist, storageKey, location(store/services/other), archLayer, domainIds | `store:` |
+| Store | Zustand / Pinia / Riverpod Store | name, stateKeys, actionKeys, hasPersist, storageKey, providerType/notifierClass（Riverpod）, location(store/services/other), archLayer, domainIds | `store:` |
 | Service | 服务/引擎模块 | name, pattern(singleton/class/functions), exportsCount, lineCount, archLayer, domainIds | `svc:` |
-| Interface | TS 接口（含 .d.ts） | name, filePath, line, exported, methodIds, extendsIds/extendsNames（跨文件解析）， deadCandidate/deadReason | `iface:` |
-| Class | TS 类 | name, filePath, line, exported, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName, deadCandidate/deadReason | `class:` |
-| Method | 方法/函数（类方法/接口方法签名/模块函数） | name, ownerKind(class/interface/module), ownerName, isStatic, isAsync, signature（展示用）, overridesId/overriddenByIds, exported, deadCandidate/deadReason；ID：`method:<file>#<Owner>#<name>`（模块函数 `method:<file>#<fnName>`） | `method:` |
-| Route | 路由条目（Overlay / vue-router） | overlayId(path), routePath, backTarget, hidesNav, domain, domainIds, routeType(overlay/react/vue), componentFileId, navigatesToIds, description | `route:` |
-| Dependency | npm 依赖 | name, version, scope, source(npm/workspace/undeclared), importCount | `dep:` |
+| Interface | TS 接口（含 .d.ts）/ Dart 抽象类 | name, filePath, line, exported, methodIds, extendsIds/extendsNames（跨文件解析）， deadCandidate/deadReason | `iface:` |
+| Class | TS 类 / Dart class/enum/mixin | name, filePath, line, exported, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName, deadCandidate/deadReason | `class:` |
+| Method | 方法/函数（类方法/接口方法签名/模块函数/Rust impl fn/Dart 方法） | name, ownerKind(class/interface/module), ownerName, isStatic, isAsync, signature（展示用）, overridesId/overriddenByIds, isOverride（Dart）, callIds/calledByIds/compCallIds（Dart 方法逻辑调用链：调用的方法/被调用方/渲染的 Widget 组件）, exported, deadCandidate/deadReason；ID：`method:<file>#<Owner>#<name>`（模块函数 `method:<file>#<fnName>`） | `method:` |
+| Route | 路由条目（Overlay / vue-router / GoRoute） | overlayId(path), routePath, backTarget, hidesNav, domain, domainIds, routeType(overlay/react/vue/flutter), componentFileId, navigatesToIds, description | `route:` |
+| Dependency | npm / pub 依赖 | name, version, scope, source(npm/pub/workspace/undeclared), importCount | `dep:` |
 | UserScript | 油猴脚本（元数据 + 行为画像） | name, version, matches, grants, grantNone, connects, requires, runAt, hostFramework(vue/react/mixed/unknown), isIife, usesStrict, riskLevel, riskCount, risks, hijackCount, unsafeWindowReads/Writes, storageUsage, functionCount, deadFunctionCount, injectionCount, networkEndpointCount, archLayer=script, domainIds | `us:`（= 文件相对路径） |
 | GmApiUsage | GM API 使用（与 @grant 比对） | name（GM_* 与 GM.* GM4 风格统一归一）, category(storage/network/style/...), callCount, lines, declared | `gm:` |
 | InjectionPoint | DOM 注入点（含归属函数） | kind(mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom), target（receiver 为 querySelector/getElementById 变量时还原为页面选择器）, callCount, lines, interpolated, fns/fnIds（执行注入的函数，逻辑注入链） | `inject:` |
@@ -190,7 +193,7 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 | importedBy | 被导入（反向） | 谁导入了这个文件 |
 | renders | JSX 渲染 | Component→Component |
 | renderedBy | 被渲染（反向） | 谁渲染了这个组件 |
-| navigatesTo | 页面跳转 | Route→Route（overlay 的 `setActiveOverlay('x')`、React 的 `<Navigate to="/x"/>`、Vue 的 `router.push('/x')` 字面量调用） |
+| navigatesTo | 页面跳转 | Route→Route（overlay 的 `setActiveOverlay('x')`、React 的 `<Navigate to="/x"/>`、Vue 的 `router.push('/x')`、Flutter 的 `context.go('/x')`/`context.push('/x')` 字面量调用） |
 | registers | 路由注册 | Route↔Component（双向：src 为 route: 给组件，src 为 comp:/file: 给路由） |
 | usesStore | Store 使用 | file:/comp:→Store 或 store:→反向使用方 |
 | usesHook | Hook 使用 | file:/comp:→Hook 或 hook:→反向使用方 |
@@ -203,8 +206,8 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 | usesGmApi | GM API 使用 | us:→GmApiUsage 或 gm:→所属脚本（反查） |
 | injectsInto | DOM 注入 | us:→InjectionPoint 或 inject:→所属脚本（反查） |
 | requestsTo | 网络请求 | us:→NetworkEndpoint 或 net:→所属脚本（反查） |
-| calls | 函数调用图 | ScriptFunction→ScriptFunction（该函数调用了谁） |
-| calledBy | 被调用（反向） | ScriptFunction→调用它的函数（修改影响面） |
+| calls | 函数调用图 | ScriptFunction→ScriptFunction（该函数调用了谁）；Dart Method 的调用链在对象属性 callIds/compCallIds 上（`query Method` 直读或蓝图/导出展示） |
+| calledBy | 被调用（反向） | ScriptFunction→调用它的函数（修改影响面）；Dart Method 反向在 calledByIds 属性上 |
 | belongsTo | 功能域归属（双向） | dom:→全部成员；或 mod:/comp:/store:/hook:/route:/us:→所属功能域 |
 
 ### 动作（4 种）
@@ -212,7 +215,7 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 | 动作 | 用途 | 守卫 |
 |------|------|------|
 | refreshRepo | 重新分析仓库（全量；React/Vue 项目约 3.5s，大型油猴仓库可达数十秒） | repoPath 必须为存在的目录（纯油猴脚本仓库无需 package.json） |
-| analyzeFile | 单文件分析（不落盘，stdout 输出 dataMap 形状 JSON；支持 .ts/.tsx/.js/.jsx/.mjs/.vue 与油猴脚本） | file 必须为存在的普通文件 |
+| analyzeFile | 单文件分析（不落盘，stdout 输出 dataMap 形状 JSON；支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart 与油猴脚本） | file 必须为存在的普通文件 |
 | markReviewed | 标记对象已 review（持久化到快照） | objectId 必须存在 |
 | addNote | 给对象加注释（持久化） | objectId 存在且 note 非空 |
 
@@ -306,6 +309,8 @@ action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页�
 
 **analyzeFile 输出形状**（`_meta.mode === 'single-file'`）：
 - TS/Vue 文件：`SourceFile`（单条）+ `Interface/Class/Method`（非导出零引用实体判死；导出实体不判死——单文件模式无法判定跨文件使用）
+- Rust 文件：`Interface/Class/Method`（rustAnalyzer 链：trait/struct/enum/impl fn）
+- Dart 文件：`Interface/Class/Method`（dartAnalyzer 链：抽象类/class/mixin/方法，含 callIds 调用链）
 - 油猴文件：追加 `UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction` 五类（ScriptFunction 含函数级 deadCandidate）
 - 典型管道用法：`nice-aos action analyzeFile --params '{"file":"x.user.js"}' | jq '.ScriptFunction[] | select(.deadCandidate)'`
 
@@ -414,7 +419,8 @@ link implements --src "class:src/impl/localStorage.ts#LocalStorage"  # 实现了
 ## 技术限制
 
 - 基于 TypeScript Compiler API 的**语法级**解析（不跑类型检查），个别动态引用（变量拼接的 import、字符串组件名）无法解析
-- 类型实体覆盖 `.ts/.tsx/.js/.jsx` 与 `.d.ts`；**Vue SFC `<script>` 内的 interface/class 不提取**（Vue 侧走 Hook/Composable/Store 体系）；TS 方法级调用图（calls/calledBy）未扩展到 Method（调用图仅油猴 ScriptFunction 有）
+- 类型实体覆盖 `.ts/.tsx/.js/.jsx`、`.d.ts`、`.rs` 与 `.dart`；**Vue SFC `<script>` 内的 interface/class 不提取**（Vue 侧走 Hook/Composable/Store 体系）；方法级调用链仅 Dart Method 有（`callIds/calledByIds/compCallIds` 属性，蓝图类图与 Markdown 导出展示），TS/Vue/Rust 的 Method 暂无调用图（`link calls/calledBy` 命令仍仅覆盖油猴 ScriptFunction）
+- Dart 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 dart analyzer）：Widget 基类（StatelessWidget/StatefulWidget/ConsumerWidget 等）→ Component，ChangeNotifier/Notifier 子类与 Riverpod Provider 变量 → Store，GoRoute + 路由常量回填 → Route；方法调用链按本类/导入解析/全仓库唯一名兜底匹配，闭包内间接调用与动态构造无法静态追踪；Flutter 框架识别依赖 pubspec.yaml 声明 flutter sdk（纯 Dart 包记为 framework=dart）
 - 跨文件 implements/extends 按具名导入静态解析（含 `import type` 与别名导入）；命名空间导入、`export *` 再导出、动态 `import()` 的目标文件无法按名追踪，整体豁免死代码判定（保守不误报）
 - `renders` 归属到文件的主组件（default export 优先）；同文件多组件的内部渲染关系不细分
 - 跳转边均为字面量调用：overlay 体系来自 `setActiveOverlay/openOverlay('id')`，React 来自 `<Navigate to="/x"/>`（相对 `to` 基于所属路由归一为绝对路径），Vue 来自 `router.push/replace('/path')`（含解构 `const { push } = useRouter()`）；`onOpenOverlay: app.setActiveOverlay` 这类函数透传与动态变量导航无法静态追踪

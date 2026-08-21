@@ -7,6 +7,7 @@ import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
 import { analyzeUserScriptFromDisk, isUserScriptCandidate } from '../analyzers/userScriptAnalyzer.js';
 import { analyzeRustFileFromDisk, analyzeRustFile, resolveRustUse } from '../analyzers/rustAnalyzer.js';
 import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
+import { analyzeDartFile, analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
   summarizeModule, buildProjectProfile,
@@ -19,7 +20,7 @@ const KIND_SUFFIXES = [
   ['Button', 'button'], ['Widget', 'widget'], ['View', 'view'], ['Provider', 'provider'],
   ['Overlay', 'overlay'], ['Tab', 'tab'], ['Picker', 'picker'], ['Badge', 'badge'],
 ];
-const ENTRY_BASENAMES = new Set(['App.tsx', 'index.tsx', 'main.tsx', 'index.ts', 'main.ts', 'main.js', 'App.vue']);
+const ENTRY_BASENAMES = new Set(['App.tsx', 'index.tsx', 'main.tsx', 'index.ts', 'main.ts', 'main.js', 'App.vue', 'main.dart']);
 const SERVICE_NAME_RE = /(Service|Engine|Manager|Repository|Factory)$/;
 
 // 入口识别：位于任一扫描根顶层的常见入口文件名（多根 monorepo 每个根均可有自己的入口）
@@ -180,6 +181,10 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         fields: cls.fields ?? [],
         variants: cls.variants ?? [],
         isSingleton: cls.isSingleton,
+        isWidget: cls.isWidget ?? false,
+        widgetBase: cls.widgetBase ?? null,
+        isStore: cls.isStore ?? false,
+        withNames: cls.withNames ?? [],
         methodIds: [],
         implementsIds: [],
         implementsNames: cls.implementsNames,
@@ -485,10 +490,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
   // 入口识别使用实际扫描根（显式 roots 或默认 src/）；根级入口名在每个根顶层均有效
   const entryRoots = scan.roots ?? ['src'];
   const htmlEntries = new Set(scan.htmlEntryFiles ?? []);
-  const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files);
+  const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files, scan.pubspecName ?? null);
 
   // 1. 逐文件解析（TypeScript Compiler API，仅词法/语法层，不做类型检查）
-  // 路由：.rs → rustAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（平级、逻辑独立）
+  // 路由：.rs → rustAnalyzer；.dart → dartAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（平级、逻辑独立）
   const rustFiles = new Set(scan.files.filter((f) => f.endsWith('.rs')));
   const factsMap = new Map();
   const analysisErrors = [];
@@ -497,11 +502,13 @@ export async function buildOntologyData(projectRoot, options = {}) {
     try {
       const facts = relPath.endsWith('.rs')
         ? analyzeRustFileFromDisk(relPath, projectRoot)
-        : relPath.endsWith('.vue')
-          ? analyzeVueFileFromDisk(relPath, projectRoot)
-          : (scan.userScriptFiles?.has(relPath)
-            ? analyzeUserScriptFromDisk(relPath, projectRoot)
-            : analyzeFileFromDisk(relPath, projectRoot));
+        : relPath.endsWith('.dart')
+          ? analyzeDartFileFromDisk(relPath, projectRoot)
+          : relPath.endsWith('.vue')
+            ? analyzeVueFileFromDisk(relPath, projectRoot)
+            : (scan.userScriptFiles?.has(relPath)
+              ? analyzeUserScriptFromDisk(relPath, projectRoot)
+              : analyzeFileFromDisk(relPath, projectRoot));
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
@@ -548,7 +555,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     dependencies.push({
       id: `dep:${name}`, name,
       version: info.version, scope: info.scope,
-      source: info.version.startsWith('file:') ? 'workspace' : 'npm',
+      source: info.registry === 'pub' ? 'pub' : (info.version.startsWith('file:') ? 'workspace' : 'npm'),
       importCount: depUsedCount.get(name) ?? 0,
       used: (depUsedCount.get(name) ?? 0) > 0,
     });
@@ -615,7 +622,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
         if (!unresolvedImports.includes(imp.specifier)) unresolvedImports.push(imp.specifier);
       }
     }
-    const stem = path.posix.basename(relPath).replace(/\.(tsx?|jsx?)$/, '');
+    const stem = path.posix.basename(relPath).replace(/\.(tsx?|jsx?|dart)$/, '');
     const obj = {
       id: `file:${relPath}`,
       name: path.posix.basename(relPath),
@@ -628,7 +635,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       isTest: isTestFile(relPath),
       isDeclaration: relPath.endsWith('.d.ts'),
       isEntry: htmlEntries.has(relPath) || isEntryFile(relPath, entryRoots),
-      isPageFile: stem.endsWith('Page') || (relPath.endsWith('.vue') && /\/(views|pages)\//.test(relPath)),
+      isPageFile: stem.endsWith('Page') || stem.endsWith('Screen') || (relPath.endsWith('.vue') && /\/(views|pages)\//.test(relPath)),
       importIds,
       typeImportCount,
       unresolvedImports,
@@ -708,6 +715,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
         storageKey: store.storageKey,
         location: relPath.includes('/store/') ? 'store' : (relPath.includes('/services/') ? 'services' : 'other'),
         lineCount: store.lineCount,
+        providerType: store.providerType ?? null,
+        notifierClass: store.notifierClass ?? null,
         reviewed: false, notes: null,
       });
     }
@@ -787,6 +796,78 @@ export async function buildOntologyData(projectRoot, options = {}) {
 
   // 方法级 overrides：实现类方法与其实现接口/父类中的同名方法建立双向链接
   linkMethodOverrides(interfaces, classes, methods);
+
+  // 5b-0b. Dart 方法调用链（dartAnalyzer 的 callEdges → Method.callIds / calledByIds / compCallIds）
+  // self：本类方法或本文件顶层函数；static：owner 类方法（本文件优先，导入解析/全仓库唯一名兜底）；
+  // widget：组件构造调用 → compCallIds（渲染链，蓝图展示）
+  const methodById = new Map(methods.map((m) => [m.id, m]));
+  const methodKey = new Map(); // `${filePath}#${ownerName ?? ''}#${name}` → id
+  for (const m of methods) {
+    m.callIds = m.callIds ?? [];
+    m.calledByIds = m.calledByIds ?? [];
+    m.compCallIds = m.compCallIds ?? [];
+    methodKey.set(`${m.filePath}#${m.ownerName ?? ''}#${m.name}`, m.id);
+  }
+  const resolveCallTarget = (relPath, clsName, c) => {
+    if (c.kind === 'widget') {
+      return { type: 'component', id: compIdByName.get(c.to) ?? null };
+    }
+    const owner = c.kind === 'static' ? (c.owner ?? clsName) : clsName;
+    const local = methodKey.get(`${relPath}#${owner}#${c.to}`);
+    if (local) return { type: 'method', id: local };
+    const facts = factsMap.get(relPath);
+    if (c.kind === 'static' && c.owner && facts) {
+      // 跨文件静态调用：importMap 定位导入文件
+      const spec = facts.importMap.get(c.owner);
+      if (spec) {
+        const r = resolver.resolve(relPath, spec);
+        if (r.kind === 'internal') {
+          const id = methodKey.get(`${r.file}#${c.owner}#${c.to}`);
+          if (id) return { type: 'method', id };
+        }
+      }
+      const uniq = methods.filter((m) => m.ownerKind === 'class' && m.ownerName === c.owner && m.name === c.to);
+      if (uniq.length === 1) return { type: 'method', id: uniq[0].id };
+    }
+    // 顶层函数兜底：本文件 / 全仓库唯一
+    const topLocal = methodKey.get(`${relPath}##${c.to}`);
+    if (topLocal) return { type: 'method', id: topLocal };
+    if (c.kind === 'self') {
+      const tops = methods.filter((m) => m.ownerKind === 'module' && m.name === c.to);
+      if (tops.length === 1) return { type: 'method', id: tops[0].id };
+    }
+    return null;
+  };
+  for (const [relPath, facts] of factsMap) {
+    if (!relPath.endsWith('.dart') || !facts.callEdges?.length) continue;
+    for (const edge of facts.callEdges) {
+      let fromId = null;
+      let clsName = null;
+      if (edge.from.includes('.')) {
+        const dot = edge.from.lastIndexOf('.');
+        clsName = edge.from.slice(0, dot);
+        fromId = methodKey.get(`${relPath}#${clsName}#${edge.from.slice(dot + 1)}`) ?? null;
+      } else {
+        fromId = methodKey.get(`${relPath}##${edge.from}`) ?? null;
+      }
+      if (!fromId) continue;
+      const fromMethod = methodById.get(fromId);
+      if (!fromMethod) continue;
+      const seen = new Set();
+      for (const c of edge.to) {
+        const hit = resolveCallTarget(relPath, clsName, c);
+        if (!hit || !hit.id || hit.id === fromId || seen.has(hit.id)) continue;
+        seen.add(hit.id);
+        if (hit.type === 'method') {
+          if (!fromMethod.callIds.includes(hit.id)) fromMethod.callIds.push(hit.id);
+          const toM = methodById.get(hit.id);
+          if (toM && !toM.calledByIds.includes(fromId)) toM.calledByIds.push(fromId);
+        } else {
+          if (!fromMethod.compCallIds.includes(hit.id)) fromMethod.compCallIds.push(hit.id);
+        }
+      }
+    }
+  }
 
   // 导出符号的全仓库导入索引（export * 再导出 / 命名空间导入 / 动态 import 的目标文件——无法按名追踪，整文件豁免）
   const indirectlyReferencedFiles = new Set();
@@ -1041,6 +1122,102 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
+  // 7c-b. Flutter GoRoute 路由（dartRoutes：path/builderWidget，跨文件组件解析 + 导航边）
+  const dartRouteIds = new Set(routes.map((r) => r.id));
+  const dartRouteByPath = new Map();
+  for (const [relPath, facts] of factsMap) {
+    if (!relPath.endsWith('.dart') || !facts.dartRoutes?.length) continue;
+    for (const dr of facts.dartRoutes) {
+      if (!dr.path) continue;
+      // builderWidget → 导入来源文件中的组件（具名导入优先；通配导入按目标文件组件名匹配；本文件组件兜底）
+      let componentFile = null;
+      if (dr.builderWidget && facts.imports) {
+        for (const imp of facts.imports) {
+          const named = (imp.names ?? []).find((n) => (n.imported === dr.builderWidget || n.local === dr.builderWidget) && n.imported !== '*');
+          if (named) {
+            const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
+            if (r.kind === 'internal') { componentFile = r.file; break; }
+          }
+        }
+        if (!componentFile) {
+          for (const imp of facts.imports) {
+            const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
+            if (r.kind !== 'internal') continue;
+            if ((componentsByFile.get(r.file) ?? []).some((c) => c.name === dr.builderWidget)) {
+              componentFile = r.file;
+              break;
+            }
+          }
+        }
+        if (!componentFile && (componentsByFile.get(relPath) ?? []).some((c) => c.name === dr.builderWidget)) {
+          componentFile = relPath;
+        }
+      }
+      const id = uniqueId(`route:${dr.path}`, dartRouteIds);
+      dartRouteByPath.set(dr.path, id);
+      const compId = componentFile
+        ? ((componentsByFile.get(componentFile) ?? []).find((c) => c.name === dr.builderWidget)?.id
+          ?? (componentsByFile.get(componentFile) ?? []).find((c) => c.isPrimary)?.id
+          ?? (componentsByFile.get(componentFile) ?? [])[0]?.id ?? null)
+        : null;
+      const seg = dr.path.split('/').filter(Boolean)[0];
+      const domain = !seg || seg.startsWith(':') ? 'root' : seg;
+      routes.push({
+        id,
+        overlayId: dr.path,
+        name: dr.name ?? dr.path,
+        routePath: dr.path,
+        backTarget: null,
+        hidesNav: null,
+        domain,
+        group: relPath,
+        componentRef: dr.builderWidget,
+        componentFileId: componentFile ? `file:${componentFile}` : null,
+        componentId: compId,
+        navigatesToIds: [],
+        hasPropsFactory: false,
+        routeType: 'flutter',
+        reviewed: false, notes: null,
+      });
+      if (compId) {
+        const comp = components.find((c) => c.id === compId);
+        if (comp) comp.routeIds.push(id);
+      }
+    }
+  }
+  // GoRouter 导航边：任意 .dart 文件内 context.go('/path') / context.push(AppRouter.xxx) → 该文件组件所属路由 → 目标路由
+  // 常量引用参数（AppRouter.fengshui / home）用全仓库路由常量表回填；动态变量（feature.route）查不到即忽略
+  const dartConstPathByName = new Map(); // 全仓库路由常量名 → path（跨文件常量引用回填）
+  for (const [relPath, facts] of factsMap) {
+    if (!relPath.endsWith('.dart') || !facts.dartRouteConstants) continue;
+    for (const [name, p] of facts.dartRouteConstants) {
+      if (!dartConstPathByName.has(name)) dartConstPathByName.set(name, p);
+    }
+  }
+  for (const [relPath, facts] of factsMap) {
+    if (!relPath.endsWith('.dart')) continue;
+    const opens = (facts.overlayOpens ?? [])
+      .map((o) => {
+        let t = o.target;
+        if (!t.startsWith('/')) {
+          const name = t.includes('.') ? t.split('.').pop() : t;
+          t = dartConstPathByName.get(name) ?? facts.dartRouteConstants?.get(name) ?? '';
+        }
+        return t;
+      })
+      .filter((t) => t.startsWith('/'));
+    if (!opens.length) continue;
+    const ownerIds = routes.filter((r) => r.componentFileId === `file:${relPath}`).map((r) => r.id);
+    for (const o of opens) {
+      const toId = dartRouteByPath.get(o);
+      if (!toId) continue;
+      for (const ownerId of ownerIds) {
+        const route = routes.find((r) => r.id === ownerId);
+        if (route && !route.navigatesToIds.includes(toId)) route.navigatesToIds.push(toId);
+      }
+    }
+  }
+
   // 7d. 语义富化：文件级架构分层 → 功能域聚合 → 模块职责画像 → 单元归属回填
   //     分类以内容信号为准（单元构成/路由归属/引用结构），目录名仅作弱信号兜底
   const importersOf = new Map(); // fileId -> Set(importerFileIds)
@@ -1176,7 +1353,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   }
   const routeComponentFiles = new Set(routes.map((r) => r.componentFileId).filter(Boolean));
   const orphanCandidates = fileObjects
-    .filter((f) => f.path.startsWith('src/')
+    .filter((f) => (f.path.startsWith('src/') || f.path.startsWith('lib/'))
       && !f.isTest && !f.isEntry
       && !routeComponentFiles.has(f.id)
       && !lazyReferencedFiles.has(f.path)
@@ -1217,7 +1394,13 @@ export async function buildOntologyData(projectRoot, options = {}) {
     frameworkLabel: scan.frameworkLabel ?? scan.framework,
     hostRoot: scan.hostRoot ?? null,
     hostConfigs: scan.hostConfigs ?? [],
-    language: (scan.rustFileCount ?? 0) > 0 ? 'TypeScript + Rust' : 'TypeScript',
+    language: (() => {
+      const parts = [];
+      if ((scan.tsFileCount ?? 0) + (scan.tsxFileCount ?? 0) + (scan.jsFileCount ?? 0) + (scan.vueFileCount ?? 0) > 0) parts.push('TypeScript');
+      if ((scan.rustFileCount ?? 0) > 0) parts.push('Rust');
+      if ((scan.dartFileCount ?? 0) > 0) parts.push('Dart');
+      return parts.join(' + ') || 'TypeScript';
+    })(),
     commitHash: scan.commitHash,
     branch: scan.branch,
     fileCount: scan.fileCount,
@@ -1226,6 +1409,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
     jsFileCount: scan.jsFileCount,
     vueFileCount: scan.vueFileCount,
     rustFileCount: scan.rustFileCount ?? 0,
+    dartFileCount: scan.dartFileCount ?? 0,
+    flutterDetected: scan.flutterDetected ?? false,
     tauriDetected: scan.tauriDetected ?? false,
     electronDetected: scan.electronDetected ?? false,
     userScriptFileCount: scan.userScriptFileCount ?? 0,
@@ -1295,10 +1480,12 @@ export async function buildSingleFileOntology(absFilePath) {
   const fileName = path.basename(absFilePath);
   const dir = path.dirname(absFilePath);
 
-  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
+  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.dart → dartAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
   let facts;
   if (fileName.endsWith('.rs')) {
     facts = analyzeRustFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
+  } else if (fileName.endsWith('.dart')) {
+    facts = analyzeDartFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
   } else if (fileName.endsWith('.vue')) {
     facts = analyzeVueFileFromDisk(fileName, dir);
   } else if (isUserScriptCandidate(absFilePath)) {

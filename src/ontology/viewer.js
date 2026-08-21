@@ -4,7 +4,7 @@
 //   1. 领域蓝图（Domain Blueprint）：每个功能域的业务层级构成 / 代码组织 / 单元清单
 //   2. 业务数据图（Data Map）：Store 数据枢纽 + 跨域数据依赖
 //   3. 业务逻辑流向（Logic Flow）：架构层间导入流向 + 跨域依赖 + 高扇入业务节点
-//   4. 实体类图（Entity Class Diagram）：Interface/Class 实体 UML 关系图（跨语言 TS/JS/Vue/Rust）
+//   4. 实体类图（Entity Class Diagram）：Interface/Class 实体 UML 关系图（跨语言 TS/JS/Vue/Rust/Dart）
 //   5. 脚本蓝图（Script Blueprint）：单脚本函数调用图 + DOM 注入锚点 + 网络端点
 //   6. 本体概览（Ontology）：概念分类体系 + 对象/链接类型清单
 // 油猴意图适配：无 React/Vue 结构的纯脚本仓库，视图 1/2/3 按函数意图（roles）重建
@@ -566,6 +566,8 @@ export function buildViewerModel(dataMap) {
 
     const methodsById = new Map(methodEntities.map((m) => [m.id, m]));
     const entityById = new Map(all.map((e) => [e.id, e]));
+    // Dart 方法 → Widget 构造渲染链目标（compCallIds 指向 Component 实体）
+    const compById = new Map((dataMap.Component ?? []).map((c) => [c.id, c.name]));
 
     // 已解析关系边：implements（类→接口）/ extends（子→父），目标必须在本仓库实体内
     const edges = [];
@@ -593,7 +595,7 @@ export function buildViewerModel(dataMap) {
     const langOf = (e) => e.language ?? 'ts';
     const kindOf = (e) => (e.id.startsWith('iface:') ? 'interface' : (e.kind ?? 'class'));
     const KIND_LABEL = { class: '类', struct: '结构体', enum: '枚举', interface: '接口', trait: 'Trait' };
-    const LANG_LABEL = { ts: 'TS/JS', vue: 'Vue', rust: 'Rust' };
+    const LANG_LABEL = { ts: 'TS/JS', vue: 'Vue', rust: 'Rust', dart: 'Dart' };
 
     // 图节点携带成员明细（字段/变体/方法截断）；清单行仅携带计数
     const toNode = (e) => {
@@ -618,7 +620,14 @@ export function buildViewerModel(dataMap) {
         fieldCount: (e.fields ?? []).length,
         variants: (e.variants ?? []).slice(0, ENTITY_MEMBER_CAP),
         variantCount: (e.variants ?? []).length,
-        methods: ms.slice(0, ENTITY_MEMBER_CAP).map((m) => ({ name: m.name, isStatic: !!m.isStatic, isAsync: !!m.isAsync })),
+        methods: ms.slice(0, ENTITY_MEMBER_CAP).map((m) => ({
+          name: m.name, isStatic: !!m.isStatic, isAsync: !!m.isAsync,
+          calls: [
+            ...(m.callIds ?? []).map((id) => methodsById.get(id)?.name),
+            ...(m.compCallIds ?? []).map((id) => compById.get(id) ?? id),
+          ].filter(Boolean).slice(0, 5),
+          calledBy: (m.calledByIds ?? []).map((id) => methodsById.get(id)?.name).filter(Boolean).slice(0, 5),
+        })),
         methodCount: ms.length,
         degree: degree.get(e.id) ?? 0,
         implementsNames: e.implementsNames ?? [],
@@ -779,7 +788,7 @@ export function renderViewerHtml(model) {
   --bg: #0d1117; --panel: #161b22; --panel2: #1c2128; --border: #30363d;
   --fg: #e6edf3; --fg-dim: #8b949e; --fg-faint: #6e7681;
   --blue: #58a6ff; --green: #3fb950; --amber: #d29922; --purple: #bc8cff;
-  --red: #f85149; --cyan: #39c5cf;
+  --red: #f85149; --cyan: #39c5cf; --teal: #00b4ab;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root { --content-w: 1400px; }
@@ -817,6 +826,7 @@ section.view.active { display: block; }
 .chip.purple { color: var(--purple); border-color: rgba(188,140,255,.4); }
 .chip.red { color: var(--red); border-color: rgba(248,81,73,.4); }
 .chip.cyan { color: var(--cyan); border-color: rgba(57,197,207,.4); }
+.chip.teal { color: var(--teal); border-color: rgba(0,180,171,.4); }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 th { color: var(--fg-dim); font-weight: 600; font-size: 12px; white-space: nowrap; }
@@ -829,6 +839,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bar.purple { background: var(--purple); }
 .bar.cyan { background: var(--cyan); }
 .bar.red { background: var(--red); }
+.bar.teal { background: var(--teal); }
 .layer-row { margin: 6px 0; }
 .layer-row .lr-main { display: flex; align-items: center; gap: 10px; }
 .layer-row .lbl { width: 90px; color: var(--fg-dim); font-size: 12px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1644,6 +1655,7 @@ const LANG_META = {
   ts: { label: 'TS/JS', color: '#58a6ff', hdr: 'rgba(88,166,255,.10)' },
   vue: { label: 'Vue', color: '#3fb950', hdr: 'rgba(63,185,80,.10)' },
   rust: { label: 'Rust', color: '#d29922', hdr: 'rgba(210,153,34,.12)' },
+  dart: { label: 'Dart', color: '#00b4ab', hdr: 'rgba(0,180,171,.12)' },
 };
 const langColor = (l) => (LANG_META[l] || LANG_META.ts).color;
 const langHdr = (l) => (LANG_META[l] || LANG_META.ts).hdr;
@@ -1805,7 +1817,7 @@ function bindEntityGraphEvents(svgEl) {
       const rel = [].concat(node.extendsName ? ['extends ' + node.extendsName] : [], (node.implementsNames || []).map((x) => 'impl ' + x));
       info.innerHTML = '<b class="name">' + esc(node.name) + '</b> '
         + chip(node.kindLabel, node.kind === 'interface' || node.kind === 'trait' ? 'cyan' : 'blue')
-        + chip(langLabel(node.language), node.language === 'rust' ? 'amber' : '')
+        + chip(langLabel(node.language), { rust: 'amber', vue: 'green', dart: 'teal' }[node.language] || '')
         + chip('关系度 ' + node.degree, node.degree > 0 ? 'purple' : '')
         + (node.exported ? chip('导出', 'green') : chip('内部', ''))
         + (node.isSingleton ? chip('单例', 'amber') : '')
@@ -1813,7 +1825,8 @@ function bindEntityGraphEvents(svgEl) {
         + '<div class="sub">' + esc(node.filePath) + (node.line ? ':' + node.line : '') + ' · 模块 ' + esc(node.module || '（根）')
         + ' · 字段 ' + node.fieldCount + ' · 变体 ' + node.variantCount + ' · 方法 ' + node.methodCount + '</div>'
         + (rel.length ? '<div class="sub">关系：' + rel.map(esc).join('、') + '</div>' : '')
-        + (node.derives.length ? '<div class="sub">derives: ' + esc(node.derives.join(', ')) + '</div>' : '');
+        + (node.derives.length ? '<div class="sub">derives: ' + esc(node.derives.join(', ')) + '</div>' : '')
+        + (node.methods.length ? '<div class="sub">方法调用链：' + node.methods.slice(0, 8).map((m) => esc(m.name) + (m.calls.length ? ' → ' + m.calls.map(esc).join('、') : '')).join('；') + '</div>' : '');
     });
   });
 }
@@ -1896,13 +1909,14 @@ function renderEntities() {
     + E.graph.nodes.length + ' 个实体：关系活跃实体优先，各语言代表性实体按成员规模轮转补齐（共 '
     + fmt(E.relatedEntityCount) + ' 个参与关系的实体）；完整清单见下方表格。</div>'
     + '<div class="split" style="margin-top:12px">'
-    + '<div><h3>语言分布</h3>' + E.byLanguage.map((l) => barRow(l.label, l.count, maxLang, l.key === 'rust' ? 'amber' : (l.key === 'vue' ? 'green' : 'blue'))).join('') + '</div>'
+    + '<div><h3>语言分布</h3>' + E.byLanguage.map((l) => barRow(l.label, l.count, maxLang, { rust: 'amber', vue: 'green', dart: 'teal' }[l.key] || 'blue')).join('') + '</div>'
     + '<div><h3>架构层分布</h3>' + E.byLayer.map((l) => barRow(l.label, l.count, maxLayer, 'cyan')).join('') + '</div>'
     + '</div>'
     + '<div class="legend" style="margin-top:14px">'
     + '<span class="legend-dot" style="background:#58a6ff"></span>TS/JS'
     + '<span class="legend-dot" style="background:#3fb950"></span>Vue'
     + '<span class="legend-dot" style="background:#d29922"></span>Rust'
+    + '<span class="legend-dot" style="background:#00b4ab"></span>Dart'
     + '<span class="line" style="border-color:#39c5cf;border-top-style:dashed"></span>implements（虚线箭头）'
     + '<span class="line" style="border-color:#bc8cff"></span>extends（实线箭头）'
     + '</div>'

@@ -19,7 +19,7 @@ export function exportToMarkdown(dataMap) {
     out.push('');
   };
 
-  out.push(`# ${proj.name} 前端代码本体快照`);
+  out.push(`# ${proj.name} 代码本体快照`);
   out.push('');
   out.push(`> 生成时间: ${meta.generatedAt ?? '-'} | 分支: ${proj.branch ?? '-'} | commit: ${(proj.commitHash ?? '-').slice(0, 8)} | 分析耗时: ${meta.durationMs ?? '-'}ms`);
   out.push('');
@@ -36,18 +36,19 @@ export function exportToMarkdown(dataMap) {
     ['js/jsx 文件', proj.jsFileCount],
     ['vue 文件', proj.vueFileCount ?? 0],
     ['Rust 文件（src-tauri）', proj.rustFileCount ?? 0],
+    ['Dart 文件（Flutter）', proj.dartFileCount ?? 0],
     ['油猴脚本文件', proj.userScriptFileCount ?? 0],
     ['模块数', counts.Module],
     ['功能域对象数', counts.Domain ?? 0],
     ['组件数', counts.Component],
     ['自定义 Hook/Composable 数', counts.Hook],
-    ['Store 数（Zustand/Pinia）', counts.Store],
+    ['Store 数（Zustand/Pinia/Riverpod）', counts.Store],
     ['Service 模块数', counts.Service],
     ['接口数（Interface）', counts.Interface ?? 0],
     ['类数（Class）', counts.Class ?? 0],
     ['方法/函数数（Method）', counts.Method ?? 0],
-    ['路由数（Overlay/Vue Router）', counts.Route],
-    ['npm 依赖数', counts.Dependency],
+    ['路由数（Overlay/Vue Router/GoRoute）', counts.Route],
+    ['依赖数（npm/pub）', counts.Dependency],
     ['油猴脚本数', counts.UserScript ?? 0],
     ['DOM 注入点数', counts.InjectionPoint ?? 0],
     ['网络端点数', counts.NetworkEndpoint ?? 0],
@@ -120,7 +121,7 @@ export function exportToMarkdown(dataMap) {
   ])));
   out.push('');
 
-  heading('路由地图（Overlay / Vue Router）');
+  heading('路由地图（Overlay / Vue Router / Flutter GoRoute）');
   out.push(table(['路由', 'routePath', 'backTarget', 'hidesNav', 'domain', '组件文件'], (dataMap.Route ?? []).map((r) => [
     r.overlayId, r.routePath ?? '-', r.backTarget ?? '-', r.hidesNav ?? '-', r.domain,
     r.componentFileId ? r.componentFileId.slice(5) : `⚠️ ${r.componentRef}`,
@@ -147,7 +148,7 @@ export function exportToMarkdown(dataMap) {
   out.push(table(['组件', '文件', '被渲染次数'], topRendered));
   out.push('');
 
-  heading('Store 一览（Zustand / Pinia）');
+  heading('Store 一览（Zustand / Pinia / Riverpod）');
   out.push(table(['Store', '状态键数', 'persist', 'storageKey', '位置', '文件'], (dataMap.Store ?? []).map((s) => [
     s.name, s.stateKeyCount, s.hasPersist ? '✓' : '-', s.storageKey ?? '-', s.location, s.filePath,
   ])));
@@ -158,6 +159,7 @@ export function exportToMarkdown(dataMap) {
   const allClasses = dataMap.Class ?? [];
   const allMethods = dataMap.Method ?? [];
   const methodById = new Map(allMethods.map((m) => [m.id, m]));
+  const langLabel = (lang) => ({ ts: 'TS', vue: 'Vue', rust: 'Rust', dart: 'Dart' }[lang] ?? 'TS');
   if (ifaces.length > 0 || allClasses.length > 0) {
     const implementersByIface = new Map();
     for (const c of allClasses) {
@@ -178,7 +180,7 @@ export function exportToMarkdown(dataMap) {
       out.push('（未提取到接口实体）');
     } else {
       out.push(table(['接口', '语言', '文件:行', 'extends', '方法数', '被实现数', '实现类', '死代码候选'], ifaces.slice(0, 300).map((i) => [
-        i.name, i.language === 'rust' ? 'Rust' : 'TS', loc(i), extendsCell(i), (i.methodIds ?? []).length,
+        i.name, langLabel(i.language), loc(i), extendsCell(i), (i.methodIds ?? []).length,
         (implementersByIface.get(i.id) ?? []).length,
         (implementersByIface.get(i.id) ?? []).join(', ') || '-',
         i.deadCandidate ? `⚠️ ${i.deadReason}` : '-',
@@ -214,7 +216,7 @@ export function exportToMarkdown(dataMap) {
       out.push(table(['类', '类型', '语言', '文件:行', 'derives', 'implements', 'extends', '单例', '字段', '方法数', '死代码候选'], allClasses.slice(0, 300).map((c) => [
         c.name,
         c.kind ?? 'class',
-        c.language === 'rust' ? 'Rust' : 'TS', loc(c),
+        langLabel(c.language), loc(c),
         (c.derives ?? []).length > 0 ? c.derives.join(', ') : '-',
         (c.implementsNames ?? []).length > 0 ? `${c.implementsNames.join(', ')}（${(c.implementsIds ?? []).length}/${c.implementsNames.length} 解析）` : '-',
         c.extendsName ? `${c.extendsName}${c.extendsId ? '' : '（未解析）'}` : '-',
@@ -239,6 +241,29 @@ export function exportToMarkdown(dataMap) {
         out.push('');
       }
     }
+  }
+
+  // ---- 方法调用链（Method.callIds / compCallIds → 逻辑调用边）----
+  const callers = allMethods.filter((m) => ((m.callIds ?? []).length + (m.compCallIds ?? []).length) > 0);
+  if (callers.length > 0) {
+    heading('方法调用链 Top 30（按调用出边数）');
+    const topCallers = [...callers]
+      .sort((a, b) => (b.callIds?.length ?? 0) + (b.compCallIds?.length ?? 0) - ((a.callIds?.length ?? 0) + (a.compCallIds?.length ?? 0)))
+      .slice(0, 30);
+    out.push(table(['方法', 'owner', '出边数', '被调用数', '调用目标（方法）', '调用组件'], topCallers.map((m) => {
+      const ownerCell = m.ownerKind === 'module' ? '模块函数' : `${m.ownerKind}:${m.ownerName ?? '-'}`;
+      return [
+        m.name, ownerCell,
+        (m.callIds ?? []).length + (m.compCallIds ?? []).length,
+        (m.calledByIds ?? []).length,
+        (m.callIds ?? []).map((id) => methodById.get(id)?.name ?? id).filter(Boolean).slice(0, 6).join(', ') || '-',
+        (m.compCallIds ?? []).map((id) => methodById.get(id)?.name ?? id).filter(Boolean).slice(0, 6).join(', ') || '-',
+      ];
+    })));
+    out.push('');
+    const edgeTotal = callers.reduce((a, m) => a + (m.callIds?.length ?? 0) + (m.compCallIds?.length ?? 0), 0);
+    out.push(`> 共 ${callers.length} 个方法产生 ${edgeTotal} 条逻辑调用边（含 Widget 构造渲染链）。`);
+    out.push('');
   }
 
   // ---- 油猴脚本分析（存在 UserScript 对象时输出）----

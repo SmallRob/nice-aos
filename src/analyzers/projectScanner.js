@@ -3,19 +3,23 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isUserScriptCandidate } from './userScriptAnalyzer.js';
 
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue', '.rs']);
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart']);
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'dist-ssr', 'build', 'out',
   'coverage', '.next', '.nuxt', 'public', 'docs',
   '.codebuddy', '.codegraph', '.asdm', '.trae', '.claude',
   '.cursor', '.kiro', '.sisyphus', '.vscode', '.idea', '__pycache__',
-  'android', 'ios', 'target',
+  'android', 'ios', 'target', '.dart_tool', 'linux', 'macos', 'windows',
 ]);
 
-// 扫描根解析：显式 roots 优先；否则 src/ 存在则扫 src/；否则扫项目根（排除 SKIP_DIRS）
+// 扫描根解析：显式 roots 优先；Flutter/Dart 项目（pubspec.yaml + lib/）优先扫 lib/；
+// 否则 src/ 存在则扫 src/；否则扫项目根（排除 SKIP_DIRS）
 function resolveRoots(projectRoot, options) {
   if (Array.isArray(options.roots) && options.roots.length > 0) {
     return options.roots.filter((r) => fs.existsSync(path.join(projectRoot, r)));
+  }
+  if (fs.existsSync(path.join(projectRoot, 'pubspec.yaml')) && fs.existsSync(path.join(projectRoot, 'lib'))) {
+    return ['lib'];
   }
   if (fs.existsSync(path.join(projectRoot, 'src'))) return ['src'];
   return ['.'];
@@ -42,9 +46,9 @@ function walk(dir, projectRoot, files) {
   }
 }
 
-// 客户端组件自动发现：Tauri（src-tauri/tauri.conf.json → 追加 src-tauri/src）与
-// Electron（electron/ 目录含 ts/js 源码 → 追加 electron）。显式 roots 传参时同样自动追加
-// —— tauri.conf.json / electron 目录是构建工具约定的强信号，用户期望客户端组件随扫描自动包含
+// 客户端组件自动发现：Tauri（src-tauri/tauri.conf.json → 追加 src-tauri/src）、
+// Electron（electron/ 目录含 ts/js 源码 → 追加 electron）与 Flutter（pubspec.yaml + lib/ 含 .dart 源码 → 追加 lib）。
+// 显式 roots 传参时同样自动追加——这些配置是构建工具约定的强信号，用户期望客户端组件随扫描自动包含
 function discoverClientComponentRoots(projectRoot, baseRoots) {
   const extras = new Set();
   const pushRel = (absDir) => {
@@ -92,10 +96,40 @@ function discoverClientComponentRoots(projectRoot, baseRoots) {
       findElectron(path.join(dir, e.name), depth + 1);
     }
   };
+  // Flutter/Dart 包：pubspec.yaml + lib/（monorepo 多包时递归发现每个子包）
+  const hasDartFiles = (dir) => {
+    const stack = [[dir, 0]];
+    while (stack.length) {
+      const [d, depth] = stack.pop();
+      if (depth > 4) continue;
+      let entries = [];
+      try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        if (e.isDirectory()) {
+          if (!SKIP_DIRS.has(e.name)) stack.push([path.join(d, e.name), depth + 1]);
+        } else if (e.name.endsWith('.dart')) return true;
+      }
+    }
+    return false;
+  };
+  const findFlutter = (dir, depth) => {
+    if (depth > 3) return;
+    if (fs.existsSync(path.join(dir, 'pubspec.yaml')) && fs.existsSync(path.join(dir, 'lib'))) {
+      if (hasDartFiles(path.join(dir, 'lib'))) pushRel(path.join(dir, 'lib'));
+      return;
+    }
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory() || SKIP_DIRS.has(e.name)) continue;
+      findFlutter(path.join(dir, e.name), depth + 1);
+    }
+  };
   const bases = new Set([projectRoot, ...baseRoots.map((r) => path.resolve(projectRoot, r))]);
   for (const base of bases) {
     findTauri(base, 0);
     findElectron(base, 0);
+    findFlutter(base, 0);
   }
   return [...extras];
 }
@@ -188,6 +222,44 @@ function readJson(filePath) {
   }
 }
 
+// pubspec.yaml 依赖解析（行级解析，避免引入 yaml 依赖）：
+// dependencies / dev_dependencies 下的缩进键值对；无值键 + 子键行（flutter: sdk: flutter）拼接为版本
+function parsePubspecDeps(pubspecPath) {
+  const text = fs.readFileSync(pubspecPath, 'utf-8');
+  const deps = {};
+  let current = null;
+  let pending = null; // 无值键（如 flutter:），等子键行（sdk: flutter）拼接版本
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine; // CRLF 行尾归一
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const sectionM = /^([A-Za-z_][A-Za-z0-9_]*):\s*$/.exec(line);
+    if (sectionM) {
+      current = sectionM[1];
+      pending = null;
+      continue;
+    }
+    if (!current || !['dependencies', 'dev_dependencies'].includes(current)) continue;
+    const m = /^\s{1,}([A-Za-z_][A-Za-z0-9_]*):\s*(\S.*)?$/.exec(line);
+    if (!m) continue;
+    const name = m[1];
+    const raw = (m[2] ?? '').trim();
+    if (pending) {
+      // 前一个无值键（flutter:）的子键行：sdk: flutter → version = 'sdk: flutter'
+      deps[pending] = { version: raw ? `${name}: ${raw}` : 'sdk', scope: current === 'dependencies' ? 'dependencies' : 'devDependencies', registry: 'pub' };
+      pending = null;
+      continue;
+    }
+    if (!raw) { pending = name; continue; }
+    let version = raw;
+    if ((version.startsWith('"') && version.endsWith('"')) || (version.startsWith("'") && version.endsWith("'"))) {
+      version = version.slice(1, -1);
+    }
+    deps[name] = { version, scope: current === 'dependencies' ? 'dependencies' : 'devDependencies', registry: 'pub' };
+  }
+  return deps;
+}
+
 // tsconfig paths 解析：solution 风格 tsconfig（根文件仅含 references）时合并引用的子配置 paths，
 // 子配置相对 tsconfig 所在目录解析；引用不存在或读取失败时静默跳过
 function parseTsconfigPaths(tsconfigPath) {
@@ -246,13 +318,14 @@ function gitInfo(projectRoot) {
   }
 }
 
-// 宿主项目定位：扫描目录（如 src/ 子目录）自身无 package.json 时，向上查找最近的宿主项目根，
-// 用于框架识别、依赖清单与项目名回退。上限 4 层且不越过用户 home（避免误吸附无关的祖先 package.json）
+// 宿主项目定位：扫描目录（如 src/ 或 lib/ 子目录）自身无 package.json/pubspec.yaml 时，
+// 向上查找最近的宿主项目根，用于框架识别、依赖清单与项目名回退。
+// 上限 4 层且不越过用户 home（避免误吸附无关的祖先清单）
 function findHostProjectDir(startDir) {
   let dir = path.resolve(startDir);
   const home = process.env.HOME ? path.resolve(process.env.HOME) : null;
   for (let i = 0; i < 4; i += 1) {
-    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+    if (fs.existsSync(path.join(dir, 'package.json')) || fs.existsSync(path.join(dir, 'pubspec.yaml'))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break; // 已到文件系统根
     if (home && (dir === home || parent === home)) break; // 不越过用户 home
@@ -291,7 +364,10 @@ function isExpoAppJson(hostDir, configs) {
   return Boolean(appJson?.expo);
 }
 
-function detectFramework({ deps, configs, hostDir, userScriptCount, codeSignals }) {
+function detectFramework({ deps, configs, hostDir, userScriptCount, codeSignals, flutterDetected, dartDetected }) {
+  // Flutter/Dart 客户端（pubspec.yaml + lib/）优先
+  if (flutterDetected) return 'flutter';
+  if (dartDetected) return 'dart';
   // 元框架优先（依赖更具体的信号，react/vue 基座只作兜底）
   if (deps.expo) return 'expo';
   if (deps['react-native']) return 'react-native';
@@ -315,10 +391,18 @@ function detectFrameworkVariants({ deps, configs }) {
   if (deps.electron || configs.includes('electron/') || configs.some((c) => c.startsWith('electron-builder'))) variants.push('electron');
   if (deps.vite || configs.some((c) => c.startsWith('vite.config'))) variants.push('vite');
   if (deps.webpack || configs.some((c) => c.startsWith('webpack.config'))) variants.push('webpack');
+  // Flutter 状态管理 / 路由库变体（pubspec 依赖）
+  if (deps.flutter_riverpod || deps.riverpod || deps.hooks_riverpod) variants.push('riverpod');
+  if (deps.provider) variants.push('provider');
+  if (deps.flutter_bloc || deps.bloc) variants.push('bloc');
+  if (deps.get || deps.getx) variants.push('getx');
+  if (deps.go_router) variants.push('go_router');
   return variants;
 }
 
 const FRAMEWORK_LABELS_FULL = {
+  flutter: 'Flutter 应用',
+  dart: 'Dart 应用',
   expo: 'React Native（Expo）',
   'react-native': 'React Native 应用',
   nuxt: 'Nuxt 应用',
@@ -334,6 +418,11 @@ const VARIANT_LABELS = {
   tauri: 'Tauri 桌面端',
   vite: 'Vite 构建',
   webpack: 'Webpack 构建',
+  riverpod: 'Riverpod 状态管理',
+  provider: 'Provider 状态管理',
+  bloc: 'Bloc 状态管理',
+  getx: 'GetX 状态管理',
+  go_router: 'GoRouter 路由',
 };
 
 // 组合展示标签：React 单页应用 + Capacitor 跨端（Vite 构建）
@@ -353,6 +442,11 @@ export function scanProject(projectRoot, options = {}) {
   }
   const tauriDetected = clientRoots.some((r) => r.includes('src-tauri'));
   const electronDetected = clientRoots.some((r) => /(^|\/)electron$/.test(r));
+  const pubspecPath = fs.existsSync(path.join(projectRoot, 'pubspec.yaml'))
+    ? path.join(projectRoot, 'pubspec.yaml')
+    : null;
+  const flutterDetected = clientRoots.some((r) => /(^|\/)lib$/.test(r))
+    && (pubspecPath !== null || clientRoots.some((r) => fs.existsSync(path.join(projectRoot, path.dirname(r), 'pubspec.yaml'))));
   const files = [];
   for (const root of roots) {
     walk(path.join(projectRoot, root), projectRoot, files);
@@ -367,10 +461,11 @@ export function scanProject(projectRoot, options = {}) {
     if (isUserScriptCandidate(path.join(projectRoot, f))) userScriptFiles.add(f);
   }
 
-  // 宿主项目定位：扫描目录自身有 package.json 优先（monorepo 子包）；
+  // 宿主项目定位：扫描目录自身有 package.json/pubspec.yaml 优先（monorepo 子包）；
   // 否则向上查找宿主根（如扫描 src/ 时定位项目根），读取 src 同级配置文件辅助框架识别
   const ownPackageJson = readJson(path.join(projectRoot, 'package.json'));
-  const hostDir = ownPackageJson ? projectRoot : findHostProjectDir(projectRoot);
+  const hasOwnPubspec = pubspecPath !== null;
+  const hostDir = (ownPackageJson || hasOwnPubspec) ? projectRoot : findHostProjectDir(projectRoot);
   const packageJson = ownPackageJson ?? (hostDir ? readJson(path.join(hostDir, 'package.json')) : null);
   const hostConfigs = detectHostConfigs(hostDir);
 
@@ -392,23 +487,35 @@ export function scanProject(projectRoot, options = {}) {
   for (const scope of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
     const deps = packageJson?.[scope] ?? {};
     for (const [name, version] of Object.entries(deps)) {
-      dependencies[name] = { version: String(version), scope };
+      dependencies[name] = { version: String(version), scope, registry: 'npm' };
     }
   }
+  // pubspec.yaml 依赖（Flutter/Dart 项目，pub 源）；pubspecName 用于项目名与 package: 自引用解析
+  const pubspecDeps = pubspecPath ? parsePubspecDeps(pubspecPath) : {};
+  let pubspecName = null;
+  if (pubspecPath) {
+    const nameM = /^name:\s*(\S+)/m.exec(fs.readFileSync(pubspecPath, 'utf-8'));
+    pubspecName = nameM ? nameM[1].replace(/^['"]|['"]$/g, '') : null;
+  }
+  for (const [name, info] of Object.entries(pubspecDeps)) {
+    if (!dependencies[name]) dependencies[name] = info;
+  }
 
-  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0 };
+  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0 };
   for (const f of files) {
     const ext = path.extname(f).slice(1);
     if (counts[ext] !== undefined) counts[ext] += 1;
   }
 
-  const allDeps = { ...(packageJson?.dependencies ?? {}), ...(packageJson?.devDependencies ?? {}) };
+  const allDeps = { ...(packageJson?.dependencies ?? {}), ...(packageJson?.devDependencies ?? {}), ...Object.keys(pubspecDeps).reduce((a, k) => { a[k] = pubspecDeps[k].version; return a; }, {}) };
   const framework = detectFramework({
     deps: allDeps,
     configs: hostConfigs,
     hostDir,
     userScriptCount: userScriptFiles.size,
     codeSignals: { vueFileCount: counts.vue, tsxFileCount: counts.tsx, jsxFileCount: counts.jsx },
+    flutterDetected: flutterDetected && Object.keys(pubspecDeps).includes('flutter'),
+    dartDetected: flutterDetected && !Object.keys(pubspecDeps).includes('flutter'),
   });
   const frameworkVariants = detectFrameworkVariants({ deps: allDeps, configs: hostConfigs });
   // 客户端组件发现结果并入变体（Tauri/Electron 桌面端）
@@ -418,7 +525,8 @@ export function scanProject(projectRoot, options = {}) {
   return {
     root: projectRoot,
     roots,
-    name: packageJson?.name ?? path.basename(projectRoot),
+    name: packageJson?.name ?? pubspecName ?? path.basename(projectRoot),
+    pubspecName,
     version: packageJson?.version ?? null,
     framework,
     frameworkVariants,
@@ -433,8 +541,10 @@ export function scanProject(projectRoot, options = {}) {
     jsFileCount: counts.js + counts.jsx,
     vueFileCount: counts.vue,
     rustFileCount: counts.rs,
+    dartFileCount: counts.dart,
     tauriDetected,
     electronDetected,
+    flutterDetected,
     userScriptFiles,
     userScriptFileCount: userScriptFiles.size,
     tsconfigPaths,

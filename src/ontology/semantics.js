@@ -6,7 +6,7 @@
 export const ARCH_LAYERS = {
   entry: { label: '入口层', role: '应用引导', description: '应用入口与启动装配（main / App 等）' },
   presentation: { label: '表现层', role: 'UI 呈现', description: '页面、组件与路由等用户界面' },
-  state: { label: '状态层', role: '共享状态', description: '跨组件共享状态（Zustand / Pinia Store）' },
+  state: { label: '状态层', role: '共享状态', description: '跨组件共享状态（Zustand / Pinia / Riverpod Provider）' },
   service: { label: '业务层', role: '业务逻辑', description: '领域服务、引擎与业务编排' },
   tauri: { label: 'Tauri 原生层', role: '桌面原生', description: 'Rust 桌面原生组件（src-tauri：数据模型 / 命令 / 系统集成）' },
   electron: { label: 'Electron 主进程', role: '桌面主进程', description: 'Electron 主进程组件（窗口 / 系统 API / 本地服务）' },
@@ -23,8 +23,8 @@ const SERVICE_NAME_RE = /(Service|Engine|Manager|Repository|Factory)$/;
 
 // 目录名 → 语义层弱信号（内容信号优先，此处仅兜底）
 const DIR_SIGNALS = [
-  [/^(routes?|pages?|views|screens|layouts?|components|ui|widgets|overlays?|templates)$/, 'presentation'],
-  [/^(stores?|state|redux|zustand|pinia|globals?)$/, 'state'],
+  [/^(routes?|pages?|views|screens|layouts?|components|ui|widgets|overlays?|templates|presentation)$/, 'presentation'],
+  [/^(stores?|state|redux|zustand|pinia|globals?|providers?)$/, 'state'],
   [/^(services?|domains?|business|usecases?|use-?cases?|engines?)$/, 'service'],
   [/^(api|apis|clients?|http|network|gateways?|adapters?|repositories)$/, 'integration'],
   [/^(hooks|composables|utils|lib|libs|helpers|shared|common|tools|kit|core)$/, 'shared'],
@@ -41,7 +41,7 @@ const TECH_DIR_NAMES = new Set([
   'routes', 'route', 'pages', 'page', 'views', 'screens', 'layouts', 'layout',
   'components', 'component', 'ui', 'widgets', 'overlays', 'templates',
   'features', 'feature', 'entities', 'processes', 'containers', 'modules', 'module',
-  'stores', 'store', 'state', 'redux', 'zustand', 'pinia', 'globals',
+  'stores', 'store', 'state', 'redux', 'zustand', 'pinia', 'globals', 'providers', 'presentation',
   'services', 'service', 'domain', 'domains', 'business', 'usecases', 'engines',
   'api', 'apis', 'clients', 'client', 'http', 'network', 'gateways', 'adapters', 'repositories',
   'hooks', 'composables', 'utils', 'helpers', 'shared', 'common', 'tools', 'kit', 'core',
@@ -50,7 +50,7 @@ const TECH_DIR_NAMES = new Set([
   'tests', 'test', '__tests__', 'e2e', 'spec', 'specs', 'mocks', 'fixtures', 'testing',
   'scripts', 'userscripts', 'assets', 'styles', 'style', 'scss', 'css', 'static', 'public',
   'entry', 'bootstrap', 'startup', 'main', 'dist', 'build', 'coverage', 'docs', 'examples', 'demo', 'demos',
-  'src-tauri', 'electron',
+  'src-tauri', 'electron', 'extensions', 'dao',
 ]);
 
 function stemOf(relPath) {
@@ -269,6 +269,8 @@ export function summarizeDomain(d) {
 }
 
 const FRAMEWORK_LABELS = {
+  flutter: 'Flutter 应用',
+  dart: 'Dart 应用',
   react: 'React 单页应用',
   vue: 'Vue 单页应用',
   next: 'Next.js 应用',

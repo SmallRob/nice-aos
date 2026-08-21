@@ -26,18 +26,18 @@ export const OBJECT_TYPES = [
   { type: 'Project', prefix: 'proj:', category: 'Container', level: 'L3', description: '代码仓库（含框架识别/架构画像/健康度/总结；扫描子目录时含宿主定位证据）' },
   { type: 'Domain', prefix: 'dom:', category: 'Container', level: 'L3', description: '功能域（横向功能切片：路由+组件+模块聚合）' },
   { type: 'Module', prefix: 'mod:', category: 'Container', level: 'L2', description: '目录模块（含语义架构层 archLayer 与职责画像 summary）' },
-  { type: 'SourceFile', prefix: 'file:', category: 'Container', level: 'L2', description: '源文件（ts/tsx/js/jsx/vue，含 archLayer）' },
-  { type: 'Component', prefix: 'comp:', category: 'CodeUnit', level: 'L1', description: '前端组件（React / Vue SFC）' },
+  { type: 'SourceFile', prefix: 'file:', category: 'Container', level: 'L2', description: '源文件（ts/tsx/js/jsx/vue/rs/dart，含 archLayer）' },
+  { type: 'Component', prefix: 'comp:', category: 'CodeUnit', level: 'L1', description: '前端组件（React / Vue SFC / Flutter Widget）' },
   { type: 'Hook', prefix: 'hook:', category: 'CodeUnit', level: 'L1', description: '自定义 Hook / Composable' },
-  { type: 'Store', prefix: 'store:', category: 'CodeUnit', level: 'L1', description: '状态 Store（Zustand / Pinia）' },
+  { type: 'Store', prefix: 'store:', category: 'CodeUnit', level: 'L1', description: '状态 Store（Zustand / Pinia / ChangeNotifier / Riverpod Provider）' },
   { type: 'Service', prefix: 'svc:', category: 'CodeUnit', level: 'L1', description: '服务/引擎模块' },
-  { type: 'Interface', prefix: 'iface:', category: 'CodeUnit', level: 'L1', description: '接口（TS interface / Rust trait；含方法签名与 extends 继承）' },
-  { type: 'Class', prefix: 'class:', category: 'CodeUnit', level: 'L1', description: '类（TS class / Rust struct/enum：kind 区分，含 implements/extends 关系、derives/fields/variants 与单例标记）' },
-  { type: 'Method', prefix: 'method:', category: 'CodeUnit', level: 'L1', description: '方法/函数（类方法、接口方法签名、模块函数、Rust impl fn；含 overrides 实现关系与 deadCandidate）' },
+  { type: 'Interface', prefix: 'iface:', category: 'CodeUnit', level: 'L1', description: '接口（TS interface / Rust trait / Dart abstract class；含方法签名与 extends 继承）' },
+  { type: 'Class', prefix: 'class:', category: 'CodeUnit', level: 'L1', description: '类（TS class / Rust struct/enum / Dart class：kind 区分，含 implements/extends 关系、derives/fields/variants、isWidget/isStore 与单例标记）' },
+  { type: 'Method', prefix: 'method:', category: 'CodeUnit', level: 'L1', description: '方法/函数（类方法、接口方法签名、模块函数、Rust impl fn、Dart 方法；含 overrides、callIds/calledByIds 逻辑调用链与 deadCandidate）' },
   { type: 'ScriptFunction', prefix: 'fn:', category: 'CodeUnit', level: 'L1', description: '脚本函数/类/对象（含业务角色 roles：render/data/state/event/ui/logic）' },
-  { type: 'Route', prefix: 'route:', category: 'EntryPoint', level: 'L2', description: '路由条目（Overlay / react-router / vue-router）' },
+  { type: 'Route', prefix: 'route:', category: 'EntryPoint', level: 'L2', description: '路由条目（Overlay / react-router / vue-router / Flutter GoRoute）' },
   { type: 'UserScript', prefix: 'us:', category: 'Script', level: 'L2', description: '油猴脚本（Tampermonkey UserScript）' },
-  { type: 'Dependency', prefix: 'dep:', category: 'Environment', level: 'L2', description: 'npm 依赖' },
+  { type: 'Dependency', prefix: 'dep:', category: 'Environment', level: 'L2', description: '依赖（npm 包 / pub 包）' },
   { type: 'GmApiUsage', prefix: 'gm:', category: 'AuditFact', level: 'L0', description: 'GM API 使用（@grant 声明比对）' },
   { type: 'InjectionPoint', prefix: 'inject:', category: 'AuditFact', level: 'L0', description: 'DOM 注入点（含归属函数 fns/fnIds，构成逻辑注入链）' },
   { type: 'NetworkEndpoint', prefix: 'net:', category: 'AuditFact', level: 'L0', description: '网络端点（含归属函数 fns/fnIds）' },
@@ -289,21 +289,21 @@ export function createBlueprint(dataMap) {
       return [];
     },
 
-    // 脚本函数调用图：fn: → fn:（正向被调用 callees；反向 calledBy）
+    // 脚本函数/方法调用图：fn:/method: → 目标（正向被调用 callees；反向 calledBy）
     calls(srcId) {
-      if (srcId.startsWith('fn:')) {
-        const fn = getObject(index, srcId);
-        if (!fn) return [];
-        return objectsForIds(index, fn.callIds ?? []);
+      if (srcId.startsWith('fn:') || srcId.startsWith('method:')) {
+        const obj = getObject(index, srcId);
+        if (!obj) return [];
+        return objectsForIds(index, [...(obj.callIds ?? []), ...(obj.compCallIds ?? [])]);
       }
       return [];
     },
 
     calledBy(srcId) {
-      if (srcId.startsWith('fn:')) {
-        const fn = getObject(index, srcId);
-        if (!fn) return [];
-        return objectsForIds(index, fn.calledByIds ?? []);
+      if (srcId.startsWith('fn:') || srcId.startsWith('method:')) {
+        const obj = getObject(index, srcId);
+        if (!obj) return [];
+        return objectsForIds(index, obj.calledByIds ?? []);
       }
       return [];
     },

@@ -44,7 +44,7 @@ export const actionCommand = new Command('action')
 
     if (name === 'analyzeFile') {
       const file = params.file ?? params.path;
-      if (!file) fail('缺少参数 file（相对 cwd 或绝对路径，支持 .ts/.tsx/.js/.jsx/.mjs/.vue）');
+      if (!file) fail('缺少参数 file（相对 cwd 或绝对路径，支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart）');
       const filePath = path.resolve(file);
       if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
         fail(`文件不存在或不是普通文件: ${filePath}`);
