@@ -1,7 +1,8 @@
 function table(headers, rows) {
   const head = `| ${headers.join(' | ')} |`;
   const sep = `| ${headers.map(() => '---').join(' | ')} |`;
-  const body = rows.map((r) => `| ${r.map((c) => String(c ?? '')).join(' | ')} |`).join('\n');
+  const cell = (c) => String(c ?? '').replace(/\|/g, '\\|'); // 签名中的联合类型 | 需转义，避免撑破表格列
+  const body = rows.map((r) => `| ${r.map(cell).join(' | ')} |`).join('\n');
   return [head, sep, body].join('\n');
 }
 
@@ -41,6 +42,9 @@ export function exportToMarkdown(dataMap) {
     ['自定义 Hook/Composable 数', counts.Hook],
     ['Store 数（Zustand/Pinia）', counts.Store],
     ['Service 模块数', counts.Service],
+    ['接口数（Interface）', counts.Interface ?? 0],
+    ['类数（Class）', counts.Class ?? 0],
+    ['方法/函数数（Method）', counts.Method ?? 0],
     ['路由数（Overlay/Vue Router）', counts.Route],
     ['npm 依赖数', counts.Dependency],
     ['油猴脚本数', counts.UserScript ?? 0],
@@ -62,6 +66,8 @@ export function exportToMarkdown(dataMap) {
     out.push(table(['健康指标', '数值'], [
       ['循环依赖组数', proj.health.cycleCount ?? 0],
       ['死代码候选文件数', proj.health.orphanFileCount ?? 0],
+      ['死代码候选类型数（接口/类）', proj.health.deadTypeCount ?? 0],
+      ['死代码候选函数数（方法/模块函数）', proj.health.deadFunctionCount ?? 0],
       ['未声明依赖数', proj.health.undeclaredDependencyCount ?? 0],
       ['高风险油猴脚本数', proj.health.highRiskScriptCount ?? 0],
       ['解析错误数', proj.health.analysisErrorCount ?? 0],
@@ -144,6 +150,89 @@ export function exportToMarkdown(dataMap) {
     s.name, s.stateKeyCount, s.hasPersist ? '✓' : '-', s.storageKey ?? '-', s.location, s.filePath,
   ])));
   out.push('');
+
+  // ---- 类型实体：Interface / Class / Method ----
+  const ifaces = dataMap.Interface ?? [];
+  const allClasses = dataMap.Class ?? [];
+  const allMethods = dataMap.Method ?? [];
+  const methodById = new Map(allMethods.map((m) => [m.id, m]));
+  if (ifaces.length > 0 || allClasses.length > 0) {
+    const implementersByIface = new Map();
+    for (const c of allClasses) {
+      for (const iid of c.implementsIds ?? []) {
+        if (!implementersByIface.has(iid)) implementersByIface.set(iid, []);
+        implementersByIface.get(iid).push(c.name);
+      }
+    }
+    const loc = (e) => `${e.filePath}:${e.line}`;
+    const extendsCell = (e) => {
+      const names = e.extendsNames ?? [];
+      if (names.length === 0) return '-';
+      return `${names.join(', ')}（${(e.extendsIds ?? []).length}/${names.length} 解析）`;
+    };
+
+    heading('接口与实现（Interface ↔ implementedBy）');
+    if (ifaces.length === 0) {
+      out.push('（未提取到接口实体）');
+    } else {
+      out.push(table(['接口', '文件:行', 'extends', '方法数', '被实现数', '实现类', '死代码候选'], ifaces.slice(0, 300).map((i) => [
+        i.name, loc(i), extendsCell(i), (i.methodIds ?? []).length,
+        (implementersByIface.get(i.id) ?? []).length,
+        (implementersByIface.get(i.id) ?? []).join(', ') || '-',
+        i.deadCandidate ? `⚠️ ${i.deadReason}` : '-',
+      ])));
+      if (ifaces.length > 300) out.push(`> 仅显示前 300 个接口，共 ${ifaces.length} 个。`);
+      out.push('');
+      // 方法覆盖矩阵：有实现类的接口，方法级 overrides 汇总
+      const matrixRows = [];
+      for (const i of ifaces) {
+        if ((implementersByIface.get(i.id) ?? []).length === 0) continue;
+        for (const mid of i.methodIds ?? []) {
+          const m = methodById.get(mid);
+          if (!m) continue;
+          matrixRows.push([
+            i.name, m.name, m.signature ?? '-', (m.overriddenByIds ?? []).length,
+            (m.overriddenByIds ?? []).map((id) => methodById.get(id)?.ownerName ?? id).join(', ') || '⚠️ 无实现',
+          ]);
+        }
+      }
+      if (matrixRows.length > 0) {
+        out.push('方法覆盖矩阵（有实现类的接口，⚠️ 无实现 = 契约方法未被任何实现类覆盖）：');
+        out.push('');
+        out.push(table(['接口', '方法', '签名', '被覆盖数', '实现方法（owner）'], matrixRows.slice(0, 200)));
+        if (matrixRows.length > 200) out.push(`> 仅显示前 200 行，共 ${matrixRows.length} 行。`);
+        out.push('');
+      }
+    }
+
+    heading('类与方法（Class）');
+    if (allClasses.length === 0) {
+      out.push('（未提取到类实体）');
+    } else {
+      out.push(table(['类', '文件:行', 'implements', 'extends', '单例', '方法数', '死代码候选'], allClasses.slice(0, 300).map((c) => [
+        c.name, loc(c),
+        (c.implementsNames ?? []).length > 0 ? `${c.implementsNames.join(', ')}（${(c.implementsIds ?? []).length}/${c.implementsNames.length} 解析）` : '-',
+        c.extendsName ? `${c.extendsName}${c.extendsId ? '' : '（未解析）'}` : '-',
+        c.isSingleton ? '✓' : '-', (c.methodIds ?? []).length,
+        c.deadCandidate ? `⚠️ ${c.deadReason}` : '-',
+      ])));
+      if (allClasses.length > 300) out.push(`> 仅显示前 300 个类，共 ${allClasses.length} 个。`);
+      out.push('');
+      // 契约热点：被覆盖最多的方法（接口/父类方法）
+      const hotMethods = allMethods
+        .filter((m) => (m.overriddenByIds ?? []).length > 0)
+        .sort((a, b) => b.overriddenByIds.length - a.overriddenByIds.length)
+        .slice(0, 30);
+      if (hotMethods.length > 0) {
+        out.push('契约热点 Top 30（被实现/覆盖最多的方法）：');
+        out.push('');
+        out.push(table(['方法', 'owner', '文件:行', '被覆盖数', '签名'], hotMethods.map((m) => [
+          m.name, `${m.ownerKind}:${m.ownerName ?? '-'}`, loc(m), m.overriddenByIds.length, m.signature ?? '-',
+        ])));
+        out.push('');
+      }
+    }
+  }
 
   // ---- 油猴脚本分析（存在 UserScript 对象时输出）----
   if (userScripts.length > 0) {
@@ -242,7 +331,7 @@ export function exportToMarkdown(dataMap) {
   }
   out.push('');
 
-  heading('死代码候选（零引用文件）');
+  heading('死代码候选（文件级 + 类型级 + 函数级）');
   const orphans = meta.orphanCandidates ?? [];
   if (orphans.length === 0) {
     out.push('未发现零引用文件。');
@@ -250,6 +339,34 @@ export function exportToMarkdown(dataMap) {
     out.push(`共 ${orphans.length} 个文件未被任何模块导入、也未被路由/lazy 引用（人工确认后可清理）：`);
     out.push('');
     for (const f of orphans.slice(0, 200)) out.push(`- ${f}`);
+    if (orphans.length > 200) out.push(`- ……（其余 ${orphans.length - 200} 个略）`);
+  }
+  out.push('');
+
+  const deadTypes = [...(dataMap.Interface ?? []), ...(dataMap.Class ?? [])].filter((e) => e.deadCandidate);
+  out.push(`类型级（接口/类，保守判定，共 ${deadTypes.length} 个）：`);
+  out.push('');
+  if (deadTypes.length > 0) {
+    out.push(table(['类型', '名称', '文件:行', '理由'], deadTypes.slice(0, 200).map((e) => [
+      e.id.startsWith('iface:') ? 'Interface' : 'Class', e.name, `${e.filePath}:${e.line}`, e.deadReason,
+    ])));
+    if (deadTypes.length > 200) out.push(`> 仅显示前 200 个，共 ${deadTypes.length} 个。`);
+  } else {
+    out.push('未发现死代码候选类型。');
+  }
+  out.push('');
+
+  const deadFns = (dataMap.Method ?? []).filter((m) => m.deadCandidate);
+  out.push(`函数级（方法/模块函数，保守判定，共 ${deadFns.length} 个；接口方法为契约声明不判死）：`);
+  out.push('');
+  if (deadFns.length > 0) {
+    out.push(table(['方法/函数', 'owner', '文件:行', '理由'], deadFns.slice(0, 300).map((m) => [
+      m.name, m.ownerKind === 'module' ? '模块函数' : `${m.ownerKind}:${m.ownerName ?? '-'}`,
+      `${m.filePath}:${m.line}`, m.deadReason,
+    ])));
+    if (deadFns.length > 300) out.push(`> 仅显示前 300 个，共 ${deadFns.length} 个。`);
+  } else {
+    out.push('未发现死代码候选函数。');
   }
   out.push('');
 

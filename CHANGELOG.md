@@ -2,6 +2,34 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.7.0] - 2026-08-21
+
+### 新增
+
+- **类型体系实体化（Interface / Class / Method）**：解决"实体关系记录在实现类中、从接口正向 query 不到"的断层，对象类型 15 → 18 种（均归 CodeUnit/L1 单元层）：
+  - **Interface（`iface:`）**：接口全量提取（含 `.d.ts`），携带方法签名、extends 继承链、导出标记
+  - **Class（`class:`）**：类全量提取，携带 implements/extends 关系、单例标记（`static getInstance`）、方法清单
+  - **Method（`method:`）**：类方法、接口方法签名、模块函数（顶层声明 + const 箭头函数）统一为方法实体；ownerKind（class/interface/module）、isStatic/isAsync、展示用签名；ID 约定 `method:<file>#<Owner>#<name>`（模块函数 `method:<file>#<fnName>`）
+- **实现/继承/覆盖关系（链接 15 → 21 种）**：
+  - `implements` / `implementedBy`：Class ↔ Interface 双向——`link implementedBy --src "iface:src/types/storage.ts#IStorage"` 直接列出接口的全部实现类
+  - `extends` / `extendedBy`：接口与类的继承链双向
+  - `overrides` / `overriddenBy`：方法级覆盖双向——接口方法 → 全部实现类方法；子类方法 → 被覆盖的父类/接口方法
+  - 跨文件解析：本文件声明优先，其次具名导入（含 `import type` type-only 导入与 `IStorage as StorageContract` 别名导入，按 imported 名定位目标文件导出）；解析失败留存原名不报错
+  - `contains` 扩展：`file:` 可下钻类型实体，`iface:`/`class:` 可下钻其方法
+- **函数级/类型级死代码候选（保守判定）**：在文件级 orphanCandidates 之外新增两级——非导出实体本文件零引用、导出实体全仓库零导入且本文件零引用 → `deadCandidate/deadReason`；引用计数排除声明处与自递归；接口方法为契约声明永不判死；命名空间导入 / `export *` / 动态 `import()` 目标文件整体豁免。健康指标（Project.health）新增 deadTypeCount / deadFunctionCount
+- **Markdown 报告新章节**：「接口与实现」（接口清单 + implementedBy 实现类 + 方法覆盖矩阵，契约方法未被覆盖时标 ⚠️）、「类与方法」（类清单含 implements/extends/单例 + 契约热点 Top 30）、「死代码候选」升级为三级（文件级 + 类型级 + 函数级）；修复表格内联合类型 `|` 撑破列的转义问题
+
+### 验证
+
+- 新增 `test/typeEntities.test.mjs`（11 个用例）：tsAnalyzer 事实提取（接口继承/方法签名/类 implements/静态异步方法/模块函数与引用计数）、端到端实体构建与 objectCounts、跨文件 implements（type-only + 别名导入）、类继承与方法级 overrides 双向、blueprint 六种新链接、保守死代码判定（DeadClass/orphanHelper 命中，AliveClass/caller/接口方法不误报，导出未导入函数按导出级判死）、`--where` 过滤（`name~get,ownerKind=class`）
+- 总计 78 个测试全部通过
+
+### 变更说明
+
+- query/link 命令为泛型实现（由 OBJECT_TYPES/LINK_TYPES 驱动），本版本零 CLI 命令改动即支持全部新类型/新链接
+- 快照新增 Interface/Class/Method 三个 key，向后兼容（老快照/消费方不受影响）；大仓库快照体积约增至 2-3 倍（万级 Method 实体），载入仍在数百毫秒级
+- Vue SFC `<script>` 内的 interface/class 本期不提取（Vue 侧已有 Hook/Composable/Store 体系）；TS 方法级调用图（calls/calledBy）未扩展到 Method
+
 ## [0.6.3] - 2026-08-21
 
 ### 新增

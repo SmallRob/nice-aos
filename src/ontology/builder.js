@@ -129,6 +129,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
         useCalls: [], overlayOpens: [], stores: [], lazyWrappers: [], components: [],
         hooks: [], primaryComponentName: null, hasSingletonClass: false, hasClassExport: false,
         importMap: new Map(), vueRoutes: [], vueRouteMeta: null,
+        interfaces: [], classes: [], moduleFunctions: [],
       };
       factsMap.set(relPath, empty);
       return empty;
@@ -322,6 +323,222 @@ export async function buildOntologyData(projectRoot, options = {}) {
         lineCount: facts.lineCount,
         reviewed: false, notes: null,
       });
+    }
+  }
+
+  // 5b-0. 类型实体：Interface / Class / Method（跨文件 implements/extends/overrides + 函数级死代码候选）
+  // 引用计数：名字在本文件出现、且位于实体声明范围之外的位置数（排除声明自身与自递归，宁可漏报不误报）
+  const refsOutsideSpan = (relPath, name, start, end) => {
+    const positions = factsMap.get(relPath)?.nameReferences?.get(name) ?? [];
+    return positions.filter((p) => p < start || p >= end).length;
+  };
+
+  const interfaces = [];
+  const classes = [];
+  const methods = [];
+  const ifaceIdUsed = new Set();
+  const classIdUsed = new Set();
+  const methodIdUsed = new Set();
+  const localTypesByFile = new Map(); // relPath -> Map(name -> id)，本文件全部类型（含未导出）
+  const typeSpanById = new Map();     // id -> {pos, end}，声明范围（用于引用计数，不进快照）
+  const registerLocalType = (relPath, name, id) => {
+    if (!localTypesByFile.has(relPath)) localTypesByFile.set(relPath, new Map());
+    localTypesByFile.get(relPath).set(name, id);
+  };
+
+  for (const relPath of scan.files) {
+    const facts = factsMap.get(relPath);
+    const fileObj = fileObjectByPath.get(relPath);
+    if (!fileObj) continue;
+
+    for (const iface of facts.interfaces ?? []) {
+      const id = uniqueId(`iface:${relPath}#${iface.name}`, ifaceIdUsed);
+      registerLocalType(relPath, iface.name, id);
+      typeSpanById.set(id, { pos: iface.pos, end: iface.end });
+      const entity = {
+        id, name: iface.name,
+        fileId: fileObj.id, filePath: relPath,
+        line: iface.line,
+        exported: iface.exported,
+        methodIds: [],
+        extendsIds: [],
+        extendsNames: iface.extendsNames,
+        deadCandidate: false, deadReason: null,
+        reviewed: false, notes: null,
+      };
+      for (const m of iface.methods) {
+        const mid = uniqueId(`method:${relPath}#${iface.name}#${m.name}`, methodIdUsed);
+        methods.push({
+          id: mid, name: m.name,
+          ownerKind: 'interface', ownerId: id, ownerName: iface.name,
+          fileId: fileObj.id, filePath: relPath,
+          line: m.line,
+          isStatic: false, isAsync: false, isOverride: false, exported: false,
+          signature: m.signature,
+          overridesId: null, overriddenByIds: [],
+          deadCandidate: false, deadReason: null, // 接口方法为契约声明，永不判死
+          reviewed: false, notes: null,
+        });
+        entity.methodIds.push(mid);
+      }
+      // 非导出接口：本文件内零引用 → 死代码候选（导出实体的全仓库零导入检测在下方统一做）
+      if (!iface.exported && refsOutsideSpan(relPath, iface.name, iface.pos, iface.end) === 0) {
+        entity.deadCandidate = true;
+        entity.deadReason = '本文件内零引用';
+      }
+      interfaces.push(entity);
+    }
+
+    for (const cls of facts.classes ?? []) {
+      const id = uniqueId(`class:${relPath}#${cls.name}`, classIdUsed);
+      registerLocalType(relPath, cls.name, id);
+      typeSpanById.set(id, { pos: cls.pos, end: cls.end });
+      const entity = {
+        id, name: cls.name,
+        fileId: fileObj.id, filePath: relPath,
+        line: cls.line,
+        exported: cls.exported,
+        isSingleton: cls.isSingleton,
+        methodIds: [],
+        implementsIds: [],
+        implementsNames: cls.implementsNames,
+        extendsId: null, extendsName: cls.extendsName,
+        deadCandidate: false, deadReason: null,
+        reviewed: false, notes: null,
+      };
+      for (const m of cls.methods) {
+        const mid = uniqueId(`method:${relPath}#${cls.name}#${m.name}`, methodIdUsed);
+        const methodEntity = {
+          id: mid, name: m.name,
+          ownerKind: 'class', ownerId: id, ownerName: cls.name,
+          fileId: fileObj.id, filePath: relPath,
+          line: m.line,
+          isStatic: m.isStatic, isAsync: m.isAsync, isOverride: m.isOverride, exported: false,
+          signature: m.signature,
+          overridesId: null, overriddenByIds: [],
+          deadCandidate: false, deadReason: null,
+          reviewed: false, notes: null,
+        };
+        // 非导出类的方法可能仅被本文件调用：本文件内零引用才判死（导出类方法可能被外部调用，不判死）
+        if (!cls.exported && refsOutsideSpan(relPath, m.name, m.pos, m.end) === 0) {
+          methodEntity.deadCandidate = true;
+          methodEntity.deadReason = '本文件内零引用';
+        }
+        methods.push(methodEntity);
+        entity.methodIds.push(mid);
+      }
+      if (!cls.exported && refsOutsideSpan(relPath, cls.name, cls.pos, cls.end) === 0) {
+        entity.deadCandidate = true;
+        entity.deadReason = '本文件内零引用';
+      }
+      classes.push(entity);
+    }
+
+    for (const fn of facts.moduleFunctions ?? []) {
+      const id = uniqueId(`method:${relPath}#${fn.name}`, methodIdUsed);
+      typeSpanById.set(id, { pos: fn.pos, end: fn.end });
+      const entity = {
+        id, name: fn.name,
+        ownerKind: 'module', ownerId: fileObj.id, ownerName: null,
+        fileId: fileObj.id, filePath: relPath,
+        line: fn.line,
+        isStatic: false, isAsync: fn.isAsync, isOverride: false,
+        exported: fn.exported,
+        signature: fn.signature,
+        overridesId: null, overriddenByIds: [],
+        deadCandidate: false, deadReason: null,
+        reviewed: false, notes: null,
+      };
+      // 非导出函数：本文件零引用即死；导出函数的判定在下方全仓库零导入检测统一做
+      if (!fn.exported && refsOutsideSpan(relPath, fn.name, fn.pos, fn.end) === 0) {
+        entity.deadCandidate = true;
+        entity.deadReason = '本文件内零引用';
+      }
+      methods.push(entity);
+    }
+  }
+
+  // 跨文件类型引用解析：本文件声明优先；其次具名 import（含 type-only，按 local 名匹配、imported 名定位目标文件导出）
+  const exportedTypeIndex = new Map(); // `relPath#name` -> id（仅导出实体）
+  for (const i of interfaces) if (i.exported) exportedTypeIndex.set(`${i.filePath}#${i.name}`, i.id);
+  for (const c of classes) if (c.exported) exportedTypeIndex.set(`${c.filePath}#${c.name}`, c.id);
+  const resolveTypeRef = (relPath, name) => {
+    const facts = factsMap.get(relPath);
+    if (!facts) return null;
+    const local = localTypesByFile.get(relPath)?.get(name);
+    if (local) return local;
+    for (const imp of facts.imports) {
+      const n = (imp.names ?? []).find((x) => x.local === name && x.imported && x.imported !== '*');
+      if (!n) continue;
+      const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
+      if (r.kind !== 'internal') continue;
+      const id = exportedTypeIndex.get(`${r.file}#${n.imported}`);
+      if (id) return id;
+    }
+    return null;
+  };
+  for (const iface of interfaces) {
+    iface.extendsIds = iface.extendsNames.map((n) => resolveTypeRef(iface.filePath, n)).filter(Boolean);
+  }
+  for (const cls of classes) {
+    cls.implementsIds = cls.implementsNames.map((n) => resolveTypeRef(cls.filePath, n)).filter(Boolean);
+    if (cls.extendsName) cls.extendsId = resolveTypeRef(cls.filePath, cls.extendsName);
+  }
+
+  // 方法级 overrides：实现类方法与其实现接口/父类中的同名方法建立双向链接
+  const methodById = new Map(methods.map((m) => [m.id, m]));
+  const ifaceById = new Map(interfaces.map((i) => [i.id, i]));
+  const classById = new Map(classes.map((c) => [c.id, c]));
+  const linkOverride = (implId, contractId) => {
+    const impl = methodById.get(implId);
+    const contract = methodById.get(contractId);
+    if (!impl || !contract || impl.id === contract.id) return;
+    impl.overridesId = contract.id;
+    if (!contract.overriddenByIds.includes(impl.id)) contract.overriddenByIds.push(impl.id);
+  };
+  for (const cls of classes) {
+    const parents = [
+      ...cls.implementsIds.map((id) => ifaceById.get(id)),
+      ...(cls.extendsId ? [classById.get(cls.extendsId)] : []),
+    ].filter(Boolean);
+    for (const parent of parents) {
+      for (const mid of cls.methodIds) {
+        const m = methodById.get(mid);
+        const parentMethod = parent.methodIds
+          .map((id) => methodById.get(id))
+          .find((pm) => pm && pm.name === m.name);
+        if (parentMethod) linkOverride(mid, parentMethod.id);
+      }
+    }
+  }
+
+  // 导出符号的全仓库导入索引（export * 再导出 / 命名空间导入 / 动态 import 的目标文件——无法按名追踪，整文件豁免）
+  const indirectlyReferencedFiles = new Set();
+  const importedTypeRefs = new Set(); // `targetFile#importedName`
+  for (const [relPath, facts] of factsMap) {
+    for (const imp of facts.imports) {
+      const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
+      if (r.kind !== 'internal') continue;
+      if (!imp.names || imp.names.length === 0) {
+        indirectlyReferencedFiles.add(r.file);
+        continue;
+      }
+      for (const n of imp.names) {
+        if (n.imported === '*') indirectlyReferencedFiles.add(r.file);
+        else if (n.imported) importedTypeRefs.add(`${r.file}#${n.imported}`);
+      }
+    }
+  }
+  // 导出 Interface/Class/模块函数 的全仓库零导入检测
+  const exportedModuleFns = methods.filter((m) => m.ownerKind === 'module' && m.exported);
+  for (const e of [...interfaces, ...classes, ...exportedModuleFns]) {
+    if (!e.exported || e.deadCandidate) continue;
+    if (indirectlyReferencedFiles.has(e.filePath)) continue;
+    if (importedTypeRefs.has(`${e.filePath}#${e.name}`)) continue;
+    const span = typeSpanById.get(e.id);
+    if (span && refsOutsideSpan(e.filePath, e.name, span.pos, span.end) === 0) {
+      e.deadCandidate = true;
+      e.deadReason = '导出但全仓库零导入且本文件零引用';
     }
   }
 
@@ -821,6 +1038,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
     us.domainIds = fileDomainIds.get(us.filePath) ?? [];
   }
   for (const fn of scriptFunctions) fn.archLayer = 'script';
+  for (const i of interfaces) i.archLayer = fileArchLayer.get(i.filePath) ?? null;
+  for (const c of classes) c.archLayer = fileArchLayer.get(c.filePath) ?? null;
+  for (const m of methods) m.archLayer = fileArchLayer.get(m.filePath) ?? null;
 
   // 8. 死代码候选与循环依赖
   const importedByCount = new Map();
@@ -870,6 +1090,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
     fileObjects, modules, domains, routes,
     components, stores, hooks, services, userScripts,
     dependencies, cycles, orphanCandidates, analysisErrors,
+    deadTypeCount: interfaces.filter((i) => i.deadCandidate).length + classes.filter((c) => c.deadCandidate).length,
+    deadFunctionCount: methods.filter((m) => m.deadCandidate).length,
   });
   project.architecture = profile.architecture;
   project.health = profile.health;
@@ -885,6 +1107,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       objectCounts: {
         Module: modules.length, SourceFile: fileObjects.length, Component: components.length,
         Hook: hooks.length, Store: stores.length, Service: services.length,
+        Interface: interfaces.length, Class: classes.length, Method: methods.length,
         Route: routes.length, Dependency: dependencies.length,
         UserScript: userScripts.length, GmApiUsage: gmApiUsages.length,
         InjectionPoint: injectionPoints.length, NetworkEndpoint: networkEndpoints.length,
@@ -898,6 +1121,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
     Hook: hooks,
     Store: stores,
     Service: services,
+    Interface: interfaces,
+    Class: classes,
+    Method: methods,
     Route: routes,
     Dependency: dependencies,
     UserScript: userScripts,

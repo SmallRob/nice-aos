@@ -278,6 +278,7 @@ export function buildProjectProfile(ctx) {
   const {
     framework, frameworkLabel, fileObjects, modules, domains, routes, components, stores, hooks, services,
     userScripts, dependencies, cycles, orphanCandidates, analysisErrors,
+    deadFunctionCount = 0, deadTypeCount = 0,
   } = ctx;
 
   const layerDist = new Map();
@@ -301,6 +302,8 @@ export function buildProjectProfile(ctx) {
   const health = {
     cycleCount: cycles.length,
     orphanFileCount: orphanCandidates.length,
+    deadTypeCount,
+    deadFunctionCount,
     undeclaredDependencyCount,
     analysisErrorCount: analysisErrors.length,
     highRiskScriptCount,
@@ -340,7 +343,9 @@ export function buildProjectProfile(ctx) {
 function summarizeHealth(health) {
   const items = [];
   if (health.cycleCount > 0) items.push(`循环依赖 ${health.cycleCount} 组`);
-  if (health.orphanFileCount > 0) items.push(`死代码候选 ${health.orphanFileCount} 个`);
+  if (health.orphanFileCount > 0) items.push(`死代码候选文件 ${health.orphanFileCount} 个`);
+  if (health.deadTypeCount > 0) items.push(`死代码候选类型 ${health.deadTypeCount} 个`);
+  if (health.deadFunctionCount > 0) items.push(`死代码候选函数 ${health.deadFunctionCount} 个`);
   if (health.undeclaredDependencyCount > 0) items.push(`未声明依赖 ${health.undeclaredDependencyCount} 个`);
   if (health.highRiskScriptCount > 0) items.push(`高风险油猴脚本 ${health.highRiskScriptCount} 个`);
   if (health.analysisErrorCount > 0) items.push(`解析错误 ${health.analysisErrorCount} 个`);

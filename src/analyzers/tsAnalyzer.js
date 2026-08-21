@@ -27,6 +27,20 @@ function hasExportModifier(ts, node) {
   const modifiers = ts.getModifiers(node);
   return !!modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
 }
+function hasModifierKind(ts, node, kind) {
+  if (!ts.canHaveModifiers?.(node)) return false;
+  const modifiers = ts.getModifiers(node);
+  return !!modifiers?.some((m) => m.kind === kind);
+}
+
+// 方法/函数签名文本（参数列表 + 返回类型），仅用于展示，超长截断
+function buildSignature(ts, node, sourceFile) {
+  const params = (node.parameters ?? []).map((p) => p.getText(sourceFile)).join(', ');
+  const ret = node.type ? node.type.getText(sourceFile) : null;
+  let sig = `(${params})${ret ? `: ${ret}` : ''}`;
+  if (sig.length > 120) sig = `${sig.slice(0, 117)}...`;
+  return sig;
+}
 function hasDefaultModifier(ts, node) {
   if (!ts.canHaveModifiers?.(node)) return false;
   const modifiers = ts.getModifiers(node);
@@ -219,6 +233,16 @@ export function analyzeFile(filePath, content, projectRoot) {
     hasSingletonClass: false,
     hasClassExport: false,
     importMap: new Map(),
+    interfaces: [],
+    classes: [],
+    moduleFunctions: [],
+    nameReferences: new Map(),
+  };
+
+  const recordNameRef = (name, pos) => {
+    const arr = facts.nameReferences.get(name);
+    if (arr) arr.push(pos);
+    else facts.nameReferences.set(name, [pos]);
   };
 
   const recordImport = (node, specifier, isTypeOnly, isDynamic, names) => {
@@ -246,7 +270,11 @@ export function analyzeFile(filePath, content, projectRoot) {
   const pendingNavCalls = [];
 
   function visit(node) {
-    if (ts.isImportDeclaration(node) && node.importClause && ts.isStringLiteralLike(node.moduleSpecifier)) {
+    if (ts.isIdentifier(node)) {
+      recordNameRef(node.text, node.getStart(sourceFile));
+    } else if (ts.isElementAccessExpression(node) && node.argumentExpression && ts.isStringLiteralLike(node.argumentExpression)) {
+      recordNameRef(node.argumentExpression.text, node.argumentExpression.getStart(sourceFile));
+    } else if (ts.isImportDeclaration(node) && node.importClause && ts.isStringLiteralLike(node.moduleSpecifier)) {
       const names = collectNamedImports(node.importClause);
       recordImport(node, node.moduleSpecifier.text, !!node.importClause.isTypeOnly, false, names);
       for (const n of names) {
@@ -368,12 +396,78 @@ export function analyzeFile(filePath, content, projectRoot) {
           facts.overlayOpens.push({ target: toAttr.initializer.text, pos: node.getStart(sourceFile) });
         }
       }
+    } else if (ts.isInterfaceDeclaration(node) && node.name) {
+      const exported = hasExportModifier(ts, node);
+      const extendsNames = [];
+      for (const hc of node.heritageClauses ?? []) {
+        if (hc.token !== ts.SyntaxKind.ExtendsKeyword) continue;
+        for (const t of hc.types) {
+          if (ts.isIdentifier(t.expression)) extendsNames.push(t.expression.text);
+        }
+      }
+      const methods = [];
+      for (const m of node.members) {
+        if (ts.isMethodSignature(m) && m.name) {
+          methods.push({
+            name: m.name.getText(sourceFile),
+            line: sourceFile.getLineAndCharacterOfPosition(m.getStart(sourceFile)).line + 1,
+            signature: buildSignature(ts, m, sourceFile),
+            pos: m.getStart(sourceFile),
+            end: m.end,
+          });
+        }
+      }
+      facts.interfaces.push({
+        name: node.name.text,
+        line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+        exported,
+        extendsNames,
+        methods,
+        pos: node.getStart(sourceFile),
+        end: node.end,
+      });
     } else if (ts.isClassDeclaration(node) && node.name) {
       const exported = hasExportModifier(ts, node);
       if (exported) facts.hasClassExport = true;
-      if (node.members.some((m) => ts.isMethodDeclaration(m) && m.name?.getText(sourceFile) === 'getInstance')) {
-        facts.hasSingletonClass = true;
+      let extendsName = null;
+      const implementsNames = [];
+      for (const hc of node.heritageClauses ?? []) {
+        if (hc.token === ts.SyntaxKind.ExtendsKeyword) {
+          const t = hc.types[0];
+          if (t && ts.isIdentifier(t.expression)) extendsName = t.expression.text;
+        } else if (hc.token === ts.SyntaxKind.ImplementsKeyword) {
+          for (const t of hc.types) {
+            if (ts.isIdentifier(t.expression)) implementsNames.push(t.expression.text);
+          }
+        }
       }
+      const methods = [];
+      for (const m of node.members) {
+        if (!ts.isMethodDeclaration(m) || !m.name) continue;
+        methods.push({
+          name: m.name.getText(sourceFile),
+          line: sourceFile.getLineAndCharacterOfPosition(m.getStart(sourceFile)).line + 1,
+          isStatic: hasModifierKind(ts, m, ts.SyntaxKind.StaticKeyword),
+          isAsync: hasModifierKind(ts, m, ts.SyntaxKind.AsyncKeyword),
+          isOverride: hasModifierKind(ts, m, ts.SyntaxKind.OverrideKeyword),
+          signature: buildSignature(ts, m, sourceFile),
+          pos: m.getStart(sourceFile),
+          end: m.end,
+        });
+      }
+      const isSingleton = node.members.some((m) => ts.isMethodDeclaration(m) && m.name?.getText(sourceFile) === 'getInstance');
+      if (isSingleton) facts.hasSingletonClass = true;
+      facts.classes.push({
+        name: node.name.text,
+        line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+        exported,
+        isSingleton,
+        implementsNames,
+        extendsName,
+        methods,
+        pos: node.getStart(sourceFile),
+        end: node.end,
+      });
     } else if (ts.isExportAssignment(node)) {
       const expr = node.expression;
       const name = ts.isIdentifier(expr) ? expr.text : '<default-anonymous>';
@@ -416,6 +510,36 @@ export function analyzeFile(filePath, content, projectRoot) {
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
+
+  // 模块级函数：顶层函数声明 + 顶层 const/let 箭头函数/函数表达式（Method 实体的 module 归属来源）
+  for (const stmt of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+      facts.moduleFunctions.push({
+        name: stmt.name.text,
+        line: sourceFile.getLineAndCharacterOfPosition(stmt.getStart(sourceFile)).line + 1,
+        exported: hasExportModifier(ts, stmt) || hasDefaultModifier(ts, stmt),
+        isAsync: hasModifierKind(ts, stmt, ts.SyntaxKind.AsyncKeyword),
+        signature: buildSignature(ts, stmt, sourceFile),
+        pos: stmt.getStart(sourceFile),
+        end: stmt.end,
+      });
+    } else if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        if (!ts.isIdentifier(decl.name)) continue;
+        const init = decl.initializer;
+        if (!init || (!ts.isArrowFunction(init) && !ts.isFunctionExpression(init))) continue;
+        facts.moduleFunctions.push({
+          name: decl.name.text,
+          line: sourceFile.getLineAndCharacterOfPosition(stmt.getStart(sourceFile)).line + 1,
+          exported: hasExportModifier(ts, stmt),
+          isAsync: hasModifierKind(ts, init, ts.SyntaxKind.AsyncKeyword),
+          signature: buildSignature(ts, init, sourceFile),
+          pos: stmt.getStart(sourceFile),
+          end: stmt.end,
+        });
+      }
+    }
+  }
 
   // vue-router 导航调用归属：callee 名与更早出现的 useRouter 声明匹配才计入 overlayOpens
   for (const nav of pendingNavCalls) {

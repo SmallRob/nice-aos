@@ -1,6 +1,6 @@
 # nice-aos — 通用前端代码本体分析 CLI（React / Vue 3 / 油猴脚本）
 
-> 把任意 React、Vue 3 前端仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia Store/Service/路由/依赖 + import/render/导航关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
+> 把任意 React、Vue 3 前端仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia Store/Service/**接口/类/方法**/路由/依赖 + import/render/导航/**implements/extends/overrides** 关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
 > 参考 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 代码本体分析）的架构，针对前端生态重新建模：React（React 19 + TypeScript + Vite + Zustand + overlay 路由 / react-router）、Vue 3（SFC + vue-router + Pinia）与油猴脚本（UserScript 元数据 + GM API + 注入/请求审计）。
 > 语义本体引擎：对象按概念范畴与抽象层级（L3 架构 / L2 结构 / L1 单元 / L0 事实）组织；架构分层按内容信号推断（非目录名直译）；Module/Domain/Project 自动生成职责画像与自然语言总结。
 > 本体查看器（viewer）：`export --format html` 一键生成**自包含蓝图 HTML**（零依赖可离线打开，宽屏分档适配），含领域蓝图 / 业务数据图 / 业务逻辑流向 / **脚本蓝图（油猴函数调用图 + DOM 注入锚点 + 网络端点一图呈现）**五个视图；纯脚本仓库三视图自动按**函数意图分析**重建（意图功能域 / 存储枢纽 / 意图流转矩阵），分析不出业务结构时自动隐藏；`--format viewmodel` 输出聚合视图模型 JSON 供 agent 直接消费。
@@ -16,6 +16,8 @@
 | 不知道哪些文件是死代码 | 快照内置 orphanCandidates |
 | 循环依赖靠运气发现 | 快照内置 Tarjan SCC（`_meta.cycles`） |
 | 不知道 store 被谁用了 | `link usesStore --src store:useThemeStore` |
+| 接口方法有哪些实现类（实现关系记录在实现类里，正向查不到） | `link implementedBy --src "iface:src/types/storage.ts#IStorage"` |
+| 找某个方法的所有声明与实现 | `query Method --where "name~createinterface"`（一次命中签名+实现） |
 | 审计油猴脚本是否越权调 GM API | `query GmApiUsage --where "declared=false"` |
 | 不知道油猴脚本往页面哪里注入了 DOM | `link injectsInto --src us:demo.user.js` |
 | 说不清项目架构和功能划分 | `query Project` 看 summary/architecture（分层画像 + 功能域清单 + 健康度） |
@@ -84,24 +86,24 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 
 ### 概念分类体系（taxonomy）
 
-15 种对象类型按「概念范畴」（is-a 族）与「抽象层级」（L0-L3）双维组织，而非平铺罗列：
+18 种对象类型按「概念范畴」（is-a 族）与「抽象层级」（L0-L3）双维组织，而非平铺罗列：
 
 | 抽象层级 | 名称 | 说明 | 类型 |
 |---|---|---|---|
 | L3 | 架构层 | 产品级聚合：整体架构画像与功能域划分 | Project, Domain |
 | L2 | 结构层 | 代码组织结构：模块、文件、路由、脚本与运行环境 | Module, SourceFile, Route, UserScript, Dependency |
-| L1 | 单元层 | 可独立理解的代码单元（CodeUnit 概念族） | Component, Hook, Store, Service, ScriptFunction |
+| L1 | 单元层 | 可独立理解的代码单元（CodeUnit 概念族） | Component, Hook, Store, Service, Interface, Class, Method, ScriptFunction |
 | L0 | 事实层 | 审计事实（AuditFact 概念族）：从代码提取的行为证据 | GmApiUsage, InjectionPoint, NetworkEndpoint |
 
-概念范畴：**Container**（Project/Domain/Module/SourceFile，按结构聚合）、**CodeUnit**（Component/Hook/Store/Service/ScriptFunction，可独立理解的逻辑单元）、**EntryPoint**（Route，用户可触达的行为入口）、**Script**（UserScript，独立于宿主应用的脚本形态）、**Environment**（Dependency，外部环境要素）、**AuditFact**（GmApiUsage/InjectionPoint/NetworkEndpoint，安全审计原子事实）。
+概念范畴：**Container**（Project/Domain/Module/SourceFile，按结构聚合）、**CodeUnit**（Component/Hook/Store/Service/Interface/Class/Method/ScriptFunction，可独立理解的逻辑单元）、**EntryPoint**（Route，用户可触达的行为入口）、**Script**（UserScript，独立于宿主应用的脚本形态）、**Environment**（Dependency，外部环境要素）、**AuditFact**（GmApiUsage/InjectionPoint/NetworkEndpoint，安全审计原子事实）。
 
 聚合节点（Project/Domain/Module）自动生成**职责画像与自然语言总结**（summary/architecture/health），避免"只罗列事实、没有抽象"。
 
-### 对象（15 种）
+### 对象（18 种）
 
 | 类型 | ID 前缀 | 层级/范畴 | 关键属性 |
 |---|---|---|---|
-| Project | `proj:` | L3 Container | framework（expo/react-native/next/nuxt/vue/react/userscript）, frameworkLabel（组合标签，含 Capacitor/Electron/Vite 变体）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码/未声明依赖/高风险脚本/解析错误）, analysisErrors |
+| Project | `proj:` | L3 Container | framework（expo/react-native/next/nuxt/vue/react/userscript）, frameworkLabel（组合标签，含 Capacitor/Electron/Vite 变体）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, fileCount, tsxFileCount, vueFileCount, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码三级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
 | Domain | `dom:` | L3 Container | **name, sources**（route/module）, routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, **capability**（路由能力描述）, **summary**（职责画像） |
 | Module | `mod:` | L2 Container | path, **archLayer**（语义架构层）, **layerComposition**（子树层构成）, fileCount, **subtreeFileCount**, parentId, **unitCounts**, **routeCount**, **summary**（职责画像） |
 | SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames |
@@ -109,6 +111,9 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 | Hook | `hook:` | L1 CodeUnit | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属）, **archLayer**, **domainIds** |
 | Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, location（Zustand 与 Pinia 统一归属）, **archLayer**, **domainIds** |
 | Service | `svc:` | L1 CodeUnit | pattern（singleton/class/functions）, exportsCount, **archLayer**, **domainIds** |
+| Interface | `iface:` | L1 CodeUnit | exported, methodIds, extendsIds/extendsNames（接口继承，跨文件解析）, **deadCandidate/deadReason** |
+| Class | `class:` | L1 CodeUnit | exported, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入）, **deadCandidate/deadReason** |
+| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, exported, **deadCandidate/deadReason**（函数级死代码候选） |
 | ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **archLayer=script** |
 | Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue）, domain, **domainIds**, componentFileId, navigatesToIds |
 | UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **archLayer=script**, **domainIds** |
@@ -116,6 +121,8 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 | GmApiUsage | `gm:` | L0 AuditFact | name, category（network/storage/style/…）, callCount, declared（与 @grant 比对） |
 | InjectionPoint | `inject:` | L0 AuditFact | kind（mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom）, target, interpolated（动态插值 XSS 面） |
 | NetworkEndpoint | `net:` | L0 AuditFact | kind（gm-xhr/fetch/xhr/websocket/beacon）, domain, urls, methods, allowedByConnect（与 @connect 比对） |
+
+Method ID 约定：类/接口方法 `method:<file>#<Owner>#<name>`，模块函数 `method:<file>#<fnName>`；`query Method --where "name~xxx"` 一次命中接口签名、类实现与模块函数。
 
 ### 语义架构层（archLayer）
 
@@ -125,15 +132,18 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 
 功能域（Domain）与架构层**正交**：架构层是纵向技术切片，功能域是横向业务切片（由路由域段 + 业务命名目录聚合而成）。
 
-### 链接（15 种）
+### 链接（21 种）
 
 ```
-contains     Project → Domain/Module → SourceFile → Component/Hook/Store/Service/UserScript
+contains     Project → Domain/Module → SourceFile → Component/Hook/Store/Service/Interface/Class/Method/UserScript（类型实体也可从 iface:/class: 下钻其方法）
 imports / importedBy    文件级依赖（含 dep: 外部包）— 变更影响分析主链路
 renders / renderedBy    组件 JSX/template 渲染关系
 navigatesTo  Route → Route（React 的 Navigate/overlay 跳转、Vue 的 router.push/replace 等导航边）
 registers    Route ↔ Component（路由注册）
 usesStore / usesHook    Store/Hook 使用关系（src 传 store:/hook: 反查使用者）
+implements / implementedBy    Class ↔ Interface 实现关系（双向：正向查类实现了哪些接口；反向查接口被哪些类实现 — 解决"实现关系记录在实现类里、从接口正向查不到"的断层）
+extends / extendedBy    Interface/Class 继承关系（双向）
+overrides / overriddenBy    Method 方法覆盖关系（双向：类方法 → 所实现的接口/父类方法；接口方法 → 全部实现）
 usesGmApi    UserScript ↔ GmApiUsage（src 传 gm: 反查所属脚本）
 injectsInto  UserScript ↔ InjectionPoint（DOM 注入点；src 传 inject: 反查所属脚本）
 requestsTo   UserScript ↔ NetworkEndpoint（网络端点；src 传 net: 反查所属脚本）
@@ -161,6 +171,11 @@ query UserScript --where "riskLevel=high"           # 高风险脚本
 query GmApiUsage --where "declared=false"           # 未在 @grant 声明的 GM 调用（越权面）
 query InjectionPoint --where "interpolated=true"    # 动态插值 HTML 注入（XSS 面）
 query ScriptFunction --where "kind=class" --pretty  # 脚本内类（逻辑分布）
+query Method --where "name~createinterface"          # 按名找方法：一次命中接口签名/类实现/模块函数
+query Method --where "ownerKind=interface" --pretty  # 全部接口方法签名
+query Interface --where "exported=true"              # 导出接口清单
+query Class --where "isSingleton=true"               # 单例类
+query Method --where "deadCandidate=true"            # 函数级死代码候选（保守判定）
 ```
 
 `--where` 语法：逗号分隔多条件 AND；`k=v`（或 `k:v`）精确相等，`k~v` 模糊包含；值为数组时精确做成员包含、模糊做任一成员包含（如 `hooksUsed=useEffect`）。默认返回前 50 条，`--all` 全量、`--limit <n>` 限制。
@@ -182,6 +197,12 @@ link calls --src "fn:demo.user.js#renderOverview"              # 函数调用了
 link calledBy --src "fn:demo.user.js#renderOverview"           # 谁调用了该函数（反向影响面）
 link belongsTo --src "dom:health"                              # 功能域 → 全部成员
 link belongsTo --src "comp:HealthStatsPage"                    # 反查组件所属功能域
+link implements --src "class:src/impl/localStorage.ts#LocalStorage"    # 类实现了哪些接口
+link implementedBy --src "iface:src/types/storage.ts#IStorage"         # 接口被哪些类实现（反向）
+link extends --src "class:src/core/repo.ts#UserRepo"           # 类继承的父类
+link overriddenBy --src "method:src/types/storage.ts#IStorage#get"    # 接口方法的全部实现
+link overrides --src "method:src/impl/localStorage.ts#LocalStorage#get"  # 实现方法覆盖的契约方法
+link contains --src "iface:src/types/storage.ts#IStorage"      # 接口下钻其方法签名
 ```
 
 ### action — 受控动作
@@ -201,7 +222,7 @@ export --format html --output blueprint.html    # 自包含蓝图 HTML（本体�
 export --format viewmodel                       # 视图模型 JSON（聚合数据，供 agent 消费）
 ```
 
-Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）三大语义章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。
+Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）、**接口与实现**（接口清单 + implementedBy 实现类 + 方法覆盖矩阵）、**类与方法**（类清单含 implements/extends/单例 + 契约热点 Top 30）与**死代码候选三级**（文件级 + 类型级 + 函数级）等章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。
 
 ### 本体查看器（blueprint HTML / viewmodel）
 
@@ -227,8 +248,9 @@ Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**�
 - **Hook/Composable 识别**：导出的 `useXxx` 符号（含 React Hook 与 Vue composable），含 JSDoc 描述提取
 - **Store 识别**：Zustand `create(...)`（含 `create<T>()(...)`、`persist(...)` 包装）与 Pinia `defineStore(...)`（setup 写法 + options 写法，含 `persist` 插件第三参数），统一提取 state/action 键与 storageKey
 - **Service 识别**：`/services/` 目录或名称含 Service/Engine/Manager/Repository/Factory 后缀
+- **类型实体（Interface/Class/Method）**：接口/类/方法/模块函数全量提取；跨文件 `implements`/`extends` 解析（本文件声明优先，其次具名导入——含 `import type` 与 `IStorage as StorageContract` 别名导入，解析失败留存原名不报错）；方法级 `overrides`/`overriddenBy` 双向链接（实现类方法与接口/父类方法按名匹配）；`query Method --where "name~xxx"` 一次命中声明与实现
+- **死代码候选（三级）**：文件级（零引用 + 非入口 + 非测试 + 非路由组件，`_meta.orphanCandidates`）+ 类型级/函数级（保守引用计数：非导出实体本文件零引用、导出实体全仓库零导入且本文件零引用 → `deadCandidate/deadReason`；接口方法为契约声明永不判死；排除声明处与自递归，宁可漏报不误报）
 - **依赖治理**：package.json 声明 vs 实际导入交叉比对，产出 `source=undeclared`（导入未声明）与 `used=false`（声明未使用）
-- **死代码候选**：零引用 + 非入口 + 非测试 + 非路由组件文件（`_meta.orphanCandidates`）
 - **循环依赖**：Tarjan SCC 算法（`_meta.cycles`）
 - **框架检测**：package.json 依赖优先（expo / react-native / next / nuxt / vue / react，元框架优先于基座框架）；扫描子目录（如 `src/`）时自动向上定位宿主项目根（上限 4 层、不越过用户 home），用宿主依赖识别框架并回退项目名，宿主配置文件（capacitor.config / app.json(expo 键) / vite.config / electron 等）作旁证；跨端/构建变体（Capacitor/Electron/Vite/Webpack）组合为 `frameworkLabel`（如 "React 单页应用 + Capacitor 跨端（Vite 构建）"）；无任何清单时按代码信号兜底（.vue → vue，tsx/jsx → react）；存在油猴脚本且无前端框架 → `framework=userscript`
 
@@ -272,11 +294,13 @@ Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**�
 ## 已知限制
 
 - 基于 TypeScript Compiler API 的**语法级**解析（不跑类型检查）；动态拼接的 import 与动态 `navigate(path)` 变量导航无法解析
+- 类型实体提取覆盖 `.ts/.tsx/.js/.jsx` 与 `.d.ts`；**Vue SFC `<script>` 内的 interface/class 本期不提取**（Vue 侧已有 Hook/Composable/Store 实体体系）；TS 方法级调用图（calls/calledBy）未扩展到 Method（调用图仅油猴 ScriptFunction 有）
+- 跨文件 implements/extends 按具名导入静态解析；命名空间导入、`export *` 再导出与动态 `import()` 的目标文件整体豁免死代码判定（无法按名追踪，保守不误报）；仅被测试文件使用的导出符号会被判为死代码候选（测试文件不入扫描范围，删除前请人工确认）
 - `renders` 归属文件主组件（default export 优先），同文件多组件不细分
 - 函数透传式导航（`onOpenOverlay: app.setActiveOverlay`）不产生跳转边
 - Vue 适配覆盖 Vue 3 SFC（`<script setup>`）、Pinia、vue-router、unplugin-vue-router 文件路由与 unplugin-auto-import 隐式导入；Options API 与 Nuxt 专属约定仅部分支持
 - 油猴脚本：调用图为脚本内静态调用（变量间接调用/回调透传不解析）；动态拼接的请求 URL 域名记为 `(dynamic)`，不做 @connect 比对；宿主框架仅按代码内 `__vue__`/`__reactContainer$` 等标记推断，未触碰宿主内部的脚本记为 unknown
-- 快照为全量重建（无增量）；多进程并发写快照无保护
+- 快照为全量重建（无增量）；多进程并发写快照无保护；方法级实体化后大仓库（1000+ 文件）快照体积约增至 2-3 倍（万级 Method 实体），全量 JSON 载入仍在数百毫秒级
 - `--where` 为全表扫描：`=`/`:` 精确相等、`~` 模糊包含（不支持数值比较，数值过滤请配合 jq）
 
 ## 开发

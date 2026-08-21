@@ -9,12 +9,12 @@ export const ONTOLOGY_META = {
   abstractionLevels: [
     { level: 'L3', name: '架构层', description: '产品级聚合：整体架构画像与功能域划分', types: ['Project', 'Domain'] },
     { level: 'L2', name: '结构层', description: '代码组织结构：模块、文件、路由、脚本与运行环境', types: ['Module', 'SourceFile', 'Route', 'UserScript', 'Dependency'] },
-    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'ScriptFunction'] },
+    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Method', 'ScriptFunction'] },
     { level: 'L0', name: '事实层', description: '审计事实（AuditFact 概念族）：从代码提取的行为证据', types: ['GmApiUsage', 'InjectionPoint', 'NetworkEndpoint'] },
   ],
   categories: [
     { category: 'Container', label: '容器', description: '按结构聚合代码单元的节点', types: ['Project', 'Domain', 'Module', 'SourceFile'] },
-    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'ScriptFunction'] },
+    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Method', 'ScriptFunction'] },
     { category: 'EntryPoint', label: '行为入口', description: '用户可触达的行为入口', types: ['Route'] },
     { category: 'Script', label: '油猴脚本', description: '独立于宿主应用的脚本形态（自带子对象体系）', types: ['UserScript'] },
     { category: 'Environment', label: '运行环境', description: '外部环境要素', types: ['Dependency'] },
@@ -31,6 +31,9 @@ export const OBJECT_TYPES = [
   { type: 'Hook', prefix: 'hook:', category: 'CodeUnit', level: 'L1', description: '自定义 Hook / Composable' },
   { type: 'Store', prefix: 'store:', category: 'CodeUnit', level: 'L1', description: '状态 Store（Zustand / Pinia）' },
   { type: 'Service', prefix: 'svc:', category: 'CodeUnit', level: 'L1', description: '服务/引擎模块' },
+  { type: 'Interface', prefix: 'iface:', category: 'CodeUnit', level: 'L1', description: 'TS 接口（含方法签名与 extends 继承）' },
+  { type: 'Class', prefix: 'class:', category: 'CodeUnit', level: 'L1', description: 'TS 类（含 implements/extends 继承关系与单例标记）' },
+  { type: 'Method', prefix: 'method:', category: 'CodeUnit', level: 'L1', description: '方法/函数（类方法、接口方法签名、模块函数；含 overrides 实现关系与 deadCandidate）' },
   { type: 'ScriptFunction', prefix: 'fn:', category: 'CodeUnit', level: 'L1', description: '脚本函数/类/对象（含业务角色 roles：render/data/state/event/ui/logic）' },
   { type: 'Route', prefix: 'route:', category: 'EntryPoint', level: 'L2', description: '路由条目（Overlay / react-router / vue-router）' },
   { type: 'UserScript', prefix: 'us:', category: 'Script', level: 'L2', description: '油猴脚本（Tampermonkey UserScript）' },
@@ -42,6 +45,7 @@ export const OBJECT_TYPES = [
 
 export const LINK_TYPES = [
   'contains', 'imports', 'importedBy', 'renders', 'renderedBy', 'navigatesTo', 'registers', 'usesStore', 'usesHook',
+  'implements', 'implementedBy', 'extends', 'extendedBy', 'overrides', 'overriddenBy',
   'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy', 'belongsTo',
 ];
 
@@ -76,6 +80,9 @@ export function createBlueprint(dataMap) {
   const injectionPoints = dataMap.InjectionPoint ?? [];
   const networkEndpoints = dataMap.NetworkEndpoint ?? [];
   const scriptFunctions = dataMap.ScriptFunction ?? [];
+  const interfaces = dataMap.Interface ?? [];
+  const classes = dataMap.Class ?? [];
+  const methods = dataMap.Method ?? [];
 
   const linkImpls = {
     contains(srcId) {
@@ -98,8 +105,14 @@ export function createBlueprint(dataMap) {
         out.push(...(dataMap.Hook ?? []).filter((h) => h.filePath === filePath));
         out.push(...(dataMap.Store ?? []).filter((s) => s.filePath === filePath));
         out.push(...(dataMap.Service ?? []).filter((s) => s.filePath === filePath));
+        out.push(...interfaces.filter((i) => i.filePath === filePath));
+        out.push(...classes.filter((c) => c.filePath === filePath));
+        out.push(...methods.filter((m) => m.filePath === filePath));
         out.push(...userScripts.filter((u) => u.filePath === filePath));
         return out;
+      }
+      if (srcId.startsWith('iface:') || srcId.startsWith('class:')) {
+        return objectsForIds(index, getObject(index, srcId)?.methodIds ?? []);
       }
       if (srcId.startsWith('us:')) {
         // 油猴脚本的子对象：函数 / GM API 使用 / 注入点 / 网络端点
@@ -188,6 +201,52 @@ export function createBlueprint(dataMap) {
         });
       }
       return [];
+    },
+
+    // ---- 类型体系链接：实现 / 继承 / 方法覆盖（双向）----
+    implements(srcId) {
+      if (!srcId.startsWith('class:')) return [];
+      const obj = getObject(index, srcId);
+      if (!obj) return [];
+      return objectsForIds(index, obj.implementsIds ?? []);
+    },
+
+    implementedBy(srcId) {
+      if (!srcId.startsWith('iface:')) return [];
+      return classes.filter((c) => (c.implementsIds ?? []).includes(srcId));
+    },
+
+    extends(srcId) {
+      const obj = getObject(index, srcId);
+      if (!obj) return [];
+      if (srcId.startsWith('class:')) {
+        return obj.extendsId ? objectsForIds(index, [obj.extendsId]) : [];
+      }
+      if (srcId.startsWith('iface:')) {
+        return objectsForIds(index, obj.extendsIds ?? []);
+      }
+      return [];
+    },
+
+    extendedBy(srcId) {
+      const out = [];
+      for (const c of classes) if (c.extendsId === srcId) out.push(c);
+      for (const i of interfaces) if ((i.extendsIds ?? []).includes(srcId)) out.push(i);
+      return out;
+    },
+
+    // 方法覆盖：method:(类方法) → 它实现/覆盖的接口方法或父类方法
+    overrides(srcId) {
+      if (!srcId.startsWith('method:')) return [];
+      const obj = getObject(index, srcId);
+      return obj?.overridesId ? objectsForIds(index, [obj.overridesId]) : [];
+    },
+
+    // 被实现/被覆盖（反向）：method:(接口方法/父类方法) → 全部实现方法
+    overriddenBy(srcId) {
+      if (!srcId.startsWith('method:')) return [];
+      const obj = getObject(index, srcId);
+      return objectsForIds(index, obj?.overriddenByIds ?? []);
     },
 
     // ---- 油猴脚本链接（双向：us: 正向；gm:/inject:/net:/fn: 反查所属脚本）----
