@@ -60,6 +60,9 @@ nice-aos export --format html --output blueprint.html
 
 # 6. 单文件分析（不建快照，stdout 直接输出本体 JSON，可与 jq/findstr 管道组合）
 nice-aos action analyzeFile --params '{"file":"Steam-License-Classifier.js"}' | jq '.ScriptFunction[] | select(.deadCandidate)'
+
+# 7. 升级到最新版（全局安装时一键升级；--check 仅检测）
+nice-aos update
 ```
 
 > **快照目录解析优先级**：`--snapshot-dir` 参数 > `NICE_AOS_SNAPSHOT_DIR` 环境变量 > `cwd/.nice-aos/data` > `~/.nice-aos/data`。
@@ -233,6 +236,17 @@ export --format viewmodel                       # 视图模型 JSON（聚合数�
 ```
 
 Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）、**接口与实现**（接口清单 + implementedBy 实现类 + 方法覆盖矩阵）、**类与方法**（类清单含 implements/extends/单例 + 契约热点 Top 30）与**死代码候选四级**（文件级 + 导出级 + 类型级 + 函数级）等章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。
+
+### update — 版本检测与一键升级
+
+```bash
+nice-aos update --check   # 仅检测：输出 JSON（current / latest / upToDate / installMode）
+nice-aos update           # 一键升级：全局安装时自动 npm install -g nice-aos@latest
+```
+
+安装模式自动判定（`installMode` 字段）：`global`（npm 全局安装，可直接一键升级；含 `npm install -g <本地目录>` 的符号链接形式，升级会替换为 registry 版本）/ `npx`（缓存运行，指引 `npx nice-aos@latest` 拉新）/ `local`（项目依赖，指引宿主项目内升级）/ `repo`（仓库源码运行，跟随 git）。检测用两个互补信号：调用入口路径（保留符号链接，`process.argv[1]`）+ 模块真实路径布局（`lib/node_modules/nice-aos` 强信号，覆盖 homebrew/nvm 多 prefix 环境）。
+
+**Agent 前置校验约定**（三个 skill 的前置条件均要求）：npm 包方式（全局/npx）首次调用前先 `update --check` 确认最新版——分析能力随版本演进，旧版会缺失新对象类型/字段/命令；`update` 命令不存在说明版本 < 0.10.0，先执行一次 `npm install -g nice-aos@latest`；网络不可达时返回 `ok:false`（带 current 版本号），跳过升级不阻塞主流程。仓库内源码方式版本跟随 git，无需检测。
 
 ### 本体查看器（blueprint HTML / viewmodel）
 

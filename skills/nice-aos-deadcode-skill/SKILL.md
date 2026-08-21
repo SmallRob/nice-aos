@@ -35,7 +35,15 @@ description: |
 ## 前置条件
 
 - Node.js 18+
-- CLI 获取（二选一）：仓库内源码 `node <REPO_ROOT>/nice-aos/src/cli/index.js`（`nice-aos/node_modules` 缺失时先 `cd nice-aos && npm install`）；或 npm 包 `nice-aos` / `npx nice-aos`
+- CLI 获取（二选一）：仓库内源码 `node <REPO_ROOT>/nice-aos/src/cli/index.js`（`nice-aos/node_modules` 缺失时先 `cd nice-aos && npm install`，版本跟随 git 无需 npm 版本检测）；或 npm 包 `nice-aos` / `npx nice-aos`
+- **版本检测（npm 包方式必须）**：agent 首次调用前先执行 `nice-aos update --check` 确认最新版（死代码四级模型随版本演进，旧版判定规则与豁免不完整）：
+  ```bash
+  nice-aos update --check   # 输出 JSON：current / latest / upToDate / installMode
+  nice-aos update           # upToDate=false 且 installMode=global 时一键升级
+  ```
+  - `installMode=npx/local/repo` 时无法自动升级，按输出中的 `upgradeCommand` 指引处理
+  - `update` 命令不存在 → 版本过旧（< 0.10.0），先执行一次 `npm install -g nice-aos@latest`
+  - 网络不可达时 `--check` 返回 `ok:false`（带 current 版本号），跳过升级继续用当前版本，不要阻塞主流程
 - 仓库模式需快照：`.nice-aos/data/snapshot.json`（不存在则 `action refreshRepo`，仓库根目录执行无需 `--snapshot-dir`）；**单文件模式无需快照**
 
 ## 四级死代码模型

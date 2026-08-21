@@ -8,6 +8,7 @@ import { queryCommand } from './commands/query.js';
 import { linkCommand } from './commands/link.js';
 import { actionCommand } from './commands/action.js';
 import { exportCommand } from './commands/export.js';
+import { updateCommand } from './commands/update.js';
 
 // 版本号取自 package.json，避免与发布版本脱节
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -28,6 +29,7 @@ program.addCommand(queryCommand);
 program.addCommand(linkCommand);
 program.addCommand(actionCommand);
 program.addCommand(exportCommand);
+program.addCommand(updateCommand);
 
 program.parseAsync().catch((err) => {
   if (err.code === 'NO_SNAPSHOT') {

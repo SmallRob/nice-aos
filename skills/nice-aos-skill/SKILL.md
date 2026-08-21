@@ -84,8 +84,16 @@ description: |
 
 - Node.js 18+
 - CLI 获取方式（二选一）：
-  - **仓库内源码**（默认）：`nice-aos/` 子项目，无需全局安装；`nice-aos/node_modules` 需已安装（若缺失，执行 `cd nice-aos && npm install`）
+  - **仓库内源码**（默认）：`nice-aos/` 子项目，无需全局安装；`nice-aos/node_modules` 需已安装（若缺失，执行 `cd nice-aos && npm install`）；版本跟随 git，无需 npm 版本检测
   - **npm 包安装**：`npm install -g nice-aos`（全局安装）或 `npx nice-aos`（按需拉取，包已发布至 npm.org，详见 [npm 页面](https://www.npmjs.com/package/nice-aos)）
+- **版本检测（npm 包方式必须）**：agent 首次调用前先执行 `nice-aos update --check` 确认使用最新版（分析能力随版本演进，旧版会缺失新对象类型/字段/命令）：
+  ```bash
+  nice-aos update --check   # 输出 JSON：current / latest / upToDate / installMode
+  nice-aos update           # upToDate=false 且 installMode=global 时一键升级（npm install -g nice-aos@latest）
+  ```
+  - `installMode=npx/local/repo` 时无法自动升级，按输出中的 `upgradeCommand` 指引处理（npx 用 `npx nice-aos@latest ...` 拉新；repo 源码跟随 git）
+  - `update` 命令不存在 → 版本过旧（< 0.10.0），先执行一次 `npm install -g nice-aos@latest`，此后即可用 `nice-aos update` 自更新
+  - 网络不可达时 `--check` 返回 `ok:false`（带 current 版本号），跳过升级继续用当前版本，不要阻塞主流程
 
 ## CLI 调用方式
 
@@ -384,6 +392,7 @@ link implements --src "class:src/impl/localStorage.ts#LocalStorage"  # 实现了
 | 场景 | 行为 |
 |------|------|
 | 首次执行 nice-aos 命令 | 检查 `nice-aos/node_modules` 存在，缺失则 `cd nice-aos && npm install` |
+| npm 包方式运行（全局/npx） | 先 `nice-aos update --check`；`upToDate=false` 且 `installMode=global` 时执行 `nice-aos update` 一键升级；命令不存在则先 `npm install -g nice-aos@latest`（< 0.10.0 旧版） |
 | 查询返回"未找到本体快照" | 提示后直接执行 `action refreshRepo`（React/Vue 项目约 4 秒，无需用户确认；大油猴仓库耗时见下条） |
 | 用户报"查询结果不对/过期" | 代码可能已变更 → 重新 refreshRepo |
 | 回答结构类问题 | 优先用 nice-aos 查询，而不是 grep 1700+ 文件 |

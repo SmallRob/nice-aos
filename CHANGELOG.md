@@ -2,6 +2,20 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.10.0] - 2026-08-21
+
+### 新增
+
+- **`update` 命令（版本检测与一键升级）**：`nice-aos update --check` 仅检测（输出 JSON：current / latest / upToDate / installMode / upgradeCommand，供 agent 与 CI 前置校验）；`nice-aos update` 一键升级——npm 全局安装时自动执行 `npm install -g nice-aos@latest`，升级后读回磁盘版本复核
+- **安装模式自动判定（`installMode`）**：`global`（npm 全局安装，可一键升级；`npm install -g <本地目录>` 的符号链接形式同样识别，升级时替换为 registry 版本并在消息中说明）/ `npx`（缓存运行 → 指引 `npx nice-aos@latest` 拉新）/ `local`（项目依赖 → 指引宿主项目内升级，不改写 package.json）/ `repo`（仓库源码运行 → 跟随 git）。检测采用双信号互补：调用入口路径（`process.argv[1]`，保留符号链接——覆盖 `npm link` 与本地目录全局安装）+ 模块真实路径布局（`lib/node_modules/nice-aos` 强信号，覆盖 homebrew / nvm 多 prefix 环境，PATH 中 npm prefix 与实际安装 prefix 不一致时仍可正确判定）
+- **Skills 版本检测要求**：三个 skill（nice-aos / nice-aos-userscript / nice-aos-deadcode）前置条件统一增加"npm 包方式必须先 `update --check` 确认最新版"约定——`upToDate=false` 且 global 时执行 `nice-aos update`；`update` 命令不存在说明版本 < 0.10.0，先 `npm install -g nice-aos@latest` 一次性升级；网络不可达返回 `ok:false` 时跳过升级不阻塞主流程；仓库内源码方式版本跟随 git 无需检测。核心 skill 的 Agent 行为规范表同步增加版本校验行
+
+### 验证
+
+- 新增 `test/update.test.mjs`（2 个用例）：compareVersions 三段语义版本比较（含 0.9.0 < 0.10.0 非字符串比较）、`update --check` 输出 JSON 契约（离线时容忍 `ok:false` 形状）
+- 真实环境回归：仓库源码模式（repo）、npm 全局符号链接安装（global + linkedInstall）、多 prefix 全局布局（`lib/node_modules` 布局模拟 homebrew）、一键升级端到端（0.8.0 → 0.9.0，符号链接替换为 registry 版本且磁盘版本复核一致）
+- 总计 98 个测试全部通过
+
 ## [0.9.0] - 2026-08-21
 
 ### 新增
