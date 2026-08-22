@@ -1,3 +1,6 @@
 .DS_Store
 node_modules
 .nice-aos/
+.npmrc
+.trae/
+*-db-overview.html

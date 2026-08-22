@@ -1,4 +1,4 @@
-# nice-aos — 通用前端代码本体分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本）
+# nice-aos — 通用前端代码本体分析与数据库脚本分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本 / MySQL 迁移脚本）
 
 > 把任意 React、Vue 2 / Vue 3、Flutter（Dart）前端仓库、Go（CLI / agent 代理 / Gin 后端）仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia/Vuex/Riverpod Store/Service/**接口/类/方法**/路由/依赖 + import/render/**props 传递链**/导航/**implements/extends/renders/overrides/方法调用链** 关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图；Go 项目额外产出 **CLI 命令树 / HTTP 路由 / 前后端调用映射**），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
 > 参考 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 代码本体分析）的架构，针对前端生态重新建模：React（React 19 + TypeScript + Vite + Zustand + overlay 路由 / react-router）、Vue 2（Options API + Vuex + element-ui，RuoYi 类中后台）/ Vue 3（SFC + vue-router + Pinia）、Flutter（Dart Widget + GoRouter + Riverpod，轻量语法级解析）、Go（cobra CLI 命令树 + Gin/标准库 HTTP 路由 + 包级调用链 + 前后端融合仓库映射，轻量语法级解析）与油猴脚本（UserScript 元数据 + GM API + 注入/请求审计）。
@@ -102,6 +102,33 @@ nice-aos query GmApiUsage --where "declared=false"                 # 越权 GM �
 nice-aos query InjectionPoint --where "interpolated=true"          # 动态插值 XSS 面
 nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewer-2.10.0.user.js#renderOverview"
 ```
+
+### MySQL 数据库迁移脚本分析
+
+支持 Flyway 风格的 MySQL 迁移脚本目录（`.sql` 文件）分析，产出独立的数据库模型和数据蓝图：
+
+```bash
+# 1. 扫描迁移脚本目录（产出 db-snapshot.json，与代码快照分离）
+nice-aos db scan --dir /path/to/migrations
+
+# 2. 查询数据库结构
+nice-aos db query tables                              # 所有表
+nice-aos db query tables --where "domain=auth"        # 按领域过滤
+nice-aos db query tables --where "patterns~soft_delete"  # 按模式过滤
+nice-aos db query foreignKeys                         # 外键关系
+nice-aos db query migrations --where "version~V2.1"  # 迁移历史
+nice-aos db query domains                             # 领域分组
+
+# 3. 生成数据蓝图 HTML（自包含，含 SVG ER 关系图，5 Tab）
+nice-aos db export --format html --output db-overview.html
+
+# 4. 增量扫描（仅处理新增/修改的迁移文件）
+nice-aos db scan --dir /path/to/migrations --incremental
+```
+
+数据库模型对象：表（Table）/列（Column）/外键（ForeignKey）/索引（Index）/迁移（Migration）/领域（DbDomain）/视图（View）/触发器（Trigger）/存储过程（Procedure），自动检测模式特征（软删除/审计字段/多租户/自引用/UUID主键）和领域分组。
+
+数据蓝图 HTML 内嵌 `<script id="db-viewer-data">` JSON 数据，蓝图 AI 助手（Tampermonkey 脚本）自动检测并切换至数据库分析模式。
 
 ## 本体模型
 
