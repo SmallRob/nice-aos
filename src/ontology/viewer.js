@@ -197,6 +197,7 @@ export function buildViewerModel(dataMap) {
       id: s.id,
       name: s.name,
       filePath: s.filePath,
+      providerType: s.providerType ?? null,
       domainIds: (s.domainIds ?? []).map((did) => domainById.get(did)?.name ?? did),
       stateKeyCount: s.stateKeyCount ?? (s.stateKeys ?? []).length,
       stateKeys: (s.stateKeys ?? []).slice(0, 20),
@@ -569,7 +570,7 @@ export function buildViewerModel(dataMap) {
     // Dart 方法 → Widget 构造渲染链目标（compCallIds 指向 Component 实体）
     const compById = new Map((dataMap.Component ?? []).map((c) => [c.id, c.name]));
 
-    // 已解析关系边：implements（类→接口）/ extends（子→父），目标必须在本仓库实体内
+    // 已解析关系边：implements（类→接口）/ extends（子→父）/ renders（Vue 组件组合），目标必须在本仓库实体内
     const edges = [];
     for (const c of classEntities) {
       for (const tid of c.implementsIds ?? []) {
@@ -577,6 +578,9 @@ export function buildViewerModel(dataMap) {
       }
       if (c.extendsId && entityById.has(c.extendsId) && c.extendsId !== c.id) {
         edges.push({ from: c.id, to: c.extendsId, kind: 'extends' });
+      }
+      for (const tid of c.rendersIds ?? []) {
+        if (entityById.has(tid) && tid !== c.id) edges.push({ from: c.id, to: tid, kind: 'renders' });
       }
     }
     for (const i of ifaceEntities) {
@@ -594,8 +598,8 @@ export function buildViewerModel(dataMap) {
     const methodCountOf = (e) => (e.methodIds ?? []).length;
     const langOf = (e) => e.language ?? 'ts';
     const kindOf = (e) => (e.id.startsWith('iface:') ? 'interface' : (e.kind ?? 'class'));
-    const KIND_LABEL = { class: '类', struct: '结构体', enum: '枚举', interface: '接口', trait: 'Trait' };
-    const LANG_LABEL = { ts: 'TS/JS', vue: 'Vue', rust: 'Rust', dart: 'Dart' };
+    const KIND_LABEL = { class: '类', struct: '结构体', enum: '枚举', interface: '接口', trait: 'Trait', component: '组件' };
+    const LANG_LABEL = { ts: 'TS/JS', vue: 'Vue', rust: 'Rust', dart: 'Dart', go: 'Go' };
 
     // 图节点携带成员明细（字段/变体/方法截断）；清单行仅携带计数
     const toNode = (e) => {
@@ -711,6 +715,7 @@ export function buildViewerModel(dataMap) {
       edgeCount: edges.length,
       implementsCount: edges.filter((e) => e.kind === 'implements').length,
       extendsCount: edges.filter((e) => e.kind === 'extends').length,
+      rendersCount: edges.filter((e) => e.kind === 'renders').length,
       crossLanguageEdges,
       relatedEntityCount: related.length,
       deadCandidateCount: all.filter((e) => e.deadCandidate).length,
@@ -746,6 +751,13 @@ export function buildViewerModel(dataMap) {
           isDynamic: r.isDynamic ?? null,
           isClient: r.isClient ?? null,
           apiMethods: r.apiMethods ?? null,
+          middlewares: (r.middlewares ?? []).slice(0, 8),
+          frontendCalls: (r.frontendCalls ?? []).slice(0, 12).map((c) => ({
+            filePath: c.filePath, line: c.line ?? null, method: c.method ?? null,
+          })),
+          frontendCallCount: (r.frontendCalls ?? []).length,
+          flags: (r.specialFiles ?? []).slice(0, 10),
+          description: r.description ?? null,
           layoutCount: (r.layoutFileIds ?? []).length,
           specialCount: (r.specialFiles ?? []).length,
           factoryPropsCount: (r.factoryProps ?? []).length,
@@ -777,7 +789,7 @@ export function buildViewerModel(dataMap) {
     const orphanCount = items.filter((it) => !inDeg.get(it.id) && !outDeg.get(it.id)).length;
 
     // 类型分布（固定顺序，仅保留出现的类型）
-    const TYPE_ORDER = ['overlay', 'react', 'vue', 'flutter', 'next', 'next-api'];
+    const TYPE_ORDER = ['overlay', 'react', 'vue', 'flutter', 'next', 'next-api', 'go', 'go-cli'];
     const byType = TYPE_ORDER
       .filter((k) => items.some((it) => it.routeType === k))
       .map((k) => ({ key: k, count: items.filter((it) => it.routeType === k).length }));
@@ -797,9 +809,12 @@ export function buildViewerModel(dataMap) {
 
     // 路径层级树：'/' 为根，逐段嵌套（每节点独立子段索引，不同分支同名段不合并）；
     // 中间段节点 routes 为空数组；静态段在前动态段在后
+    // go-cli 命令链（如 `smartide new instance`）按空格分段，呈现命令树
     const root = { seg: '/', full: '/', routes: [], children: [] };
     for (const it of items) {
-      const segs = it.path === '/' ? [] : it.path.replace(/^\//, '').split('/');
+      const segs = it.path === '/' ? []
+        : it.routeType === 'go-cli' ? it.path.split(/\s+/).filter(Boolean)
+        : it.path.replace(/^\//, '').split('/');
       let node = root;
       for (const seg of segs) {
         if (!node._idx) node._idx = new Map();
@@ -837,6 +852,10 @@ export function buildViewerModel(dataMap) {
       orphanCount,
       dynamicCount: items.filter((it) => it.isDynamic).length,
       apiRouteCount: items.filter((it) => it.routeType === 'next-api').length,
+      goApiRouteCount: items.filter((it) => it.routeType === 'go').length,
+      goCliRouteCount: items.filter((it) => it.routeType === 'go-cli').length,
+      frontendCallTotal: items.reduce((a, it) => a + it.frontendCallCount, 0),
+      unmatchedFrontendCalls: (meta.unmatchedFrontendCalls ?? []).slice(0, 30),
       byType,
       domainGroups,
       tree: root,
@@ -968,7 +987,7 @@ function toComponentItem(c) {
   return { id: c.id, name: c.name, kind: c.kind, filePath: c.filePath, lineCount: c.lineCount ?? null, description: c.description ?? null };
 }
 function toStoreItem(s) {
-  return { id: s.id, name: s.name, filePath: s.filePath, stateKeyCount: s.stateKeyCount ?? (s.stateKeys ?? []).length, hasPersist: !!s.hasPersist };
+  return { id: s.id, name: s.name, filePath: s.filePath, providerType: s.providerType ?? null, stateKeyCount: s.stateKeyCount ?? (s.stateKeys ?? []).length, hasPersist: !!s.hasPersist };
 }
 function toHookItem(h) {
   return { id: h.id, name: h.name, filePath: h.filePath, lineCount: h.lineCount ?? null, description: h.description ?? null };
@@ -996,7 +1015,7 @@ export function renderViewerHtml(model) {
   --bg: #0d1117; --panel: #161b22; --panel2: #1c2128; --border: #30363d;
   --fg: #e6edf3; --fg-dim: #8b949e; --fg-faint: #6e7681;
   --blue: #58a6ff; --green: #3fb950; --amber: #d29922; --purple: #bc8cff;
-  --red: #f85149; --cyan: #39c5cf; --teal: #00b4ab;
+  --red: #f85149; --cyan: #39c5cf; --teal: #00b4ab; --go: #00add8;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 :root { --content-w: 1400px; }
@@ -1048,6 +1067,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bar.cyan { background: var(--cyan); }
 .bar.red { background: var(--red); }
 .bar.teal { background: var(--teal); }
+.bar.go { background: var(--go); }
 .layer-row { margin: 6px 0; }
 .layer-row .lr-main { display: flex; align-items: center; gap: 10px; }
 .layer-row .lbl { width: 90px; color: var(--fg-dim); font-size: 12px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1112,6 +1132,7 @@ svg.uml text.umore { font-size: 10px; fill: var(--fg-faint); }
 svg.uml line.usep { stroke: var(--border); }
 svg .ge.impl { stroke: rgba(57,197,207,.65); stroke-dasharray: 6 4; }
 svg .ge.ext { stroke: rgba(188,140,255,.7); }
+svg .ge.rnd { stroke: rgba(63,185,80,.75); }
 .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .filter-bar select, .filter-bar input { background: var(--panel2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
 .filter-bar input { width: 200px; }
@@ -1341,7 +1362,7 @@ function renderDomainDetail() {
     + unitSection('组件（' + d.units.components.length + (d.units.components.length < d.counts.components ? ' / ' + d.counts.components : '') + '）', d.units.components,
       (c) => '<li><b>' + esc(c.name) + '</b> ' + chip(c.kind || 'common', 'purple') + ' <span class="path">' + esc(c.filePath) + '</span>' + (c.description ? '<br><span class="note">' + esc(c.description) + '</span>' : '') + '</li>')
     + unitSection('Store（' + d.units.stores.length + '）', d.units.stores,
-      (s) => '<li><b>' + esc(s.name) + '</b> ' + chip((s.stateKeyCount || 0) + ' state', 'green') + (s.hasPersist ? chip('persist', 'amber') : '') + ' <span class="path">' + esc(s.filePath) + '</span></li>')
+      (s) => '<li><b>' + esc(s.name) + '</b> ' + (s.providerType ? chip(s.providerType, 'blue') : '') + chip((s.stateKeyCount || 0) + ' state', 'green') + (s.hasPersist ? chip('persist', 'amber') : '') + ' <span class="path">' + esc(s.filePath) + '</span></li>')
     + unitSection('Hook（' + d.units.hooks.length + (d.units.hooks.length < d.counts.hooks ? ' / ' + d.counts.hooks : '') + '）', d.units.hooks,
       (h) => '<li><b>' + esc(h.name) + '</b> <span class="path">' + esc(h.filePath) + '</span>' + (h.description ? '<br><span class="note">' + esc(h.description) + '</span>' : '') + '</li>')
     + unitSection('Service（' + d.units.services.length + (d.units.services.length < d.counts.services ? ' / ' + d.counts.services : '') + '）', d.units.services,
@@ -1430,6 +1451,7 @@ function renderData() {
   const storeCards = d.stores.map((s) =>
     '<div class="card" style="cursor:default"><h4>' + esc(s.name) + '</h4>'
     + '<div class="chips" style="margin:6px 0">'
+    + (s.providerType ? chip(s.providerType, 'purple') : '')
     + (s.domainIds || []).map((dn) => chip(dn, 'green')).join('')
     + chip((s.stateKeyCount || 0) + ' state', 'blue')
     + chip((s.actionKeyCount || 0) + ' action', 'cyan')
@@ -1600,6 +1622,8 @@ const ROUTE_TYPE_META = {
   flutter: { label: 'Flutter', color: '#00b4ab' },
   next: { label: 'Next 页面', color: '#d29922' },
   'next-api': { label: 'Next API', color: '#f85149' },
+  go: { label: 'Go HTTP', color: '#00add8' },
+  'go-cli': { label: 'Go CLI', color: '#008b8b' },
 };
 const routeTypeMeta = (t) => ROUTE_TYPE_META[t] ?? { label: t || 'route', color: '#8b949e' };
 const routeTypeChip = (t) => {
@@ -1716,10 +1740,16 @@ function bindRouteGraphEvents(svgEl) {
         + (it.isDynamic ? chip('动态段', 'amber') : '')
         + (it.isClient === true ? chip('use client', 'cyan') : (it.isClient === false ? chip('server', '') : ''))
         + (it.apiMethods && it.apiMethods.length ? chip('API ' + it.apiMethods.join('/'), 'red') : '')
+        + (it.frontendCallCount ? chip('前端调用 ' + it.frontendCallCount, 'cyan') : '')
+        + (it.flags?.length ? chip('flags ' + it.flags.length, 'purple') : '')
         + (it.layoutCount ? chip(it.layoutCount + ' 层 layout', 'purple') : '')
         + (it.factoryPropsCount ? chip('工厂注入 ' + it.factoryPropsCount + ' props', 'green') : '')
-        + (it.componentRef ? '<span class="sub"> 组件 ' + esc(it.componentRef) + (it.componentFile ? '（' + esc(it.componentFile) + '）' : '') + '</span>' : '')
+        + (it.description ? '<div class="sub">' + esc(it.description) + '</div>' : '')
+        + (it.componentRef ? '<span class="sub"> ' + (it.routeType === 'go' ? 'handler' : (it.routeType === 'go-cli' ? '命令变量' : '组件')) + ' ' + esc(it.componentRef) + (it.componentFile ? '（' + esc(it.componentFile) + '）' : '') + '</span>' : '')
+        + (it.middlewares?.length ? '<div class="sub">中间件：' + esc(it.middlewares.join(' → ')) + '</div>' : '')
+        + (it.flags?.length ? '<div class="sub">flags：' + esc(it.flags.join('、')) + '</div>' : '')
         + (it.factoryProps?.length ? '<div class="sub">工厂 props：' + esc(it.factoryProps.join('、')) + '</div>' : '')
+        + (it.frontendCalls?.length ? '<div class="sub">前端调用：' + it.frontendCalls.map((c) => esc((c.method ? c.method + ' ' : '') + c.filePath + (c.line ? ':' + c.line : ''))).join('、') + (it.frontendCallCount > it.frontendCalls.length ? ' 等 ' + it.frontendCallCount + ' 处' : '') + '</div>' : '')
         + '<div class="sub">导航 → ' + (it.navToPaths.length ? it.navToPaths.map(esc).join('、') : '（无）') + '</div>';
     });
   });
@@ -1733,7 +1763,7 @@ function renderRouteMap() {
   const navBy = {};
   rm.navEdges.forEach((e) => { (navBy[e.to] = navBy[e.to] || []).push(e.fromPath); });
 
-  const TYPE_CLS = { overlay: 'purple', react: 'blue', vue: 'green', flutter: 'teal', next: 'amber', 'next-api': 'red' };
+  const TYPE_CLS = { overlay: 'purple', react: 'blue', vue: 'green', flutter: 'teal', next: 'amber', 'next-api': 'red', go: 'teal', 'go-cli': 'purple' };
   const maxType = Math.max(1, ...rm.byType.map((t) => t.count));
   const typeRows = rm.byType.map((t) => barRow(routeTypeMeta(t.key).label, t.count, maxType, TYPE_CLS[t.key]));
   const kv = (v, k) => '<div class="item"><div class="v">' + fmt(v) + '</div><div class="k">' + k + '</div></div>';
@@ -1750,6 +1780,8 @@ function renderRouteMap() {
   // 域分组（每组路由清单 + 导航去向）
   const groupHtml = rm.domainGroups.slice(0, 12).map((g) => {
     const lis = g.routes.slice(0, 40).map((r) => '<li><b>' + esc(r.path) + '</b> ' + routeTypeChip(r.routeType)
+      + (r.apiMethods?.length ? ' ' + chip(r.apiMethods.join('/'), 'red') : '')
+      + (r.frontendCallCount ? ' ' + chip('前端 ' + r.frontendCallCount, 'cyan') : '')
       + (r.factoryPropsCount ? ' ' + chip('工厂 ' + r.factoryPropsCount + ' props', 'green') : '')
       + (r.componentRef ? ' <span class="path">' + esc(r.componentRef) + '</span>' : '')
       + (r.navToPaths.length ? '<span class="cnt">→ ' + r.navToPaths.map(esc).join('、') + '</span>' : '')
@@ -1757,12 +1789,26 @@ function renderRouteMap() {
     return '<div><h3>' + esc(g.name) + ' <span class="sub">' + g.routes.length + ' 条</span></h3><ul class="plain">' + lis + '</ul></div>';
   }).join('');
 
+  // 前后端映射：未匹配的前端调用（可能是死接口 / 路径漂移 / 其他后端）
+  const unmatchedHtml = rm.unmatchedFrontendCalls?.length
+    ? '<details class="panel"><summary>未匹配的前端调用（' + rm.unmatchedFrontendCalls.length + ' 处'
+      + (rm.frontendCallTotal ? '，已匹配 ' + rm.frontendCallTotal + ' 处' : '') + '）</summary>'
+      + '<div class="note">前端发起但未在 Go 路由中找到对应路径的调用：可能是死接口、路径漂移，或由其他后端（Java/Node 等）承接。</div>'
+      + '<ul class="plain">' + rm.unmatchedFrontendCalls.slice(0, 30).map((c) => '<li>'
+        + chip(c.method || '?', 'red') + ' <b>' + esc(c.path || '') + '</b>'
+        + ' <span class="path">' + esc(c.filePath) + (c.line ? ':' + c.line : '') + '</span></li>').join('')
+      + '</ul></details>'
+    : '';
+
   // 全量清单表
+  const hasGoRoutes = rm.goApiRouteCount > 0;
   const tableRows = rm.items.slice(0, 150).map((r) => [
     { v: r.path, html: '<b>' + esc(r.path) + '</b>' + (r.isDynamic ? ' ' + chip('动态', 'amber') : '') },
     { v: r.routeType, html: routeTypeChip(r.routeType) },
     { v: r.domain ?? '-', html: r.domain ? chip(r.domain, 'blue') : '-' },
+    { v: r.apiMethods?.join('/') ?? '-', html: r.apiMethods?.length ? chip(r.apiMethods.join('/'), 'red') : '-' },
     { v: r.componentRef ?? '-', html: r.componentRef ? esc(r.componentRef) : '-' },
+    ...(hasGoRoutes ? [{ v: r.frontendCallCount ? String(r.frontendCallCount) : '-', html: r.frontendCallCount ? chip('前端 ' + r.frontendCallCount, 'cyan') : '-' }] : []),
     { v: r.navToPaths.join('、'), html: r.navToPaths.length ? esc(r.navToPaths.join('、')) : '·' },
     { v: (navBy[r.id] || []).join('、'), html: (navBy[r.id] || []).length ? esc(navBy[r.id].join('、')) : '·' },
   ]);
@@ -1771,9 +1817,14 @@ function renderRouteMap() {
     '<div class="panel"><h2>路由总览（' + fmt(rm.totalCount) + ' 条路由 · ' + rm.maxDepth + ' 级路径深度 · ' + rm.domainGroups.length + ' 个域分组）</h2>'
     + '<div class="kv">' + kv(rm.totalCount, '路由') + kv(rm.navEdgeCount, '导航边') + kv(rm.entryCount, '入口路由')
     + kv(rm.orphanCount, '孤岛路由') + (rm.dynamicCount ? kv(rm.dynamicCount, '动态路由') : '')
-    + (rm.apiRouteCount ? kv(rm.apiRouteCount, 'API 路由') : '') + '</div>'
+    + (rm.apiRouteCount ? kv(rm.apiRouteCount, 'API 路由') : '')
+    + (rm.goApiRouteCount ? kv(rm.goApiRouteCount, 'Go HTTP 路由') : '')
+    + (rm.goCliRouteCount ? kv(rm.goCliRouteCount, 'Go CLI 命令') : '')
+    + (rm.frontendCallTotal ? kv(rm.frontendCallTotal, '前端调用已匹配') : '') + '</div>'
     + '<h3>路由类型分布</h3>' + typeRows.join('')
-    + '<div class="note">入口路由 = 无任何路由导航指向它（通常为应用首屏 / 登录页）；孤岛路由 = 无进出导航边（深链入口或仅被外部直达）。</div></div>'
+    + '<div class="note">入口路由 = 无任何路由导航指向它（通常为应用首屏 / 登录页）；孤岛路由 = 无进出导航边（深链入口或仅被外部直达）。'
+    + (rm.goApiRouteCount ? 'Go HTTP 路由 = Gin / 标准库注册的后端接口；前端调用 = 前端代码中 API.get / axios.x / fetch 与该路径的匹配次数。' : '')
+    + (rm.goCliRouteCount ? 'Go CLI 命令 = cobra 命令树（路径层级树按命令段展示，flags 见详情）。' : '') + '</div></div>'
 
     + '<div class="panel"><h2>路由导航链（' + rm.navEdgeCount + ' 条导航边 · 悬停高亮相邻路由，点击查看详情）</h2>'
     + '<div class="graph-wrap">' + buildRouteGraphSvg(rm) + '</div>'
@@ -1785,12 +1836,16 @@ function renderRouteMap() {
     + '<div class="note">节点从左到右按导航跳数分层（入口 → 1 跳 → 2 跳…），边框加粗 = 入口路由；边 = 源路由页面内的导航调用（Link / pushNamed / go 等）。超过 ' + 60 + ' 条路由时按导航活跃度截断。</div></div>'
 
     + '<div class="split">'
-    + '<div class="panel"><h2>路径层级树（' + rm.maxDepth + ' 级）</h2>' + treeFull + '</div>'
+    + '<div class="panel"><h2>路径层级树（' + rm.maxDepth + ' 级' + (rm.goCliRouteCount ? ' · CLI 命令按段嵌套' : '') + '）</h2>' + treeFull + '</div>'
     + '<div class="panel"><h2>域分组（' + rm.domainGroups.length + ' 组）</h2>' + groupHtml + '</div>'
     + '</div>'
 
+    + unmatchedHtml
+
     + '<details class="panel"><summary>全量路由清单（' + rm.items.length + ' 条' + (rm.items.length > 150 ? '，表内截断至 150' : '') + '）</summary>'
-    + table([{ label: '路径' }, { label: '类型' }, { label: '域' }, { label: '组件' }, { label: '导航去向' }, { label: '被导航' }], tableRows)
+    + table(hasGoRoutes
+      ? [{ label: '路径' }, { label: '类型' }, { label: '域' }, { label: '方法' }, { label: '组件/handler' }, { label: '前端调用' }, { label: '导航去向' }, { label: '被导航' }]
+      : [{ label: '路径' }, { label: '类型' }, { label: '域' }, { label: '方法' }, { label: '组件' }, { label: '导航去向' }, { label: '被导航' }], tableRows)
     + '</details>';
 
   bindRouteGraphEvents(el.querySelector?.('.graph-wrap svg'));
@@ -2345,12 +2400,13 @@ function renderScriptDetail() {
   });
 }
 
-// ---------- Tab 6: 实体类图（UML 类框 + implements/extends 关系边，跨语言 TS/Vue/Rust）----------
+// ---------- Tab 6: 实体类图（UML 类框 + implements/extends 关系边，跨语言 TS/Vue/Rust/Dart/Go）----------
 const LANG_META = {
   ts: { label: 'TS/JS', color: '#58a6ff', hdr: 'rgba(88,166,255,.10)' },
   vue: { label: 'Vue', color: '#3fb950', hdr: 'rgba(63,185,80,.10)' },
   rust: { label: 'Rust', color: '#d29922', hdr: 'rgba(210,153,34,.12)' },
   dart: { label: 'Dart', color: '#00b4ab', hdr: 'rgba(0,180,171,.12)' },
+  go: { label: 'Go', color: '#00add8', hdr: 'rgba(0,173,216,.12)' },
 };
 const langColor = (l) => (LANG_META[l] || LANG_META.ts).color;
 const langHdr = (l) => (LANG_META[l] || LANG_META.ts).hdr;
@@ -2413,6 +2469,7 @@ function buildEntitiesSvg(nodes, edges) {
   s += '<defs>'
     + '<marker id="arr-impl" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M2,2 L10,6 L2,10 z" fill="#0d1117" stroke="#39c5cf" stroke-width="1.4"/></marker>'
     + '<marker id="arr-ext" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M2,2 L10,6 L2,10 z" fill="#bc8cff"/></marker>'
+    + '<marker id="arr-rnd" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M2,2 L10,6 L2,10 z" fill="#3fb950"/></marker>'
     + '</defs>';
   // 列标签：首列 = 契约/父类，末列（若为无关系列）= 未关联实体
   for (let i = 0; i < cols.length; i++) {
@@ -2422,15 +2479,17 @@ function buildEntitiesSvg(nodes, edges) {
     if (lv === noEdgeLevel) label = '未关联实体';
     s += '<text class="col-label" x="' + (PADX + i * COLW) + '" y="16">' + esc(label) + '</text>';
   }
-  // 关系边：子类左缘 → 父类右缘（UML 箭头指向接口/父类）
+  // 关系边：子类左缘 → 父类右缘（UML 箭头指向接口/父类；renders 为组件组合，绿色实线）
+  const EDGE_STYLE = { implements: ['impl', 'arr-impl'], renders: ['rnd', 'arr-rnd'] };
   edges.forEach((e) => {
     const a = pos[e.from], b = pos[e.to];
     if (!a || !b) return;
+    const [cls, marker] = EDGE_STYLE[e.kind] ?? ['ext', 'arr-ext'];
     const y1 = a.y + HDR / 2, y2 = b.y + HDR / 2;
     const x1 = a.x - 2, x2 = b.x + W + 2;
     const mx = (x1 + x2) / 2;
     const d = 'M' + x1 + ' ' + y1 + ' C' + mx + ' ' + y1 + ',' + mx + ' ' + y2 + ',' + (x2 - 2) + ' ' + y2;
-    s += '<path class="ge ' + (e.kind === 'implements' ? 'impl' : 'ext') + '" data-e="' + esc(e.from) + '§' + esc(e.to) + '" d="' + d + '" marker-end="url(#' + (e.kind === 'implements' ? 'arr-impl' : 'arr-ext') + ')"><title>' + esc(e.kind) + '</title></path>';
+    s += '<path class="ge ' + cls + '" data-e="' + esc(e.from) + '§' + esc(e.to) + '" d="' + d + '" marker-end="url(#' + marker + ')"><title>' + esc(e.kind) + '</title></path>';
   });
   // UML 类框：头部（名称+构造型）→ 字段/变体 → 分隔线 → 方法
   nodes.forEach((n) => {
@@ -2597,23 +2656,22 @@ function renderEntities() {
     + chip('接口/Trait ' + fmt(E.interfaceCount), 'cyan')
     + chip('implements ' + fmt(E.implementsCount), 'cyan')
     + chip('extends ' + fmt(E.extendsCount), 'purple')
+    + (E.rendersCount ? chip('renders ' + fmt(E.rendersCount), 'green') : '')
     + (E.crossLanguageEdges ? chip('跨语言关系 ' + fmt(E.crossLanguageEdges), 'amber') : '')
     + (E.deadCandidateCount ? chip('死代码候选 ' + fmt(E.deadCandidateCount), 'red') : '')
     + '</div>'
-    + '<div class="note">实体 = Interface / Class（Rust struct/enum/trait 映射为同构实体）。图展示 '
+    + '<div class="note">实体 = Interface / Class（Rust struct/enum/trait 映射为同构实体；Vue 组件合成为 «组件» 实体，props 为字段、computed/methods 为方法）。图展示 '
     + E.graph.nodes.length + ' 个实体：关系活跃实体优先，各语言代表性实体按成员规模轮转补齐（共 '
     + fmt(E.relatedEntityCount) + ' 个参与关系的实体）；完整清单见下方表格。</div>'
     + '<div class="split" style="margin-top:12px">'
-    + '<div><h3>语言分布</h3>' + E.byLanguage.map((l) => barRow(l.label, l.count, maxLang, { rust: 'amber', vue: 'green', dart: 'teal' }[l.key] || 'blue')).join('') + '</div>'
+    + '<div><h3>语言分布</h3>' + E.byLanguage.map((l) => barRow(l.label, l.count, maxLang, { rust: 'amber', vue: 'green', dart: 'teal', go: 'go' }[l.key] || 'blue')).join('') + '</div>'
     + '<div><h3>架构层分布</h3>' + E.byLayer.map((l) => barRow(l.label, l.count, maxLayer, 'cyan')).join('') + '</div>'
     + '</div>'
     + '<div class="legend" style="margin-top:14px">'
-    + '<span class="legend-dot" style="background:#58a6ff"></span>TS/JS'
-    + '<span class="legend-dot" style="background:#3fb950"></span>Vue'
-    + '<span class="legend-dot" style="background:#d29922"></span>Rust'
-    + '<span class="legend-dot" style="background:#00b4ab"></span>Dart'
+    + E.byLanguage.map((l) => '<span class="legend-dot" style="background:' + langColor(l.key) + '"></span>' + esc(l.label)).join('')
     + '<span class="line" style="border-color:#39c5cf;border-top-style:dashed"></span>implements（虚线箭头）'
     + '<span class="line" style="border-color:#bc8cff"></span>extends（实线箭头）'
+    + '<span class="line" style="border-color:#3fb950"></span>renders（组件组合，实线箭头）'
     + '</div>'
     + '</div>'
 

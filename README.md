@@ -1,7 +1,7 @@
-# nice-aos — 通用前端代码本体分析 CLI（React / Vue 3 / Flutter / 油猴脚本）
+# nice-aos — 通用前端代码本体分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本）
 
-> 把任意 React、Vue 3、Flutter（Dart）前端仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia/Riverpod Store/Service/**接口/类/方法**/路由/依赖 + import/render/导航/**implements/extends/overrides/方法调用链** 关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
-> 参考 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 代码本体分析）的架构，针对前端生态重新建模：React（React 19 + TypeScript + Vite + Zustand + overlay 路由 / react-router）、Vue 3（SFC + vue-router + Pinia）、Flutter（Dart Widget + GoRouter + Riverpod，轻量语法级解析）与油猴脚本（UserScript 元数据 + GM API + 注入/请求审计）。
+> 把任意 React、Vue 2 / Vue 3、Flutter（Dart）前端仓库、Go（CLI / agent 代理 / Gin 后端）仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia/Vuex/Riverpod Store/Service/**接口/类/方法**/路由/依赖 + import/render/**props 传递链**/导航/**implements/extends/renders/overrides/方法调用链** 关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图；Go 项目额外产出 **CLI 命令树 / HTTP 路由 / 前后端调用映射**），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
+> 参考 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 代码本体分析）的架构，针对前端生态重新建模：React（React 19 + TypeScript + Vite + Zustand + overlay 路由 / react-router）、Vue 2（Options API + Vuex + element-ui，RuoYi 类中后台）/ Vue 3（SFC + vue-router + Pinia）、Flutter（Dart Widget + GoRouter + Riverpod，轻量语法级解析）、Go（cobra CLI 命令树 + Gin/标准库 HTTP 路由 + 包级调用链 + 前后端融合仓库映射，轻量语法级解析）与油猴脚本（UserScript 元数据 + GM API + 注入/请求审计）。
 > 语义本体引擎：对象按概念范畴与抽象层级（L3 架构 / L2 结构 / L1 单元 / L0 事实）组织；架构分层按内容信号推断（非目录名直译）；Module/Domain/Project 自动生成职责画像与自然语言总结。
 > 本体查看器（viewer）：`export --format html` 一键生成**自包含蓝图 HTML**（零依赖可离线打开，宽屏分档适配），含领域蓝图 / 业务数据图 / 业务逻辑流向 / **脚本蓝图（油猴函数调用图 + DOM 注入锚点 + 网络端点一图呈现）**五个视图；纯脚本仓库三视图自动按**函数意图分析**重建（意图功能域 / 存储枢纽 / 意图流转矩阵），分析不出业务结构时自动隐藏；`--format viewmodel` 输出聚合视图模型 JSON 供 agent 直接消费。
 
@@ -79,6 +79,16 @@ nice-aos serve
 nice-aos action refreshRepo --params '{"repoPath":".","roots":["src","packages/ui/src","packages/core/src"]}'
 ```
 
+### 项目根识别（定位任意目录均可分析）
+
+CLI 对项目根的识别是多向的——用户定位到代码子目录、子项目目录或融合仓库根，周边的项目信息都会被识别并处理：
+
+- **上级宿主**：定位 `src/` 等代码子目录时向上定位宿主项目根（package.json / pubspec.yaml / go.mod，上限 4 层），读取宿主依赖清单、tsconfig 路径别名与构建配置（`hostRoot` / `hostConfigs` 字段）
+- **子项目（subProjects）**：定位仓库根时发现一级子目录中的子项目（如 gin-vue-admin 的 `server/` + `web/`），npm 子项目依赖并入画像辅助框架判定；防误吸附——无 `.git`、无根清单且子项目超过 4 个的「代码集合目录」只报告不并入
+- **兄弟项目（siblingProjects）**：定位子项目目录（`web/`）或代码子目录（`web/src`）时，向上定位仓库根（`.git` / `go.work` / `pnpm-workspace.yaml` / `lerna.json` / `nx.json`）后识别同级项目；只报告不并入扫描范围与依赖（显式定位仍是用户意图边界）
+- **Go module 上级发现**：定位 Go module 子目录（如 `server/api`）时向上发现 go.mod（`goModule.dir` 以 `..` 相对形态表达），import 路径经折叠解析仍能正确建立 internal 文件边、路由 handler 关联与跨包调用链
+- **子目录 go.mod**：融合仓库（`server/go.mod` + 前端 `web/`）从 `.go` 文件所在目录逐级向上发现全部 go.mod，多模块并存时全部依赖并入、主模块取源码最多者
+
 ### 油猴脚本仓库（无需 package.json）
 
 纯油猴脚本仓库（如 steam-tampermonkey-scripts）直接扫描即可，`.user.js` 与头部含 `==UserScript==` 元数据块的 `.js` 均自动识别：
@@ -114,22 +124,22 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 
 | 类型 | ID 前缀 | 层级/范畴 | 关键属性 |
 |---|---|---|---|
-| Project | `proj:` | L3 Container | framework（flutter/dart/expo/react-native/next/nuxt/vue/react/userscript）, frameworkVariants（tauri/electron/capacitor/vite/riverpod/go_router 等变体）, frameworkLabel（组合标签）, language（TypeScript / TypeScript + Rust 等）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, fileCount, tsxFileCount, vueFileCount, **rustFileCount/dartFileCount**, **tauriDetected/electronDetected/flutterDetected**, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
+| Project | `proj:` | L3 Container | framework（flutter/dart/expo/react-native/next/nuxt/vue/react/**go**/userscript）, frameworkVariants（tauri/electron/capacitor/vite/riverpod/go_router 等变体）, frameworkLabel（组合标签）, language（TypeScript / TypeScript + Rust 等）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, **goModule**（module 名/Go 版本/所在目录，含子目录与上级形态）, **subProjects**（一级子目录中的子项目清单：path + kind go/npm/dart）, **siblingProjects**（定位子项目或代码子目录时的兄弟项目清单）, fileCount, tsxFileCount, vueFileCount, **rustFileCount/dartFileCount/goFileCount**, **tauriDetected/electronDetected/flutterDetected**, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
 | Domain | `dom:` | L3 Container | **name, sources**（route/module）, routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, **capability**（路由能力描述）, **summary**（职责画像） |
 | Module | `mod:` | L2 Container | path, **archLayer**（语义架构层）, **layerComposition**（子树层构成）, fileCount, **subtreeFileCount**, parentId, **unitCounts**, **routeCount**, **summary**（职责画像） |
 | SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames, **unusedExports**（导出级死代码候选） |
 | Component | `comp:` | L1 CodeUnit | kind（page/modal/card/…）, propsCount, **propsNames**（解构 props 名清单）, hooksUsed, stateCount, rendersIds, routeIds, **propOutCount/propInCount**（props 传递出入度）, **archLayer**, **domainIds** |
 | Hook | `hook:` | L1 CodeUnit | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属）, **archLayer**, **domainIds** |
-| Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, location（Zustand / Pinia / Riverpod 统一归属）, **archLayer**, **domainIds** |
+| Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, **providerType**（zustand/pinia/vuex/riverpod 状态库类型）, location, **archLayer**, **domainIds** |
 | Service | `svc:` | L1 CodeUnit | pattern（singleton/class/functions）, exportsCount, **archLayer**, **domainIds** |
-| Interface | `iface:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart）, methodIds, extendsIds/extendsNames（接口继承，跨文件解析；Rust trait 的 supertrait → extends）, **deadCandidate/deadReason** |
-| Class | `class:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart）, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入；Rust struct/enum → kind 区分，含 fields/derives/variants；Dart Widget → **isWidget/widgetBase**，Dart Store → **isStore/withNames**）, **deadCandidate/deadReason** |
-| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, **callIds/calledByIds/compCallIds**（Dart 方法逻辑调用链：方法间双向 + Widget 构造渲染链）, exported（Rust impl fn 与模块级 fn 同构映射）, **deadCandidate/deadReason**（函数级死代码候选） |
+| Interface | `iface:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/**go**）, methodIds, extendsIds/extendsNames（接口继承，跨文件解析；Rust trait 的 supertrait → extends）, **deadCandidate/deadReason** |
+| Class | `class:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/**go**）, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入；Rust struct/enum → kind 区分，含 fields/derives/variants；Dart Widget → **isWidget/widgetBase**，Dart Store → **isStore/withNames**；Vue 组件 → **`vclass:` kind=component**，props 为 fields、computed/methods 为 methods；**Go struct → kind=struct，字段含 json/yaml tag**）, **rendersIds**（组件组合）, **deadCandidate/deadReason** |
+| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, **callIds/calledByIds/compCallIds**（Dart 方法逻辑调用链：方法间双向 + Widget 构造渲染链；**Go 包级/跨包/方法调用同构映射**）, exported（Rust impl fn 与模块级 fn 同构映射；**Go 首字母大写 = 导出**）, **deadCandidate/deadReason**（函数级死代码候选） |
 | ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **deadCandidate/deadReason**（函数级死代码候选）, **archLayer=script** |
-| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter/**next/next-api**）, domain, **domainIds**, componentFileId, navigatesToIds, **rawPath/layoutFileIds/specialFiles/isDynamic/isClient/apiMethods**（Next.js App Router 路由）, **hasPropsFactory/factoryProps**（overlay 路由 props 工厂注入键） |
+| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter/**next/next-api/go/go-cli**）, domain, **domainIds**, componentFileId, navigatesToIds, **rawPath/layoutFileIds/specialFiles/isDynamic/isClient/apiMethods**（Next.js App Router 路由）, **hasPropsFactory/factoryProps**（overlay 路由 props 工厂注入键）, **middlewares/frontendCalls**（Go HTTP 路由中间件链 + 前端调用方溯源；go-cli 命令链与 flags 复用 specialFiles） |
 | PropEdge | `prop:` | L1 CodeUnit | fromComponentId/toComponentId, fromFileId/toFileId, props（名称 + 来源分类 + valueText + storeHook）, renderCount（该组件对的渲染处数） |
 | UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **deadFunctionCount**, **archLayer=script**, **domainIds** |
-| Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared/pub）, importCount |
+| Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared/pub/**go**）, importCount |
 | GmApiUsage | `gm:` | L0 AuditFact | name, category（network/storage/style/…）, callCount, declared（与 @grant 比对） |
 | InjectionPoint | `inject:` | L0 AuditFact | kind（mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom）, target, interpolated（动态插值 XSS 面） |
 | NetworkEndpoint | `net:` | L0 AuditFact | kind（gm-xhr/fetch/xhr/websocket/beacon）, domain, urls, methods, allowedByConnect（与 @connect 比对） |
@@ -289,9 +299,9 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 | **业务数据图** | Store 数据枢纽（state/action 键、持久化、被哪些域使用）、跨域数据依赖、持久化状态汇总；无 Store 时自动切换为**脚本存储枢纽**（localStorage/sessionStorage/indexedDB/GM 存储信号 + 状态存取函数 + 宿主数据读取） | 业务数据在哪、谁依赖谁 |
 | **业务逻辑流向** | 架构层间导入流向矩阵（行=来源层，列=目标层）、跨域依赖边、高扇入 Service/Store 枢纽；无模块导入时自动切换为**函数意图流转矩阵**（调用边按「调用方意图 → 被调方意图」聚合）+ 高扇入函数 | 业务逻辑怎么流、哪些节点是枢纽 |
 | **路由地图** | **路由导航链 SVG 图**（节点按导航跳数分层：入口 → 1 跳 → 2 跳…，边框色 = 路由类型，悬停高亮相邻路由、点击查看详情含 use client/layout 链/API 方法）、路径层级树（动态段琥珀色高亮）、域分组、类型分布与入口/孤岛路由统计、全量路由清单表（导航去向/被导航双向）；覆盖 overlay / react-router / vue-router / Flutter GoRoute+原生 / Next.js App Router 全类型 | 页面怎么组织、怎么互相跳转：入口在哪、哪些路由是孤岛 |
-| **组件数据流** | **Props 传递图 SVG**（BFS 分层：顶层容器 → 子组件，边标签 = props 数，节点边框色 = 所属域，悬停高亮相邻边、点击查看 props 明细含来源与 store hook）、props 来源分布（forward/state/store/handler/computed/literal/spread 七类）、高传出/高传入组件 Top 榜（props 分发枢纽 vs 消费方）、Props 传递边清单（含跨域标记与渲染处数）；域筛选与组件名/文件路径搜索 | 数据怎么在组件间流动：谁分发 props、谁消费 props、某个 prop 从哪来 |
+| **组件数据流** | **Props 传递图 SVG**（BFS 分层：顶层容器 → 子组件，边标签 = props 数，节点边框色 = 所属域，悬停高亮相邻边、点击查看 props 明细含来源与 store hook）、props 来源分布（forward/state/store/handler/computed/literal/spread 七类）、高传出/高传入组件 Top 榜（props 分发枢纽 vs 消费方）、Props 传递边清单（含跨域标记与渲染处数）；域筛选与组件名/文件路径搜索；React JSX 与 Vue 模板绑定同构接入 | 数据怎么在组件间流动：谁分发 props、谁消费 props、某个 prop 从哪来 |
 | **脚本蓝图** | 每个油猴脚本的**函数调用关系图**（SVG，从左到右为调用深度）、DOM 注入锚点、网络端点、函数业务角色分布（render/data/state/event/ui/logic） | 这个脚本怎么注入页面的：谁调谁、注入到哪个页面锚点、请求哪些域 |
-| **实体类图** | **UML 风格类图**（SVG）：类框（名称 + 字段/变体 + 方法摘要，Rust struct 含 derives）、关系边（implements 虚线 / extends 实线 / 接口继承）、按派生层级分列布局；语言/类型/架构层分布条形图；模块/类型/语言/关键词过滤与实体清单表格 | 类型体系长什么样：谁实现谁、谁继承谁、跨语言（TS ↔ Rust）实体各占多少 |
+| **实体类图** | **UML 风格类图**（SVG）：类框（名称 + 字段/变体 + 方法摘要，Rust struct 含 derives）、关系边（implements 虚线 / extends 实线 / renders 绿色实线（Vue 组件组合）/ 接口继承）、按派生层级分列布局；语言/类型/架构层分布条形图；模块/类型/语言/关键词过滤与实体清单表格；Vue 组件合成为 `«component»` 实体（props 为字段、computed/methods 为方法） | 类型体系长什么样：谁实现谁、谁继承谁、跨语言（TS ↔ Rust ↔ Vue 组件）实体各占多少、Vue 组件组合谁 |
 
 生成的 HTML 自包含零依赖（数据内嵌为 JSON，无外链），可直接离线打开分享；大仓库单元清单带截断保护（计数保留全量）；**宽屏分档适配**（1600/1920/2240/2560px 断点扩展内容宽度并居中，SVG 图等比缩放不截断）；**油猴意图适配**：无 React/Vue 结构的纯脚本仓库三视图按函数意图重建，分析不出有效数据（纯功能增强脚本：单一意图/无调用流转/无持久化）时对应 Tab 自动隐藏，不显示空壳。
 
@@ -299,20 +309,20 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 
 ## 解析能力
 
-- **导入解析**：tsconfig `paths` 别名（`@/*` → `src/*`）、子路径别名、相对路径 + 扩展名探测（.ts/.tsx/.js/.jsx/.vue/.dart/index.*）、`.js` → `.ts` 回退；Dart `package:/dart:` 导入（`package:自身包名/...` → 项目内 lib/ 路径，其余 → pub 依赖；`dart:` 内置库跳过；无 `./` 前缀的裸相对导入同样解析）；资产后缀（css/png/svg…）跳过；tsconfig.json 含 `//`/`/* */` 注释也能解析（自动剥离）
+- **导入解析**：tsconfig `paths` 别名（`@/*` → `src/*`）、vue.config.js `configureWebpack.resolve.alias`、jsconfig.json paths、子路径别名、相对路径 + 扩展名探测（.ts/.tsx/.js/.jsx/.vue/.dart/index.*）、`.js` → `.ts` 回退；vue-cli 项目（vue.config.js + `src/`）自动兜底 `@/* → src/*`；Dart `package:/dart:` 导入（`package:自身包名/...` → 项目内 lib/ 路径，其余 → pub 依赖；`dart:` 内置库跳过；无 `./` 前缀的裸相对导入同样解析）；资产后缀（css/png/svg…）跳过；tsconfig.json 含 `//`/`/* */` 注释也能解析（自动剥离）
 - **组件识别（React）**：`.tsx` 导出的 PascalCase 符号；支持 `export default function X`、`export const X: React.FC`、分离式 `export default X`、`memo()/forwardRef()` 包装；kind 按名称后缀推断（Page/Modal/Card/…），`pages/` 目录下被路由直接引用的组件自动升级为 page
-- **组件识别（Vue）**：`.vue` SFC 整文件即组件；`defineOptions({ name })` 优先，否则文件名派生（`index.vue` → 目录名）；`defineProps` 数组/对象形式计数；template 标签（kebab/PascalCase 统一）供 renders 关系
+- **组件识别（Vue）**：`.vue` SFC 整文件即组件；`defineOptions({ name })` 与 `<script setup name="X">` 属性优先，否则文件名派生（`index.vue` → 目录名）；`defineProps` 数组/对象形式计数；template 标签（kebab/PascalCase 统一）供 renders 关系
 - **Hook/Composable 识别**：导出的 `useXxx` 符号（含 React Hook 与 Vue composable），含 JSDoc 描述提取
-- **Store 识别**：Zustand `create(...)`（含 `create<T>()(...)`、`persist(...)` 包装）与 Pinia `defineStore(...)`（setup 写法 + options 写法，含 `persist` 插件第三参数），统一提取 state/action 键与 storageKey
+- **Store 识别**：Zustand `create(...)`（含 `create<T>()(...)`、`persist(...)` 包装）、Pinia `defineStore(...)`（setup 写法 + options 写法，含 `persist` 插件第三参数）与 Vuex 模块（对象字面量 / `new Vuex.Store({})` / shorthand 引用），统一提取 state/action 键与 storageKey，并携带 `providerType`（zustand/pinia/vuex）区分状态库
 - **Service 识别**：`/services/` 目录或名称含 Service/Engine/Manager/Repository/Factory 后缀
 - **类型实体（Interface/Class/Method）**：接口/类/方法/模块函数全量提取；跨文件 `implements`/`extends` 解析（本文件声明优先，其次具名导入——含 `import type` 与 `IStorage as StorageContract` 别名导入，解析失败留存原名不报错）；方法级 `overrides`/`overriddenBy` 双向链接（实现类方法与接口/父类方法按名匹配）；`query Method --where "name~xxx"` 一次命中声明与实现
 - **Rust 实体（Tauri src-tauri，独立解析器）**：`rustAnalyzer` 与 tsAnalyzer/vueAnalyzer 平级共存——`pub struct`/`pub enum` → Class（kind: struct/enum，含 fields/derives/variants）、`pub trait` → Interface（supertrait → extends）、`impl` 块内 `fn` → Method（ownerKind=class）、模块级 `fn` → Method（ownerKind=module）、`use` → imports；跨文件路径解析以 `use crate::a::B` 模块路径映射为主、全仓库唯一名匹配兜底（含 `use a::{B, C}` 花括号组与 `super::` 相对路径）；Rust 类型引用即使用（`Vec<Game>` / `-> Game` / `impl Game` 均计入引用），同样参与类型级死代码判定
 - **Dart/Flutter 实体（lib/ 组件，独立解析器）**：`dartAnalyzer` 轻量语法级解析（深度状态机 + 等长噪声剥离）——`abstract class` → Interface、`class/enum/mixin` → Class（extends/implements/with 关系、字段、方法）、类方法/顶层 fn → Method；**Widget 基类（StatelessWidget/StatefulWidget/ConsumerWidget 等）→ Component（kind: page/widget，dartdoc 描述提取，文件名匹配主组件）**；**ChangeNotifier/Notifier 子类与 Riverpod Provider 变量（`final xxxProvider = NotifierProvider<...>.new(...)`，含 notifierClass 提取）→ Store（stateKeys/actionKeys）**；`GoRoute(path/builder)` → dartRoutes（路径常量引用回填，builderWidget 跨文件组件解析）；`context.go/push('/path')` → overlayOpens → 路由导航边；方法体内调用 → callEdges → **Method 逻辑调用链**（本类方法/顶层函数/跨文件静态方法双向链接 + Widget 构造 → compCallIds 渲染链）
-- **客户端组件自动发现（Tauri/Electron/Flutter）**：显式 roots 之外自动发现项目内的客户端组件——`src-tauri/tauri.conf.json` 存在时把 `src-tauri/src` 纳入扫描（.rs 文件），`electron/` 目录含 TS/JS 文件时纳入扫描，`pubspec.yaml` + `lib/` 存在时把 `lib` 纳入扫描（.dart 文件，monorepo 多包递归发现）；`tauriDetected`/`electronDetected`/`flutterDetected` 落到 Project 画像，架构层新增 `tauri`（Rust 原生层）与 `electron`（主进程层）强信号直判；Java/Go 等后端代码不在扫描范围（`.rs` 仅在 Tauri 组件语境下扫描）
+- **客户端组件自动发现（Tauri/Electron/Flutter）**：显式 roots 之外自动发现项目内的客户端组件——`src-tauri/tauri.conf.json` 存在时把 `src-tauri/src` 纳入扫描（.rs 文件），`electron/` 目录含 TS/JS 文件时纳入扫描，`pubspec.yaml` + `lib/` 存在时把 `lib` 纳入扫描（.dart 文件，monorepo 多包递归发现）；`tauriDetected`/`electronDetected`/`flutterDetected` 落到 Project 画像，架构层新增 `tauri`（Rust 原生层）与 `electron`（主进程层）强信号直判；`.rs` 仅在 Tauri 组件语境下扫描，Go 代码见下方「Go 适配」章节（Java 等其他后端暂不在扫描范围）
 - **死代码候选（四级）**：文件级（零引用 + 非入口 + 非测试 + 非路由组件，`_meta.orphanCandidates`）+ 导出级（导出符号全仓库零导入且本文件零使用 → `SourceFile.unusedExports` / `_meta.deadExportCandidates`，入口/re-export/动态 import 豁免）+ 类型级/函数级（保守引用计数：非导出实体本文件零引用、导出实体全仓库零导入且本文件零引用 → `deadCandidate/deadReason`；接口方法为契约声明永不判死；排除声明处与自递归，宁可漏报不误报）；油猴 ScriptFunction 同样判函数级死代码（额外排除事件回调与 unsafeWindow 暴露）
 - **依赖治理**：package.json / pubspec.yaml 声明 vs 实际导入交叉比对，产出 `source=undeclared`（导入未声明）与 `used=false`（声明未使用）
 - **循环依赖**：Tarjan SCC 算法（`_meta.cycles`）
-- **框架检测**：package.json 依赖优先（expo / react-native / next / nuxt / vue / react，元框架优先于基座框架）；`pubspec.yaml` + `lib/` → Flutter（依赖含 `flutter` sdk 时为 `framework=flutter`，纯 Dart 包为 `framework=dart`）；扫描子目录（如 `src/`）时自动向上定位宿主项目根（上限 4 层、不越过用户 home），用宿主依赖识别框架并回退项目名，宿主配置文件（capacitor.config / app.json(expo 键) / vite.config / electron 等）作旁证；跨端/构建变体（Capacitor/Electron/Vite/Webpack/Riverpod/GoRouter 等）组合为 `frameworkLabel`（如 "Flutter 应用 + Riverpod 状态管理（GoRouter 路由）"）；无任何清单时按代码信号兜底（.vue → vue，tsx/jsx → react）；存在油猴脚本且无前端框架 → `framework=userscript`
+- **框架检测**：package.json 依赖优先（expo / react-native / next / nuxt / vue / react，元框架优先于基座框架）；`pubspec.yaml` + `lib/` → Flutter（依赖含 `flutter` sdk 时为 `framework=flutter`，纯 Dart 包为 `framework=dart`）；`go.mod` 存在且有 `.go` 源码 → `framework=go`（混合仓库前端文件仍各自解析）；扫描子目录（如 `src/`）时自动向上定位宿主项目根（上限 4 层、不越过用户 home），用宿主依赖识别框架并回退项目名，宿主配置文件（capacitor.config / app.json(expo 键) / vite.config / electron 等）作旁证；跨端/构建变体（Capacitor/Electron/Vite/Webpack/Riverpod/GoRouter 等）组合为 `frameworkLabel`（如 "Flutter 应用 + Riverpod 状态管理（GoRouter 路由）"）；无任何清单时按代码信号兜底（.vue → vue，tsx/jsx → react）；存在油猴脚本且无前端框架 → `framework=userscript`
 
 ### overlay 路由（可选，自动探测）
 
@@ -355,24 +365,55 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 - **组件解析链**：builderWidget 经具名/通配导入解析到具体组件文件，回退本文件组件；Route 关联 `componentId`/`componentFileId`
 - **跳转边**：任意 .dart 文件内 `context.go/push/replace('/path')` 与 `Navigator.pushNamed/pushReplacementNamed/popAndPushNamed`（`Navigator.of(context).pushNamed(...)` / `Navigator.pushNamed(context, ...)` 两种形式）字面量导航调用 → 该文件组件所属路由 → 目标路由（`navigatesToIds`）
 
-### Props 传递链（React/Next 组件数据流，自动探测）
+### Props 传递链（React / Vue 组件数据流，自动探测）
 
-`.tsx/.jsx` 中 PascalCase JSX 标签的属性传递按**组件对聚合**为 PropEdge 对象（`prop:A→B`），每个 prop 携带**来源分类**（词法近似：组件声明范围 + 文件级变量表判定，非作用域精确分析）：
+`.tsx/.jsx` 中 PascalCase JSX 标签、`.vue` 模板中的组件标签（`:prop` 绑定 / 静态属性 / `v-model` / `.sync` / `@event` / `v-bind="obj"`），属性传递按**组件对聚合**为 PropEdge 对象（`prop:A→B`），每个 prop 携带**来源分类**（词法近似：组件声明范围 + 文件级变量表判定，非作用域精确分析）：
 
-| 来源 | 判定 | 说明 |
-|------|------|------|
-| `forward` | 标识符命中父组件解构 props 名 | 父组件 props 透传（设置面板批量下发的 state/setter 对典型形态） |
-| `state` | 标识符为组件内 `useState` 解构首元素 | 本地状态下发 |
-| `store` | 标识符为非 builtin hook 变量（`useXxxStore`/`useQuery` 等） | 状态库数据源，附 `storeHook` 溯源 |
-| `handler` | 内联函数或本地函数引用 | 事件回调 |
-| `literal` | 字符串/数字/布尔/裸属性（`disabled` = true） | 常量配置 |
-| `computed` | 其余表达式 | 计算值 |
-| `spread` | `{...obj}` 整体透传 | 不展开成员，单条 spread 边 |
+| 来源 | 判定（React） | 判定（Vue） | 说明 |
+|------|------|------|------|
+| `forward` | 标识符命中父组件解构 props 名 | 标识符命中本组件 props 声明（Options API `props` / setup `defineProps`） | 父组件 props 透传（设置面板批量下发的 state/setter 对典型形态） |
+| `state` | 标识符为组件内 `useState` 解构首元素 | 标识符命中 data() 键或 setup 内 `ref/reactive` 声明变量 | 本地状态下发 |
+| `store` | 标识符为非 builtin hook 变量（`useXxxStore`/`useQuery` 等） | 标识符命中 mapState/mapGetters 提取键、setup 内 store 变量或 `storeToRefs` 解构名 | 状态库数据源，附 `storeHook` 溯源（Vue2 为 Vuex 模块名、Vue3 为 Pinia store 变量） |
+| `handler` | 内联函数或本地函数引用 | 标识符命中 methods 键或 setup 函数声明（含 `@event` 回调） | 事件回调 |
+| `literal` | 字符串/数字/布尔/裸属性（`disabled` = true） | 静态属性 `max="10"` / 裸属性 `clearable` | 常量配置 |
+| `computed` | 其余表达式 | 标识符命中 computed 键或 setup `computed()` 声明，其余表达式 | 计算值 |
+| `spread` | `{...obj}` 整体透传 | `v-bind="obj"` 整体透传 | 不展开成员，单条 spread 边 |
 
 - **聚合规则**：同一组件对的多处渲染聚合为一条边（`renderCount` 计渲染处数）；同名 prop 出现多种来源时取优先级最高者（forward > state > store > handler > computed > literal > spread）
 - **组件出入度**：Component 附 `propOutCount`/`propInCount`（传出/传入边数），配合 viewer「组件数据流」视图识别 props 分发枢纽与消费方
 - **路由工厂注入**：overlay 路由的 `props: (app) => ({ item: app.item })` 工厂函数提取注入键为 `factoryProps`（App → 工厂 → 页面组件的主干注入链，在路由地图以「工厂 N props」徽章展示，不计入组件间 PropEdge）
-- **边界**：路由库组件（Link/Navigate/Outlet 等）与 React 内部属性（key/ref/className/style 等）跳过；自渲染（递归组件）不成边；Vue/Dart 组件暂不采集
+- **Vue 组件标签解析**（Options API 与 setup 通用）：局部 `components` 注册表 → import 索引（local 名 + PascalCase 双键，default 导入取目标文件 primary 组件；`defineAsyncComponent(() => import(...))` 与 React.lazy 包装的 const 变量同样进索引）→ `main.js` 的 `Vue.component()` 全局注册兜底 → 同文件兜底；kebab-case 标签 / camelCase 导入名 / 文件派生名（`day.vue` ↔ `CrontabDay`）均可对齐
+- **边界**：路由库组件（Link/Navigate/Outlet/router-link 等）、element-ui `el-` 前缀、Ant Design Vue `a-` 前缀、原生 HTML / Vue 内置标签与指令属性（v-if/v-for/ref/class/style 等）跳过；自渲染（递归组件）不成边；Dart 组件暂不采集
+
+### Vue 2 适配（Options API，RuoYi 类中后台）
+
+- **Options API 解析**：`export default {}` / `Vue.extend({})` / `defineComponent({})` 提取 props（对象/数组/混合形式，含 type）、data（对象/函数/方法形式）、computed/methods 键集、components 局部注册表
+- **Vuex store**：`/store/` 目录或导入 vuex 的文件，default export（对象字面量 / `new Vuex.Store({})` / shorthand 引用顶层 const）提取 stateKeys + actionKeys（actions + mutations 合并）为 Store 实体（`providerType=vuex`）
+- **类视图实体（vclass）**：每个 `.vue` 文件 primary 组件合成为 `kind=component` 的 Class 实体——props 为字段（含 type）、computed + methods 为方法实体；组件组合关系回填为 vclass 间 renders 边，在「实体类图」以绿色实线箭头呈现
+- **导航**：`<router-link to="/path">` 静态路径与 `this.$router.push('/path')` 产出路由导航边（动态 `:to` 表达式不可静态解析，跳过）
+- **别名解析**：vue.config.js `configureWebpack.resolve.alias` 与 jsconfig.json paths；vue-cli 项目（存在 vue.config.js + `src/`）自动兜底 `@/* → src/*`
+
+### Vue 3 适配（SFC + `<script setup>` + Pinia，Snowy 类中后台）
+
+- **script setup 变量域**：`<script setup>` 内 `ref/shallowRef/reactive/shallowReactive/customRef/toRef` → state 键、`computed()` → computed 键、函数声明与 const 函数 → method 键、`storeToRefs(...)` 解构名与 store 实例变量 → store 键（附 Pinia store 名溯源；hook 命名兼容 `useXxxStore` 与 `xxxStore` 双形态，`storeToRefs(store)` 变量参数同样溯源），变量域统一进入模板绑定的 props 来源分类与 vclass 类视图实体输入
+- **组件命名**：`<script setup name="X">` 属性（vite-plugin-vue-setup-extend）与 `defineOptions({ name })` 均优先于文件名派生
+- **Pinia store**：`defineStore('name', setup/options)` 两种写法统一提取 stateKeys/actionKeys，Store 实体携带 `providerType=pinia`（Zustand 同理 `zustand`），蓝图「业务数据图」与「Store 一览」展示 provider 类型徽章
+- **异步组件**：`const X = defineAsyncComponent(() => import('./x.vue'))` 与路由 `const X = () => import(...)` 顶层 const 懒加载包装统一进组件解析索引，模板标签 `<X />` 正常建立 renders 关系与 Props 传递边
+- **Vite 动态注册豁免（死代码防误报）**：`import.meta.glob(['/src/views/**.vue', '!/src/views/auth/**.vue'])` 模式采集（含 `!` 排除段、相对路径模式），命中文件豁免孤儿候选；vite.config.mjs 的 `unplugin-vue-components` `dirs`（自动注册组件目录）与 `unplugin-auto-import` `dirs` 同样豁免
+- **Ant Design Vue 排除**：`a-` 前缀标签（a-table/a-button 等）不进组件标签集与传递链，与 element-ui `el-` 前缀同规则
+
+### Go 适配（CLI / agent 代理 / Gin 后端 + 前后端融合仓库）
+
+独立的 `goAnalyzer` 轻量语法级解析器（深度状态机 + 大括号配对，不依赖 gopls/tree-sitter），适合 cobra CLI、agent 代理类小程序与「Go 后端 + 前端」融合仓库（如 one-api 类项目）：
+
+- **项目识别**：`go.mod` 存在且有 `.go` 源码 → framework=`go`；`require` 段（分组块与单行）解析为 Dependency（`source=go`）；`vendor/`、`testdata/`、`bin/` 自动跳过
+- **实体映射**：`struct` → Class（`kind=struct`，字段含 `json/yaml` tag 与匿名内嵌）、`interface` → Interface（含嵌入接口 extends）、方法/顶层函数 → Method（大写导出判定 exported）、package 目录 → Module、Go 包 = 目录（同包跨文件方法合并，如接收者在另一文件声明的 `goOrphanMethods` 回填）
+- **CLI 命令树（cobra）**：`var xxxCmd = &cobra.Command{Use/Short}` + `rootCmd.AddCommand(xxxCmd)` 边 → Route（`routeType=go-cli`，routePath 为 `smartide k8s init` 式命令链）；`Flags()/PersistentFlags()` 注册的 flag 提取为 `-T/--type` 徽章；跨包限定子命令（`hostCmd.AddCommand(host.HostGetCmd)`）经 import 定位目标包目录归一
+- **HTTP 路由（Gin / 标准库）**：`router.Group("/api")` 前缀累积 + `.GET/.POST/.PUT/.DELETE/.PATCH/Any("/path", ...)` → Route（`routeType=go`，apiMethods + `:param`/`*wildcard` 动态段标记）；handler 函数值（`controller.GetSelf`）经 importMap 定位包目录关联到 Method；组级 `apiRouter.Use(middleware.Auth())` 中间件按前缀链继承 + 内联中间件合并；`Handle("GET", ...)` 与 `http.HandleFunc` 标准库形式兜底
+- **逻辑走向（调用链）**：包级函数跨文件互调（同包无需 import）+ `pkgAlias.Func()` 跨包调用（importMap 定位）+ 方法体内调用（接收者/参数/构造字面量类型推断，词法近似）→ Method 的 `calls/calledBy`；Method 死代码候选按包级标识符引用判定
+- **前后端逻辑映射（融合仓库核心价值）**：tsAnalyzer 提取前端 `API.get/post/put/delete('/api/...')`、`axios.x()`、`fetch()`（含模板串 `` `/api/user/${id}` ``）调用 → 与 Go 路由路径匹配（`:param` 通配任意段、`*wildcard` 吞尾段、去 query、尾斜杠归一）→ Route.frontendCalls（文件+行号+method 溯源）；未匹配调用进 `_meta.unmatchedFrontendCalls` 清单（路由地图「未匹配的前端调用」面板，用于发现死接口/路径漂移/外部 API）
+- **架构层**：`main.go`/`cmd/` → entry，`router/controller/middleware/handler/api` → presentation，`model/dal/dao/repository/relay/service/biz/domain` → service，其余 → shared
+- **路由地图增强**：Go HTTP 路由（方法徽章 + 中间件链 + 前端调用数）与 Go CLI 命令（路径层级树按命令段嵌套，flags 见详情）统一进既有路由地图视图；域取首个业务段（跳过 `api/v1` 网关前缀）
 
 ### 油猴脚本（Tampermonkey UserScript，自动探测）
 
@@ -390,13 +431,14 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 ## 已知限制
 
 - 基于 TypeScript Compiler API 的**语法级**解析（不跑类型检查）；动态拼接的 import 与动态 `navigate(path)` 变量导航无法解析
-- 类型实体提取覆盖 `.ts/.tsx/.js/.jsx` 与 `.d.ts`；**Vue SFC `<script>` 内的 interface/class 本期不提取**（Vue 侧已有 Hook/Composable/Store 实体体系）；TS 方法级调用图（calls/calledBy）未扩展到 Method（调用图仅油猴 ScriptFunction 与 Dart Method 有）
+- 类型实体提取覆盖 `.ts/.tsx/.js/.jsx` 与 `.d.ts`；Vue 组件以 `vclass` 类视图实体呈现（props/computed/methods 同构映射）；**Vue SFC `<script>` 内声明的 interface/class 本期不提取**；TS 方法级调用图（calls/calledBy）未扩展到 Method（调用图仅油猴 ScriptFunction 与 Dart Method 有）
 - Rust 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 rustc）：泛型约束 / 关联类型 / macro 生成代码不解析；`mod` 声明文件树按目录约定映射（`mod models;` → `models.rs` 或 `models/mod.rs`）；`.rs` 文件仅在 Tauri 组件语境下扫描，独立 Rust 工程（纯后端 crate）不纳入
 - Dart 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 analyzer）：泛型方法/闭包体内声明、动态拼接路由 path、`Navigator.push(MaterialPageRoute(...))` 导航不解析；构造器不实体化为 Method；调用链为静态提取（变量间接调用/回调透传不解析）
+- Go 解析为轻量语法级（深度状态机 + 双通道噪声剥离，不依赖 gopls）：泛型（type parameters）不解析（两参考项目均为 Go 1.17/1.18 前风格）；调用链为静态提取（变量间接调用/回调透传/goroutine 内闭包捕获不解析）；cobra `Run` 内联闭包不实体化为 Method；前端 httpCalls 限定 `API.x/axios.x/fetch` 标识符 + 字符串字面量首参（变量拼接 URL 取静态前缀，完整外链 URL 进未匹配清单）；Java/Python 后端不在扫描范围
 - 跨文件 implements/extends 按具名导入静态解析；命名空间导入、`export *` 再导出与动态 `import()` 的目标文件整体豁免死代码判定（无法按名追踪，保守不误报）；仅被测试文件使用的导出符号会被判为死代码候选（测试文件不入扫描范围，删除前请人工确认）
 - `renders` 归属文件主组件（default export 优先），同文件多组件不细分
 - 函数透传式导航（`onOpenOverlay: app.setActiveOverlay`）不产生跳转边
-- Vue 适配覆盖 Vue 3 SFC（`<script setup>`）、Pinia、vue-router、unplugin-vue-router 文件路由与 unplugin-auto-import 隐式导入；Options API 与 Nuxt 专属约定仅部分支持
+- Vue 适配覆盖 Vue 3 SFC（`<script setup>` 变量域 / Pinia setup 与 options 写法 / defineAsyncComponent / import.meta.glob 与 unplugin 目录豁免）、vue-router、unplugin-vue-router 文件路由与 unplugin-auto-import 隐式导入；Vue 2 Options API（props/data/computed/methods/components、Vuex 模块、Vue.component 全局注册、element-ui 排除、@ 别名）已支持；Nuxt 专属约定仅部分支持；Vue 模板动态 `:to` 导航与作用域插槽透传不解析；`import.meta.glob` 高阶用法（函数形式 `{ eager: true }` 的具名导出、多变量别名）不展开
 - 油猴脚本：调用图为脚本内静态调用（变量间接调用/回调透传不解析）；动态拼接的请求 URL 域名记为 `(dynamic)`，不做 @connect 比对；宿主框架仅按代码内 `__vue__`/`__reactContainer$` 等标记推断，未触碰宿主内部的脚本记为 unknown
 - 快照为全量重建（无增量）；多进程并发写快照无保护；方法级实体化后大仓库（1000+ 文件）快照体积约增至 2-3 倍（万级 Method 实体），全量 JSON 载入仍在数百毫秒级
 - `--where` 为全表扫描：`=`/`:` 精确相等、`~` 模糊包含（不支持数值比较，数值过滤请配合 jq）
@@ -433,6 +475,6 @@ node src/cli/index.js --help
 
 - `--where` 数值比较（`lineCount>500`）与索引
 - 增量刷新（按 git diff 重新解析变更文件）
-- props 传递链分析与「组件数据流」展示
-- React 单页应用内部组织路由的推断
+- Python 后端解析（Flask/FastAPI 路由，如 oneapi-service 类微服务，与前后端映射打通）
+- Go 泛型（type parameters）解析与 TS 方法级调用图（calls/calledBy 扩展到 Method）
 - 更新日志见 [CHANGELOG.md](./CHANGELOG.md)

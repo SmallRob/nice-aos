@@ -77,6 +77,14 @@ export function inferFileArchLayer(input) {
   // 桌面客户端组件路径强信号（构建工具约定目录，直判）
   if (relPath.endsWith('.rs') || /\/src-tauri\//.test(relPath)) return 'tauri';
   if (/^electron\/|\/electron\//.test(relPath)) return 'electron';
+  // Go 项目分层：main.go / cmd 为入口；router/controller/middleware/handler 为表现层；
+  // model/dal/dao/relay/service 为业务层；pkg/common/internal 等其余目录归共享层
+  if (relPath.endsWith('.go')) {
+    if (isEntry || /(^|\/)cmd\//.test(relPath)) return 'entry';
+    if (/(^|\/)(routers?|controllers?|middlewares?|handlers?|apis?)\//.test(relPath)) return 'presentation';
+    if (/(^|\/)(models?|dal|dao|repositories?|relay|services?|monitor|biz|domain)\//.test(relPath)) return 'service';
+    return 'shared';
+  }
   if (relPath.endsWith('.d.ts')) return 'types';
   if (isEntry) return 'entry';
   const serviceish = SERVICE_NAME_RE.test(stemOf(relPath)) || /\/services\//.test(relPath);

@@ -44,19 +44,20 @@ export function exportToMarkdown(dataMap) {
     ['vue 文件', proj.vueFileCount ?? 0],
     ['Rust 文件（src-tauri）', proj.rustFileCount ?? 0],
     ['Dart 文件（Flutter）', proj.dartFileCount ?? 0],
+    ['Go 文件（后端/CLI）', proj.goFileCount ?? 0],
     ['油猴脚本文件', proj.userScriptFileCount ?? 0],
     ['模块数', counts.Module],
     ['功能域对象数', counts.Domain ?? 0],
     ['组件数', counts.Component],
     ['自定义 Hook/Composable 数', counts.Hook],
-    ['Store 数（Zustand/Pinia/Riverpod）', counts.Store],
+    ['Store 数（Zustand/Pinia/Vuex/Riverpod）', counts.Store],
     ['Service 模块数', counts.Service],
     ['接口数（Interface）', counts.Interface ?? 0],
     ['类数（Class）', counts.Class ?? 0],
     ['方法/函数数（Method）', counts.Method ?? 0],
-    ['路由数（Overlay/React/Vue Router/Flutter/Next.js）', counts.Route],
+    ['路由数（Overlay/React/Vue Router/Flutter/Next.js/Go）', counts.Route],
     ['Props 传递边数（PropEdge）', counts.PropEdge ?? 0],
-    ['依赖数（npm/pub）', counts.Dependency],
+    ['依赖数（npm/pub/go.mod）', counts.Dependency],
     ['油猴脚本数', counts.UserScript ?? 0],
     ['DOM 注入点数', counts.InjectionPoint ?? 0],
     ['网络端点数', counts.NetworkEndpoint ?? 0],
@@ -129,25 +130,52 @@ export function exportToMarkdown(dataMap) {
   ])));
   out.push('');
 
-  heading('路由地图（Overlay / React Router / Vue Router / Flutter GoRoute+原生 / Next.js App Router）');
+  heading('路由地图（Overlay / React Router / Vue Router / Flutter GoRoute+原生 / Next.js App Router / Go HTTP+CLI）');
   const routeList = dataMap.Route ?? [];
   const routeTypeCounts = {};
   for (const r of routeList) {
     const k = r.routeType ?? 'overlay';
     routeTypeCounts[k] = (routeTypeCounts[k] ?? 0) + 1;
   }
+  const hasGoRoutes = routeList.some((r) => r.routeType === 'go' || r.routeType === 'go-cli');
   out.push(`共 ${routeList.length} 条路由（类型分布：${Object.entries(routeTypeCounts).map(([k, v]) => `${k} ×${v}`).join('、') || '-'}）：`);
   out.push('');
-  out.push(table(['路由', 'routePath', '类型', 'domain', '动态', 'client', 'API 方法', 'backTarget', 'hidesNav', '工厂 props', '组件文件'], routeList.map((r) => [
-    r.overlayId, r.routePath ?? '-', r.routeType ?? 'overlay', r.domain,
-    r.isDynamic === true ? '✓' : '-',
-    r.isClient === true ? 'use client' : (r.isClient === false ? 'server' : '-'),
-    (r.apiMethods ?? []).join('/') || '-',
-    r.backTarget ?? '-', r.hidesNav ?? '-',
-    (r.factoryProps ?? []).length ? `${(r.factoryProps ?? []).length}: ${(r.factoryProps ?? []).slice(0, 5).join(', ')}` : '-',
-    r.componentFileId ? r.componentFileId.slice(5) : `⚠️ ${r.componentRef}`,
-  ])));
+  out.push(table(hasGoRoutes
+    ? ['路由', 'routePath', '类型', 'domain', '动态', 'API 方法', '中间件', '前端调用', 'handler/组件', 'flags']
+    : ['路由', 'routePath', '类型', 'domain', '动态', 'client', 'API 方法', 'backTarget', 'hidesNav', '工厂 props', '组件文件'],
+  hasGoRoutes
+    ? routeList.map((r) => [
+        r.overlayId, r.routePath ?? '-', r.routeType ?? 'overlay', r.domain,
+        r.isDynamic === true ? '✓' : '-',
+        (r.apiMethods ?? []).join('/') || '-',
+        (r.middlewares ?? []).join(' → ') || '-',
+        (r.frontendCalls ?? []).length ? `${(r.frontendCalls ?? []).length}: ${(r.frontendCalls ?? []).slice(0, 3).map((c) => `${c.filePath}:${c.line ?? '?'}`).join(', ')}` : '-',
+        r.componentRef ?? '-',
+        (r.specialFiles ?? []).slice(0, 5).join(', ') || '-',
+      ])
+    : routeList.map((r) => [
+        r.overlayId, r.routePath ?? '-', r.routeType ?? 'overlay', r.domain,
+        r.isDynamic === true ? '✓' : '-',
+        r.isClient === true ? 'use client' : (r.isClient === false ? 'server' : '-'),
+        (r.apiMethods ?? []).join('/') || '-',
+        r.backTarget ?? '-', r.hidesNav ?? '-',
+        (r.factoryProps ?? []).length ? `${(r.factoryProps ?? []).length}: ${(r.factoryProps ?? []).slice(0, 5).join(', ')}` : '-',
+        r.componentFileId ? r.componentFileId.slice(5) : `⚠️ ${r.componentRef}`,
+      ])));
   out.push('');
+
+  // 前后端逻辑映射：未匹配的前端 HTTP 调用（死接口 / 路径漂移 / 其他后端承接）
+  const unmatched = (meta.unmatchedFrontendCalls ?? []);
+  if (unmatched.length > 0) {
+    const matchedTotal = routeList.reduce((a, r) => a + (r.frontendCalls ?? []).length, 0);
+    heading('前后端逻辑映射（前端 HTTP 调用 ↔ Go 路由）');
+    out.push(`前端调用共匹配 ${matchedTotal} 处；未匹配 ${unmatched.length} 处（可能是死接口、路径漂移或由其他后端承接）：`);
+    out.push('');
+    out.push(table(['method', 'path', '前端文件'], unmatched.slice(0, 50).map((c) => [
+      c.method ?? '-', c.path ?? '-', `${c.filePath}:${c.line ?? '?'}`,
+    ])));
+    out.push('');
+  }
 
   heading('页面导航图（navigatesTo 边）');
   const navEdges = routeList.flatMap((r) => r.navigatesToIds.map((t) => [r.overlayId, t.slice(6)]));
@@ -217,9 +245,9 @@ export function exportToMarkdown(dataMap) {
   out.push(table(['组件', '文件', '被渲染次数'], topRendered));
   out.push('');
 
-  heading('Store 一览（Zustand / Pinia / Riverpod）');
-  out.push(table(['Store', '状态键数', 'persist', 'storageKey', '位置', '文件'], (dataMap.Store ?? []).map((s) => [
-    s.name, s.stateKeyCount, s.hasPersist ? '✓' : '-', s.storageKey ?? '-', s.location, s.filePath,
+  heading('Store 一览（Zustand / Pinia / Vuex / Riverpod）');
+  out.push(table(['Store', '提供方', '状态键数', 'persist', 'storageKey', '位置', '文件'], (dataMap.Store ?? []).map((s) => [
+    s.name, s.providerType ?? '-', s.stateKeyCount, s.hasPersist ? '✓' : '-', s.storageKey ?? '-', s.location, s.filePath,
   ])));
   out.push('');
 
@@ -228,7 +256,7 @@ export function exportToMarkdown(dataMap) {
   const allClasses = dataMap.Class ?? [];
   const allMethods = dataMap.Method ?? [];
   const methodById = new Map(allMethods.map((m) => [m.id, m]));
-  const langLabel = (lang) => ({ ts: 'TS', vue: 'Vue', rust: 'Rust', dart: 'Dart' }[lang] ?? 'TS');
+  const langLabel = (lang) => ({ ts: 'TS', vue: 'Vue', rust: 'Rust', dart: 'Dart', go: 'Go' }[lang] ?? 'TS');
   if (ifaces.length > 0 || allClasses.length > 0) {
     const implementersByIface = new Map();
     for (const c of allClasses) {

@@ -95,6 +95,78 @@ function isPiniaDefineStoreCall(ts, node, importMap) {
   return !source || source === 'pinia';
 }
 
+// ---- 前后端 API 映射：前端 HTTP 调用采集（X.get/post/put/delete/patch('/path') / fetch('/path')）----
+
+const HTTP_METHOD_PROPS = new Set(['get', 'post', 'put', 'delete', 'patch', 'head', 'options']);
+// axios 封装实例常见命名（service({url, method}) 配置对象调用形态）
+const HTTP_CLIENT_NAMES = new Set(['service', 'request', 'api', 'http', 'axios', '$http', 'instance', 'fetcher']);
+const HTTP_CLIENT_MODULE_RE = /(?:^|\/)[^/]*(?:axios|request|http|api)[^/]*$/i;
+
+// 首参路径文本：字符串字面量或模板串（`${x}` 保留原文，后端 :param 通配匹配）
+function firstArgPath(ts, arg) {
+  if (!arg) return null;
+  if (ts.isStringLiteralLike(arg)) return arg.text;
+  if (ts.isTemplateExpression(arg)) {
+    let text = arg.head.text;
+    for (const span of arg.templateSpans) {
+      text += `\${${span.expression.getText()}}${span.literal.text}`;
+    }
+    return text;
+  }
+  return null;
+}
+
+function looksLikeHttpPath(p) {
+  return typeof p === 'string' && (p.startsWith('/') || /^https?:\/\//.test(p));
+}
+
+function extractHttpCall(ts, node, sourceFile, importMap) {
+  const pos = node.getStart(sourceFile);
+  const line = sourceFile.getLineAndCharacterOfPosition(pos).line + 1;
+  if (ts.isIdentifier(node.expression) && node.expression.text === 'fetch') {
+    const p = firstArgPath(ts, node.arguments[0]);
+    if (!looksLikeHttpPath(p)) return null;
+    let method = 'GET';
+    const opt = node.arguments[1];
+    if (opt && ts.isObjectLiteralExpression(opt)) {
+      for (const prop of opt.properties) {
+        if (ts.isPropertyAssignment(prop) && prop.name?.getText(sourceFile) === 'method'
+            && ts.isStringLiteralLike(prop.initializer)) {
+          method = prop.initializer.text.toUpperCase();
+        }
+      }
+    }
+    return { method, path: p, line };
+  }
+  // axios 封装实例配置对象形态：service({url: '/api/user', method: 'post', data})（gin-vue-admin 惯例）。
+  // 判定：调用名为常见 HTTP 封装，或该名 import 自含 axios/request/http/api 的模块；首参须含 url 字符串属性
+  if (ts.isIdentifier(node.expression) && node.arguments[0]
+      && ts.isObjectLiteralExpression(node.arguments[0])) {
+    const name = node.expression.text;
+    const module = importMap.get(name);
+    const isClient = HTTP_CLIENT_NAMES.has(name)
+      || (module !== undefined && (module === 'axios' || HTTP_CLIENT_MODULE_RE.test(module)));
+    if (isClient) {
+      let p = null;
+      let method = 'GET';
+      for (const prop of node.arguments[0].properties) {
+        if (!ts.isPropertyAssignment(prop)) continue;
+        const key = prop.name?.getText(sourceFile);
+        if (key === 'url') p = firstArgPath(ts, prop.initializer);
+        else if (key === 'method' && ts.isStringLiteralLike(prop.initializer)) method = prop.initializer.text.toUpperCase();
+      }
+      if (looksLikeHttpPath(p)) return { method, path: p, line };
+    }
+  }
+  if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)
+      && HTTP_METHOD_PROPS.has(node.expression.name.text)) {
+    const p = firstArgPath(ts, node.arguments[0]);
+    if (!looksLikeHttpPath(p)) return null;
+    return { method: node.expression.name.text.toUpperCase(), path: p, line };
+  }
+  return null;
+}
+
 // 从节点子树中找第一个动态 import 的模块字符串（路由懒加载 component: () => import('...')）
 function findDynamicImportSpec(ts, node) {
   let found = null;
@@ -245,7 +317,10 @@ export function analyzeFile(filePath, content, projectRoot) {
     jsxPropRenders: [],
     zustandCreates: [],
     piniaCreates: [],
+    globPatterns: [],
     vueRoutes: [],
+    vueGlobalComponents: [],
+    httpCalls: [],
     lazyWrappers: [],
     hasSingletonClass: false,
     hasClassExport: false,
@@ -406,9 +481,50 @@ export function analyzeFile(filePath, content, projectRoot) {
             pos: node.getStart(sourceFile),
           });
         }
+      } else if (ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'component'
+        && ts.isIdentifier(node.expression.expression)
+        && node.expression.expression.text === 'Vue') {
+        // Vue.component('X', Y) 全局组件注册（main.js）：builder 聚合为全仓库注册表
+        const first = node.arguments[0];
+        const second = node.arguments[1];
+        if (first && ts.isStringLiteralLike(first) && second && ts.isIdentifier(second)) {
+          facts.vueGlobalComponents.push({ name: first.text, local: second.text });
+        }
+      } else if (ts.isPropertyAccessExpression(node.expression)
+        && VUE_ROUTER_NAV_METHODS.has(node.expression.name.text)
+        && ts.isPropertyAccessExpression(node.expression.expression)
+        && node.expression.expression.name.text === '$router') {
+        // this.$router.push('/path')（Vue2 Options API 导航）
+        const first = node.arguments[0];
+        if (first && ts.isStringLiteralLike(first)) {
+          facts.overlayOpens.push({ target: first.text, pos: node.getStart(sourceFile) });
+        }
       }
+      // 前后端 API 映射：采集本调用为 HTTP 请求（builder 与 go 路由路径匹配）
+      const httpInfo = extractHttpCall(ts, node, sourceFile, facts.importMap);
+      if (httpInfo && facts.httpCalls.length < 500) facts.httpCalls.push(httpInfo);
       const calleeText = node.expression.getText(sourceFile);
-      if (REACT_LAZY_WRAPPERS.has(calleeText) && facts.importMap.get(calleeText.split('.').pop()) === 'react') {
+      // import.meta.glob(['/src/views/**.vue', '!/src/views/auth/**.vue'])（Vite 动态批量导入）：
+      // 采集模式供 builder 豁免 glob 注册文件的孤儿候选
+      if (ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'glob'
+        && ts.isMetaProperty(node.expression.expression)) {
+        const patterns = [];
+        for (const arg of node.arguments) {
+          if (ts.isStringLiteralLike(arg)) patterns.push(arg.text);
+          else if (ts.isArrayLiteralExpression(arg)) {
+            for (const el of arg.elements) {
+              if (ts.isStringLiteralLike(el)) patterns.push(el.text);
+            }
+          }
+        }
+        if (patterns.length) facts.globPatterns.push({ patterns, fromFile: filePath });
+      }
+      // defineAsyncComponent(() => import('...'))（Vue）：unplugin-auto-import 场景可能无 import 记录，不校验来源
+      const isVueAsync = calleeText === 'defineAsyncComponent'
+        || (calleeText.split('.').pop() === 'defineAsyncComponent' && facts.importMap.get(calleeText.split('.').pop()) === 'vue');
+      if ((REACT_LAZY_WRAPPERS.has(calleeText) && facts.importMap.get(calleeText.split('.').pop()) === 'react') || isVueAsync) {
         const arg = node.arguments[0];
         if (arg && ts.isArrowFunction(arg)) {
           const inner = arg.body;
@@ -685,6 +801,7 @@ export function analyzeFile(filePath, content, projectRoot) {
       hasPersist, storageKey,
       line: sourceFile.getLineAndCharacterOfPosition(entry.pos).line + 1,
       lineCount: sourceFile.text.slice(entry.pos, entry.end).split('\n').length,
+      providerType: 'zustand',
     });
   }
 
@@ -700,16 +817,94 @@ export function analyzeFile(filePath, content, projectRoot) {
       storageKey: pinia.storageKey,
       line: sourceFile.getLineAndCharacterOfPosition(entry.pos).line + 1,
       lineCount: sourceFile.text.slice(entry.pos, entry.end).split('\n').length,
+      providerType: 'pinia',
     });
   }
   delete facts.zustandCreates;
   delete facts.piniaCreates;
+
+  // Vuex store 检测（Vue2）：/store/ 目录或导入 vuex 的文件，
+  // default export（export default {...} / export default new Vuex.Store({...}) / export default X
+  // 回溯 const X = {...}，RuoYi 风格）对象含 state/actions/mutations → store 事实
+  const isVuexCandidate = filePath.includes('/store/') || [...facts.importMap.values()].some((s) => s === 'vuex');
+  if (isVuexCandidate) {
+    const topVarInits = new Map(); // 顶层 const X = <init>
+    for (const stmt of sourceFile.statements) {
+      if (ts.isVariableStatement(stmt)) {
+        for (const d of stmt.declarationList.declarations) {
+          if (ts.isIdentifier(d.name) && d.initializer) topVarInits.set(d.name.text, d.initializer);
+        }
+      }
+    }
+    const asStoreObject = (expr) => {
+      if (ts.isObjectLiteralExpression(expr)) return expr;
+      if (ts.isNewExpression(expr)) {
+        const arg = expr.arguments?.[0];
+        if (arg && ts.isObjectLiteralExpression(arg)) return arg;
+      }
+      return null;
+    };
+    let vuexObj = null;
+    for (const stmt of sourceFile.statements) {
+      if (!ts.isExportAssignment(stmt)) continue;
+      vuexObj = asStoreObject(stmt.expression)
+        ?? (ts.isIdentifier(stmt.expression) ? asStoreObject(topVarInits.get(stmt.expression.text) ?? null) : null);
+      break; // 只看顶层第一个 export default
+    }
+    if (vuexObj) {
+      const stateKeys = [];
+      const actionKeys = [];
+      const sectionInit = (prop) => {
+        if (ts.isPropertyAssignment(prop)) return prop.initializer;
+        // RuoYi dict.js 风格：export default { namespaced: true, state, mutations } shorthand 引用顶层 const
+        if (ts.isShorthandPropertyAssignment(prop)) return topVarInits.get(prop.name.text) ?? null;
+        return null;
+      };
+      for (const prop of vuexObj.properties) {
+        const section = prop.name?.getText(sourceFile);
+        if (section !== 'state' && section !== 'actions' && section !== 'mutations') continue;
+        const init = sectionInit(prop);
+        if (!init) continue;
+        if (section === 'state') {
+          const stateObj = unwrapStateObject(ts, init)
+            ?? (ts.isObjectLiteralExpression(init) ? init : null);
+          stateKeys.push(...objectPropKeys(ts, stateObj, sourceFile));
+        } else if (ts.isObjectLiteralExpression(init)) {
+          for (const k of objectPropKeys(ts, init, sourceFile)) {
+            if (!actionKeys.includes(k)) actionKeys.push(k);
+          }
+        }
+      }
+      // 组件 .vue 选项对象无 state/actions/mutations 键，stateKeys/actionKeys 双空自动跳过
+      if (stateKeys.length || actionKeys.length) {
+        facts.stores.push({
+          name: path.posix.basename(filePath).replace(/\.(tsx?|jsx?)$/, ''),
+          stateKeys,
+          actionKeys,
+          hasPersist: false,
+          storageKey: null,
+          line: sourceFile.getLineAndCharacterOfPosition(vuexObj.getStart(sourceFile)).line + 1,
+          lineCount: content.split('\n').length,
+          providerType: 'vuex',
+        });
+      }
+    }
+  }
 
   // Vue Router 路由提取：router/ 目录（或导入 vue-router）文件中 path+component 对象 → RouteRecordRaw
   if (filePath.includes('/router/') || [...facts.importMap.values()].some((s) => s === 'vue-router' || s.startsWith('vue-router/'))) {
     const localFunctions = new Map();
     for (const stmt of sourceFile.statements) {
       if (ts.isFunctionDeclaration(stmt) && stmt.name) localFunctions.set(stmt.name.text, stmt);
+      // 顶层 const ClientLogin = () => import('...') 形式的懒加载包装（snowy 等路由文件惯用）
+      if (ts.isVariableStatement(stmt)) {
+        for (const d of stmt.declarationList.declarations) {
+          if (ts.isIdentifier(d.name) && d.initializer
+            && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) {
+            localFunctions.set(d.name.text, d.initializer);
+          }
+        }
+      }
     }
     const resolveComponentRef = (init) => {
       if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) {

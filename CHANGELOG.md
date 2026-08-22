@@ -2,6 +2,89 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.18.0] - 2026-08-22
+
+### 新增
+
+- **Vue 3 `<script setup>` 变量域解析**：setup 块内 `ref/shallowRef/reactive/shallowReactive/customRef/toRef` 声明 → state 键、`computed()` 调用 → computed 键、函数声明与 const 函数表达式 → method 键、`storeToRefs(...)` 解构名与 store 实例变量（`const userStore = useUserStore()`）→ store 键；store hook 命名兼容 `useXxxStore`（Pinia 官方惯例）与 `xxxStore`（snowy 的 globalStore/keepAliveStore 等）双形态，`storeToRefs(store)` 变量参数可溯源到真实 hook 名；变量域统一进入模板绑定 props 来源分类（此前 script setup 组件的 props 全被误判为 computed）与 vclass 类视图实体输入（stateCount 真实计数）
+- **Store providerType 字段与展示**：Zustand（`zustand`）/ Pinia（`pinia`）/ Vuex（`vuex`）Store 实体携带 providerType；viewer「业务数据图」Store 卡片与单元清单、exporter Markdown 表格新增 provider 类型徽章/列
+- **异步组件与路由 const 懒加载包装统一解析**：`const X = defineAsyncComponent(() => import('./x.vue'))`（Vue3 setup 惯用，unplugin-auto-import 场景无 import 记录不校验来源）与路由文件顶层 `const X = () => import(...)` 包装变量统一进组件解析索引——模板标签正常建立 renders 关系与 Props 传递边，路由 component 引用关联目标组件文件
+- **Vite 动态注册死代码豁免**：`import.meta.glob(['/src/views/**.vue', '!/src/views/auth/**.vue'])` 模式采集（含 `!` 排除段、相对路径模式归一），命中文件豁免孤儿候选；vite.config.mjs 的 `unplugin-vue-components` `dirs`（自动注册组件目录）与 `unplugin-auto-import` `dirs` 目录内文件同样豁免（词法近似解析 vite 配置，`r('src/components')` 形式支持）
+- **`<script setup name="X">` 组件命名**：vite-plugin-vue-setup-extend 的 name 属性优先于文件名派生（defineOptions 仍最高优先）
+- **Ant Design Vue 排除**：`a-` 前缀标签（a-table/a-button 等）不进组件标签集与 props 传递链，与 element-ui `el-` 前缀同规则
+
+### 修复
+
+- **单行 SFC template 块丢失（定义性 bug）**：`splitSfc` 的 template 闭合配对正则误用行首锚定（`/^<(\/?)template\b/gm`），`<template>…</template>` 同行的单行 SFC 闭合标签不在行首导致 template 块整体丢失（无标签集、无传递链、无导航边）；改为非锚定配对（嵌套 template 深度计数不受影响）
+- **路由组件关联断裂**：vue-router 路由文件中 `component: ClientLogin` 引用顶层 const 懒加载包装时无法定位目标 .vue 文件（此前仅支持内联 `() => import(...)`），路由地图出现无组件文件的路由条目
+- **Go 解析五盲区（gin-vue-admin 形态对齐，参考 smartide-server / smartide-agent）**：
+  - **子目录 go.mod 识别**：融合仓库（`server/go.mod` + `web/` 前端）根目录无 go.mod 时 framework 误判——从 `.go` 文件所在目录逐级向上发现全部 go.mod（多模块并存取源码最多者为主），Go 依赖并入、`goModule.dir` 记录所在目录
+  - **`zap.Any` 等日志调用误报路由**：任意 `.Any("error", err)` 形态被误判为 gin 路由注册——引入 router 变量白名单（`gin.Engine`/`gin.RouterGroup` 类型变量与函数参数、`gin.New/Default` 产物），非 router 变量上的 HTTP 方法调用不产路由
+  - **handler 字段链间接引用**：gin-vue-admin 惯例 `baseApi := v1.ApiGroupApp.SystemApiGroup.BaseApi` 后 `userRouter.POST("register", baseApi.Register)` 的 handler 无法关联 Method——字段链变量表展开为完整 `handlerChain`，链首 import 别名定位目标包子树内同名方法（纯分组目录如 `api/v1` 无直下文件时按子树搜索）
+  - **前端 axios 配置对象形态调用丢失**：gin-vue-admin 前端 `service({ url: '/user/register', method: 'post', data })` 不产 httpCalls（此前仅支持 `service.get(...)` 方法形态）——封装实例（`@/utils/request` 导入的 axios 实例）配置对象字面量的 `url`/`method` 属性提取为前端调用并参与路由匹配
+  - **深链调用链丢失**：`service.ServiceGroupApp.SystemServiceGroup.UserService.RegisterUser()` 形态的链长 ≥3 限定调用（链首为 import 包别名）不进调用链——`pkgchain` 边类型在目标包子树内按末段方法名搜索（词法近似）
+- **项目根目录识别优化（定位任意目录均可分析）**：
+  - **兄弟项目发现（siblingProjects）**：定位子项目目录（`web/`）或代码子目录（`web/src`）时，向上定位仓库根（`.git` / `go.work` / `pnpm-workspace.yaml` / `lerna.json` / `nx.json`，上限 4 层）后识别同级项目清单；普通目录（无仓库标记）不吸附邻居，只报告不并入扫描范围与依赖
+  - **Go module 上级发现**：定位 Go module 子目录（如 `server/api`）时向上发现 go.mod（`goModule.dir` 以 `..` 相对形态表达），goResolver 以 `path.resolve` 折叠基准目录计算 import 目标——internal 文件边、路由 handler 关联、跨包调用链在子目录定位下全部正确
+  - **依赖并入防误吸附**：无 `.git`、无根清单且子项目超过 4 个的「代码集合目录」（如工作区下并排放置的多个独立项目）只报告 subProjects 不并入依赖清单，避免框架误判与依赖污染
+
+### 验证
+
+- 新增 `test/vue3SetupFixes.test.mjs`（8 个用例）：script setup 变量域收集与七类来源分类（含 setup name 属性、storeToRefs 解构、vueOptions 扩展键集）、snowy 形态 store hook（无 use 前缀 + storeToRefs 变量参数溯源）、a- 前缀标签排除、路由顶层 const 懒加载包装组件关联、Pinia setup store（providerType + state/action 键）、Zustand providerType、defineAsyncComponent renders 关系与 Props 传递链、import.meta.glob + unplugin 目录孤儿豁免（含真孤儿保留）
+- 新增 Go 盲区与根识别用例（`goAnalyzer.test.mjs` +1 / `goFrontendMap.test.mjs` +2 / `projectScanner.test.mjs` +4）：gin-vue-admin 形态单元测试（函数参数 router / 无前导斜杠 Group / handler 链展开 / 链式 Use / zap.Any 不误报）、融合仓库端到端（子目录 go.mod → framework=go + 依赖并入 + subProjects、handler 链解析到 Method、前端 service 配置对象匹配、深链调用链 Register→RegisterUser）、Go module 子目录定位端到端（`..` 折叠 → handler / 跨包调用链 / internal 文件边）、根识别四场景（定位 web/ 发现兄弟 server、定位 web/src 同样发现、定位仓库根不重复报告 + 代码集合目录防误吸附、定位 server/api 向上发现 go.mod）
+- 总计 170 个测试全部通过（既有 162 无回归）；真实项目冒烟：
+  - **snowy-admin-web**（Vue 3 + Vite + Pinia + Antdv + unplugin，597 文件）：206 条路由全部关联组件文件（const 包装修复生效）、67 条 PropEdge / 164 props（来源分布 computed×35 / handler×62 / state×41 / literal×23 / store×3——`kStore = keepAliveStore()` 无 use 前缀形态正确溯源）、9 个 Pinia store 全部携带 providerType=pinia（stateKeys 正确：globalStore 20 键等；纯 action store state=0 属实）、孤儿候选从误报收敛至 15 个（hooks/utils/403 页等真实候选）；端到端蓝图（snapshot.json 2.7MB + blueprint.html 746KB + blueprint.md 95KB），官方 CLI export 链路复核通过
+  - **smartide-server**（gin-vue-admin 融合仓库，516 文件含 309 .go + web 前端）：`framework=go` 正确判定（子目录 `server/go.mod` 发现 + go 依赖并入 + subProjects 报告 server:go / web:npm）；96 条 gin 路由中 92 条 handler 解析到 Method（`baseApi.Register` 字段链展开生效；其余 4 条为 swagger/health/ws 内联闭包注册，如实无命名 handler）、`zap.Any` 无误报路由；**76 条路由命中前端调用**（web 前端 `service({url, method})` 配置对象形态提取生效）、40 条未匹配清单如实暴露；669 条调用边；定位 `web/` 前端子项目时 `framework=vue` + 兄弟项目 `server:go` 正确识别；端到端蓝图（snapshot.json 6.9MB + blueprint.html 563KB）
+  - **回归**：aise-ui（Vue 2）198 PropEdge / 519 props / 159 vclass / 127 vue routes / 7 store 与 0.16.0 基线完全一致；leaniss-oneapi（Gin 融合仓库）124 路由 / 45 前端匹配 / 4 未匹配与 0.17.0 基线完全一致，定位 `router/` 子目录时 goModule 上级发现（dir=`..`）且 124 条路由完整解析；smartide-agent（Go CLI 代理）framework=go 正常；nice-today-2.0（React）831 Component 一致，PropEdge 414→429（+15 条为 React.lazy 包装组件此前无法解析、本期统一进解析索引的**预期增益**，lazy 页面的 props 传递补全）
+
+## [0.17.0] - 2026-08-22
+
+### 新增
+
+- **Go 语言解析器（goAnalyzer，CLI / agent 代理 / Gin 后端）**：独立的轻量语法级解析器（深度状态机 + 双通道噪声剥离：全剥离通道供块状态机、保字符串通道供字面量提取，不依赖 gopls/tree-sitter），与 ts/vue/rust/dart 解析器平级共存，使 Go CLI、agent 代理类小程序与「Go 后端 + 前端」融合仓库可生成完整分析蓝图
+  - **项目识别**：`go.mod` 存在且有 `.go` 源码 → `framework=go`（混合仓库前端文件仍各自解析）；`require` 段（分组块与单行形式，exclude/retract 块跳过）解析为 Dependency（`source=go`）；`vendor/`、`testdata/`、`bin/` 自动跳过
+  - **实体映射**：`type X struct` → Class（`kind=struct`，字段含 `json/yaml` tag 与匿名内嵌——`*Base` 名取末段）、`type X interface` → Interface（嵌入接口 extends）；方法（值/指针接收者）与顶层函数 → Method（首字母大写判定 exported，`init/main` 恒为入口不判死）；package 目录 → Module；**Go 包 = 目录**：同包跨文件方法合并（接收者在另一文件声明的 `goOrphanMethods` 回填到声明文件）
+  - **CLI 命令树（cobra）**：`var xxxCmd = &cobra.Command{Use/Short}` + `rootCmd.AddCommand(xxxCmd)` 边 → Route（`routeType=go-cli`，routePath 为 `smartide k8s init` 式命令链，多级树遍历 + 环防御）；`Flags()/PersistentFlags()` 注册的 flag 提取为 `-T/--type` 徽章；跨包限定子命令（`hostCmd.AddCommand(host.HostGetCmd)`）经 importMap 定位目标包目录归一；声明后从未注册的孤儿命令（如 smartide 被覆盖的 `help`）独立成根，天然暴露死代码
+  - **HTTP 路由（Gin / 标准库）**：`router.Group("/api")` 前缀链累积 + `.GET/.POST/.PUT/.DELETE/.PATCH/Any("/path", ...)` → Route（`routeType=go`，apiMethods + `:param`/`*wildcard` 动态段标记）；handler 函数值（`controller.Register`）经 importMap 定位包目录关联到 Method（复用 componentId 机制，viewer 跳转方法签名）；组级 `apiRouter.Use(middleware.Auth())` 中间件按前缀链继承 + 内联中间件合并；`Handle("GET", ...)` 与 `http.HandleFunc` 标准库形式兜底；`NoRoute`/静态托管不产路由
+  - **逻辑走向（调用链）**：包级函数跨文件互调（同包无需 import）+ `pkgAlias.Func()` 跨包调用（importMap 定位目标包目录）+ 方法体内调用（接收者变量/参数类型/构造字面量类型推断，`[]*User`/`map[string]T`/`*pkg.T` 归一为基类型）→ Method 的 `calls/calledBy`；Method 死代码候选按包级标识符引用判定
+  - **前后端逻辑映射（融合仓库核心价值）**：tsAnalyzer 新增 httpCalls 提取——前端 `API.get/post/put/delete/patch('...')`、`axios.x()`、`fetch()`（含模板串 `` `/api/user/${id}` `` 与 options.method）→ 与 Go 路由路径分段匹配（`:param` 通配任意段、`*wildcard` 吞尾段、去 query、尾斜杠归一；method 不一致仍记录，详情可见）→ `Route.frontendCalls`（文件+行号+method 溯源）；未匹配调用进 `_meta.unmatchedFrontendCalls` 清单（路由地图「未匹配的前端调用」面板，用于发现死接口/路径漂移/外部 API 依赖）
+  - **架构层（Go 目录信号）**：`main.go`/`cmd/` → entry，`router/controller/middleware/handler/api` → presentation，`model/dal/dao/repository/relay/service/biz/domain/monitor` → service，其余 → shared
+  - **路由地图增强**：Go HTTP 路由（方法徽章 + 中间件链 + 前端调用数徽章与清单）与 Go CLI 命令（路径层级树按命令空格段嵌套，flags 见详情）统一进既有路由地图视图；域取首个业务段（跳过 `api`/`apis`/`v1` 网关前缀）；类型配色 go=天蓝、go-cli=灰蓝
+- **README 对象表/框架检测/已知限制同步**：Project framework 枚举与 `goFileCount`、Interface/Class/Method/Route/Dependency 的 Go 语义说明、go.mod 框架检测、Go 已知限制（泛型不解析、调用链静态提取、Run 闭包不实体化、httpCalls 词法近似边界）
+
+### 修复
+
+- **蓝图实体类图语言配色缺 Go（Go 实体回退 TS/JS 蓝）**：`LANG_META` 缺 `go` 条目，Go struct/interface 的 UML 类框描边与头部底色回退为 TS/JS 蓝 `#58a6ff`，与图例语义冲突；语言分布条形图映射与图例均为硬编码四语言，Go 条同样回退蓝色且图例无 Go 说明。修复：`LANG_META` 新增 `go`（gopher 蓝 `#00add8`），CSS 新增 `--go` 变量与 `.bar.go` 类；图例改为**数据驱动**——按 `byLanguage` 实际语言从 `LANG_META` 取色生成，只显示项目内存在的语言（Go 项目不再显示无关的 TS/Vue/Rust 图例项），颜色与类图节点描边单一来源同源
+
+### 验证
+
+- 新增 `test/goAnalyzer.test.mjs` + `test/goFrontendMap.test.mjs`（13 个用例）：struct/interface/接收者方法提取（tag 字段/匿名内嵌/exported 判定）、调用链三类提取（pkg 跨包/local 同包/method 接收者推断）、cobra 命令树（Use/Short/flags/AddCommand 边）、gin 路由（Group 前缀累积/中间件/handler/动态段/标准库兜底）、go.mod 检测 + vendor 跳过、端到端实体入快照（Class/Method/Module/archLayer/依赖）、cobra→Route 命令链、gin→Route handler Method 关联、Go 项目 props 链为空不影响既有管线、tsAnalyzer httpCalls 提取、前端调用匹配（:param 通配/尾斜杠归一/未匹配清单）、viewer 路由地图视图模型（前端调用指标/go 类型分布/命令树字段）、viewer 实体类图 Go 配色（CSS 契约 + 内嵌脚本 mock DOM 渲染：图例 gopher 蓝圆点 / bar go 分布条 / 类框描边 `#00add8` / 不回退 TS 蓝）
+- 总计 153 个测试全部通过（既有 140 无回归）；真实项目冒烟：
+  - **smartide/cli**（cobra CLI）：161 个 .go 全扫（含根 `main.go` 入口识别），112 struct / 6 interface / 646 Method / 796 条调用边 / 114 个 go.mod 依赖；CLI 命令树 24 条命令链——`smartide` 根 + 16 个一级命令（init/start/new/stop/remove/version/list/get/host/reset/update/config/login/logout/connect/k8s）+ host×4 / k8s×2 子命令（最大深度 3：`smartide k8s init`）+ 孤儿 `help` 命令（声明后从未 AddCommand，真实死代码信号）
+  - **leaniss-oneapi**（Gin + GORM + React 三主题融合仓库）：461 文件（222 .go + 239 .js）全扫，244 struct / 4 interface / 1224 Method / 994 条调用边 / 101 个 go 依赖；124 条 gin HTTP 路由（43 条 `:param`/`*target` 动态段、全部携带中间件链如 CriticalRateLimit/TurnstileCheck/AdminAuth）；**前后端映射 45 条路由命中前端调用**（三主题 default/air/berry 的 `API.get('/api/channel/...')` 等散落组件调用全部溯源到文件+行号）；未匹配前端调用 4 条（telegram oauth 登录 + 3 处 GitHub Releases 外部 API——如实暴露外部依赖）；`framework=go` 正确判定；端到端蓝图（snapshot.json 1.6MB + blueprint.html 561KB）
+  - **回归**：nice-today-2.0（React）414 PropEdge / 831 Component 与 0.16.0 基线完全一致（tsAnalyzer 新增 httpCalls 不影响既有产出）
+
+## [0.16.0] - 2026-08-22
+
+### 新增
+
+- **Vue2（Options API）props 传递链分析**：Vue SFC 模板绑定与 React JSX 属性同构接入 PropEdge 体系（`prop:A→B` 组件对聚合），「组件数据流」标签页对 Vue2 项目可用
+  - **Options API 选项解析**：`export default {}` / `Vue.extend({})` / `defineComponent({})` 提取 `props`（对象/数组/混合形式，含 type）、`data`（对象/函数/方法形式）、`computed`/`methods` 键集、`components` 局部注册表；`mapState/mapGetters/mapActions/mapMutations` spread 展开提取 storeKeys（含 Vuex 模块名：双参 `mapState('app', [...])` 首参与箭头函数体 `state.app.x` 两种来源）
+  - **模板绑定七类来源分类**：`:prop` / 静态属性 / 裸属性 / `v-model`（含 `v-model:arg`）/ `.sync` 修饰符剥离 / `@event`（事件回调记 handler，name 形如 `@save`）/ `v-bind="obj"` spread；表达式根标识符按 props → data → store → methods → computed 顺序判定，与 React 版语义对齐
+  - **组件标签解析**（统一 helper）：局部 `components` 注册表 → import 索引（local 名 + PascalCase 双键，default 导入取目标文件 primary 组件）→ `main.js` 的 `Vue.component()` 全局注册兜底 → 同文件兜底；kebab-case 标签 / camelCase 导入名 / 文件派生名（`day.vue` ↔ `CrontabDay`）均可对齐
+  - **排除规则**：element-ui `el-` 前缀、原生 HTML / Vue 内置标签（router-view/transition 等）不进传递链；`v-if/v-for/ref/key/class/style/slot` 等指令与 DOM 透传属性跳过
+- **Vue 组件类视图实体（vclass）**：每个 `.vue` 文件 primary 组件合成为 `kind=component` 的 Class 实体（`vclass:X`，language=vue）——props 为字段（含 type）、computed + methods 为方法实体（`vmethod:X.key`）；组件 renders 组合关系回填为 vclass 间 rendersIds（目标同为 vclass 才成边，保持类图纯净），「实体类图」标签页对 Vue2 项目可用
+- **类图 renders 组合边渲染**：UML 类图新增 renders 边（绿色实线箭头 + `arr-rnd` marker），区别于 implements（青色虚线）/ extends（紫色实线）；图例与统计 chips 同步展示 renders 边数；实体构造型标签新增 `«component»`
+- **Vuex store 检测（Vue2）**：`/store/` 目录或导入 vuex 的文件，default export（对象字面量 / `new Vuex.Store({})` / RuoYi 风格 shorthand 引用顶层 const）提取 `stateKeys` + `actionKeys`（actions + mutations 合并）为 Store 实体（`providerType=vuex`），「业务数据图」对 Vuex 项目可用
+- **router-link 静态导航边**：模板内 `<router-link to="/path">` 静态路径 → 文件所属路由 → 目标路由的 `navigatesToIds`（动态 `:to` 含表达式不可静态解析，跳过）；`this.$router.push('/path')` 调用同步支持
+- **`@` 别名解析增强（projectScanner）**：vue.config.js 的 `configureWebpack.resolve.alias`（支持 `resolve('src')` / `path.resolve(__dirname, 'src')` / `'src'` 三种值形式）与 jsconfig.json paths 解析；存在 vue.config.js + `src/` 时兜底 `@/* → src/*`（vue-cli 惯例）
+- **`build` 目录源码树豁免**：构建产物目录名 `build` 在 `src/` 源码树内不再跳过（如 RuoYi 的 `src/views/tool/build/` 业务源码目录）；`node_modules`/`.git` 等其余跳过项不受影响
+
+### 验证
+
+- 新增 `test/vuePropsChain.test.mjs`（8 个用例）：Options API 选项提取（props 定义/data/computed/methods/components/storeKeys 模块名）、模板绑定七类来源分类（forward/state/store/handler/computed/literal/spread + v-model/.sync/静态/裸属性 + router-link 导航）、@ 别名解析与 Vuex store 检测、PropEdge 聚合（局部注册 + 全局注册 + renderCount + 出入度 + passesProps）、vclass 类实体（props 字段/computed+methods 方法/renders 组合边）、路由导航边、viewer propFlow + 类视图 renders 渲染（mock DOM 执行内嵌脚本）、Vue 无绑定项目 propFlow 为 null 且 vclass 仍产出
+- 总计 140 个测试全部通过（既有 132 无回归）；真实项目冒烟：aise-ui（Vue 2.6 + element-ui + vuex 3 + vue-router 3，268 文件）：unresolvedImports = 0（@ 别名全量解析）、198 条 PropEdge / 519 props（来源分布 state×269 / handler×141 / computed×78 / literal×27 / forward×3）、81 个组件 renders 关系、7 个 Vuex store（providerType=vuex）、162 个 vclass 实体（207 条 renders 组合边）、127 条 vue 路由 + 2 条 router-link 静态导航边；端到端蓝图（snapshot.json 1.6MB + blueprint.html 620KB）核验组件数据流 / 实体类图 / 业务数据图 / 路由地图四 Tab 数据齐备；nice-today-2.0（React）回归：414 PropEdge / 831 组件与 0.15.0 基线完全一致
+
 ## [0.15.0] - 2026-08-22
 
 ### 新增

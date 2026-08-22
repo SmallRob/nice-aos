@@ -9,6 +9,7 @@ import { analyzeRustFileFromDisk, analyzeRustFile, resolveRustUse } from '../ana
 import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
 import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { analyzeDartFile, analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
+import { analyzeGoFile, analyzeGoFileFromDisk } from '../analyzers/goAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
   summarizeModule, buildProjectProfile,
@@ -21,12 +22,13 @@ const KIND_SUFFIXES = [
   ['Button', 'button'], ['Widget', 'widget'], ['View', 'view'], ['Provider', 'provider'],
   ['Overlay', 'overlay'], ['Tab', 'tab'], ['Picker', 'picker'], ['Badge', 'badge'],
 ];
-const ENTRY_BASENAMES = new Set(['App.tsx', 'index.tsx', 'main.tsx', 'index.ts', 'main.ts', 'main.js', 'App.vue', 'main.dart']);
+const ENTRY_BASENAMES = new Set(['App.tsx', 'index.tsx', 'main.tsx', 'index.ts', 'main.ts', 'main.js', 'App.vue', 'main.dart', 'main.go']);
 const SERVICE_NAME_RE = /(Service|Engine|Manager|Repository|Factory)$/;
 
 // 入口识别：位于任一扫描根顶层的常见入口文件名（多根 monorepo 每个根均可有自己的入口）
 function isEntryFile(relPath, roots) {
   if (!ENTRY_BASENAMES.has(path.posix.basename(relPath))) return false;
+  if (relPath.endsWith('.go')) return true; // Go 每个 main.go 都是二进制入口（cmd/<name>/main.go 惯例）
   const dir = path.posix.dirname(relPath);
   return roots.some((r) => dir === r || dir === r.replace(/\/+$/, ''));
 }
@@ -38,13 +40,74 @@ function componentKind(name) {
   return 'common';
 }
 
+// kebab-case / camelCase → PascalCase（Vue 标签/注册键/导入名统一规范形式）
+function pascalCaseName(s) {
+  return s
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join('');
+}
+
 function moduleLayerOf(dir) {
   const parts = dir.split('/');
   if (parts[0] === 'src') return parts[1] ?? 'src';
   return parts[0];
 }
 
+function dirOf(relPath) {
+  const d = path.posix.dirname(relPath);
+  return d === '.' ? '' : d;
+}
+
+// Go import 解析（URL 风格路径语义与 npm 不同，不走通用 resolver）：
+//   module 前缀命中 → internal（目标 = package 目录下全部 .go 文件，Go 包以目录为单位）；
+//   首段不含 '.' → 标准库 builtin；其余 → external（go.mod require 最长前缀匹配定包名，未声明取整路径）。
+// goModuleDir 为 go.mod 所在目录（相对 projectRoot）：''（根）/ 'server'（子目录）/
+// '../..'（用户定位到 module 子目录，基准在上级）——import 目录用 path.resolve 折叠后转回相对路径
+function createGoImportResolver(goFiles, goModuleName, goDepNames, goModuleDir, projectRoot) {
+  const dirFilesCache = new Map();
+  const filesOfDir = (dir) => {
+    if (dirFilesCache.has(dir)) return dirFilesCache.get(dir);
+    const prefix = dir === '' ? '' : `${dir}/`;
+    const files = [...goFiles]
+      .filter((f) => f.startsWith(prefix) && !f.slice(prefix.length).includes('/'))
+      .sort();
+    dirFilesCache.set(dir, files);
+    return files;
+  };
+  const moduleDirOf = (rel) => {
+    if (!rel) return goModuleDir || '';
+    if (!goModuleDir) return rel;
+    const abs = path.resolve(projectRoot, goModuleDir, rel);
+    return path.relative(path.resolve(projectRoot), abs).split(path.sep).join('/');
+  };
+  return {
+    filesOfDir,
+    resolve(specifier) {
+      if (goModuleName && (specifier === goModuleName || specifier.startsWith(`${goModuleName}/`))) {
+        const rel = specifier === goModuleName ? '' : specifier.slice(goModuleName.length + 1);
+        const dir = moduleDirOf(rel);
+        const files = filesOfDir(dir);
+        if (files.length > 0) return { kind: 'internal', files, file: files[0], dir };
+        // 目录无直下 .go 文件但子树有（纯分组目录，handlerChain 子树搜索仍可用）
+        const subtree = [...goFiles].some((f) => f.startsWith(`${dir}/`));
+        if (subtree) return { kind: 'internal', files: [], file: null, dir };
+        return { kind: 'unresolved', specifier, attempted: dir };
+      }
+      const first = specifier.split('/')[0];
+      if (!first.includes('.')) return { kind: 'builtin', module: specifier };
+      let pkg = null;
+      for (const dep of goDepNames) {
+        if ((specifier === dep || specifier.startsWith(`${dep}/`)) && (!pkg || dep.length > pkg.length)) pkg = dep;
+      }
+      return { kind: 'external', package: pkg ?? specifier, specifier };
+    },
+  };
+}
+
 function isTestFile(relPath) {
+  if (relPath.endsWith('_test.go')) return true; // Go 测试文件惯例
   return /(__tests__|\.test\.|\.spec\.)/.test(relPath) || relPath.startsWith('src/tests/') || relPath.startsWith('src/e2e/');
 }
 
@@ -494,8 +557,16 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files, scan.pubspecName ?? null);
 
   // 1. 逐文件解析（TypeScript Compiler API，仅词法/语法层，不做类型检查）
-  // 路由：.rs → rustAnalyzer；.dart → dartAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（平级、逻辑独立）
+  // 路由：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（平级、逻辑独立）
   const rustFiles = new Set(scan.files.filter((f) => f.endsWith('.rs')));
+  const goFiles = new Set(scan.files.filter((f) => f.endsWith('.go')));
+  const goResolver = createGoImportResolver(
+    goFiles,
+    scan.goModule?.name ?? null,
+    Object.entries(scan.dependencies ?? {}).filter(([, info]) => info.registry === 'go').map(([n]) => n),
+    scan.goModule?.dir || '',
+    projectRoot,
+  );
   const factsMap = new Map();
   const analysisErrors = [];
   const getFacts = (relPath) => {
@@ -503,13 +574,15 @@ export async function buildOntologyData(projectRoot, options = {}) {
     try {
       const facts = relPath.endsWith('.rs')
         ? analyzeRustFileFromDisk(relPath, projectRoot)
-        : relPath.endsWith('.dart')
-          ? analyzeDartFileFromDisk(relPath, projectRoot)
-          : relPath.endsWith('.vue')
-            ? analyzeVueFileFromDisk(relPath, projectRoot)
-            : (scan.userScriptFiles?.has(relPath)
-              ? analyzeUserScriptFromDisk(relPath, projectRoot)
-              : analyzeFileFromDisk(relPath, projectRoot));
+        : relPath.endsWith('.go')
+          ? analyzeGoFileFromDisk(relPath, projectRoot)
+          : relPath.endsWith('.dart')
+            ? analyzeDartFileFromDisk(relPath, projectRoot)
+            : relPath.endsWith('.vue')
+              ? analyzeVueFileFromDisk(relPath, projectRoot)
+              : (scan.userScriptFiles?.has(relPath)
+                ? analyzeUserScriptFromDisk(relPath, projectRoot)
+                : analyzeFileFromDisk(relPath, projectRoot));
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
@@ -536,10 +609,21 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const externalImports = new Map(); // package -> Set<specifier>
   for (const [relPath, facts] of factsMap) {
     const isRust = relPath.endsWith('.rs');
+    const isGo = relPath.endsWith('.go');
     for (const imp of facts.imports) {
       if (isRust) {
         const r = resolveRustImport(relPath, imp.specifier);
         imp.resolved = r.kind === 'internal' || r.kind === 'unresolved' ? r : { kind: 'rust-external', package: r.package };
+        continue;
+      }
+      if (isGo) {
+        const r = goResolver.resolve(imp.specifier);
+        imp.resolved = r;
+        if (r.kind === 'external') {
+          depUsedCount.set(r.package, (depUsedCount.get(r.package) ?? 0) + 1);
+          if (!externalImports.has(r.package)) externalImports.set(r.package, new Set());
+          externalImports.get(r.package).add(imp.specifier);
+        }
         continue;
       }
       const resolved = resolver.resolve(relPath, imp.specifier);
@@ -556,7 +640,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     dependencies.push({
       id: `dep:${name}`, name,
       version: info.version, scope: info.scope,
-      source: info.registry === 'pub' ? 'pub' : (info.version.startsWith('file:') ? 'workspace' : 'npm'),
+      source: info.registry === 'pub' ? 'pub' : (info.registry === 'go' ? 'go' : (info.version.startsWith('file:') ? 'workspace' : 'npm')),
       importCount: depUsedCount.get(name) ?? 0,
       used: (depUsedCount.get(name) ?? 0) > 0,
     });
@@ -602,6 +686,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     let typeImportCount = 0;
     const seen = new Set();
     const isRustFile = relPath.endsWith('.rs');
+    const isGoFile = relPath.endsWith('.go');
     for (const imp of facts.imports) {
       if (imp.isTypeOnly) typeImportCount += 1;
       if (isRustFile) {
@@ -612,6 +697,20 @@ export async function buildOntologyData(projectRoot, options = {}) {
           if (!unresolvedImports.includes(imp.specifier)) unresolvedImports.push(imp.specifier);
         }
         // rust-external（Cargo crate）不进 npm 依赖体系
+        continue;
+      }
+      if (isGoFile) {
+        // Go import 目标是 package 目录（多文件）：关联到目录下全部 .go 文件
+        const r = imp.resolved ?? goResolver.resolve(imp.specifier);
+        if (r.kind === 'internal') {
+          for (const tf of r.files) {
+            if (tf === relPath) continue;
+            if (!seen.has(`file:${tf}`)) { importIds.push(`file:${tf}`); seen.add(`file:${tf}`); }
+          }
+        } else if (r.kind === 'unresolved') {
+          if (!unresolvedImports.includes(imp.specifier)) unresolvedImports.push(imp.specifier);
+        }
+        // builtin（标准库）/ external（go.mod 依赖）不进文件边
         continue;
       }
       const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
@@ -745,6 +844,41 @@ export async function buildOntologyData(projectRoot, options = {}) {
     interfaces, classes, methods, localTypesByFile, typeSpanById, refsOutsideSpan,
   } = collectTypeEntities(scan.files, factsMap, fileObjectByPath);
 
+  // 5b-0a. Go 同包跨文件方法合并：goOrphanMethods（接收者类型声明在同目录其他文件——Go 允许同包跨文件定义方法）
+  {
+    const goClassByDirName = new Map(); // `${dir}#${className}` → class entity
+    for (const c of classes) {
+      if (c.language !== 'go') continue;
+      goClassByDirName.set(`${dirOf(c.filePath)}#${c.name}`, c);
+    }
+    const mergedMethodIdUsed = new Set();
+    for (const relPath of scan.files) {
+      if (!relPath.endsWith('.go')) continue;
+      const facts = factsMap.get(relPath);
+      const fileObj = fileObjectByPath.get(relPath);
+      if (!fileObj || !facts?.goOrphanMethods?.length) continue;
+      const dir = dirOf(relPath);
+      for (const om of facts.goOrphanMethods) {
+        const cls = goClassByDirName.get(`${dir}#${om.receiverType}`);
+        if (!cls) continue; // 接收者类型来自外部包或未跟踪类型：跳过
+        const mid = uniqueId(`method:${relPath}#${om.receiverType}#${om.name}`, mergedMethodIdUsed);
+        methods.push({
+          id: mid, name: om.name,
+          ownerKind: 'class', ownerId: cls.id, ownerName: cls.name,
+          fileId: fileObj.id, filePath: relPath,
+          line: om.line,
+          isStatic: false, isAsync: false, isOverride: false, exported: /^[A-Z]/.test(om.name),
+          signature: om.signature,
+          overridesId: null, overriddenByIds: [],
+          callIds: [], calledByIds: [], compCallIds: [],
+          deadCandidate: false, deadReason: null,
+          reviewed: false, notes: null,
+        });
+        cls.methodIds.push(mid);
+      }
+    }
+  }
+
   // 跨文件类型引用解析：本文件声明优先；其次具名 import（含 type-only，按 local 名匹配、imported 名定位目标文件导出）
   // Rust 文件：use crate::a::b::Name 路径解析为主，全仓库导出名唯一匹配兜底（crate 内 pub 名唯一性强）
   const exportedTypeIndex = new Map(); // `relPath#name` -> id（仅导出实体）
@@ -870,6 +1004,75 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
+  // 5b-0c. Go 调用链聚合（goAnalyzer callEdges → Method.callIds / calledByIds）
+  // Go 包 = 目录：同包跨文件互调无需 import；跨包调用 pkgAlias.Func() 经 importMap 定位目标包目录；
+  // pkgchain（pkg.Var.Chain.Method / baseApi := pkg.Chain 后 baseApi.M）：目标包子树内按方法名搜索（gin-vue-admin ApiGroupApp 惯例）
+  {
+    const goDirModuleFns = new Map();    // `${dir}#${fnName}` → [methodId]（ownerKind=module）
+    const goDirClassMethods = new Map(); // `${dir}#${className}#${methodName}` → methodId
+    const goMethodNameIndex = new Map(); // 方法名 → [{ id, filePath }]（pkgchain 子树搜索，词法近似）
+    for (const m of methods) {
+      if (!m.filePath?.endsWith('.go')) continue;
+      const dir = dirOf(m.filePath);
+      if (m.ownerKind === 'module') {
+        const key = `${dir}#${m.name}`;
+        if (!goDirModuleFns.has(key)) goDirModuleFns.set(key, []);
+        goDirModuleFns.get(key).push(m.id);
+      } else if (m.ownerKind === 'class' && m.ownerName) {
+        goDirClassMethods.set(`${dir}#${m.ownerName}#${m.name}`, m.id);
+      }
+      if (!goMethodNameIndex.has(m.name)) goMethodNameIndex.set(m.name, []);
+      goMethodNameIndex.get(m.name).push({ id: m.id, filePath: m.filePath });
+    }
+    for (const [relPath, facts] of factsMap) {
+      if (!relPath.endsWith('.go') || !facts.callEdges?.length) continue;
+      const dir = dirOf(relPath);
+      for (const edge of facts.callEdges) {
+        let fromId = null;
+        if (edge.from.includes('.')) {
+          const dot = edge.from.lastIndexOf('.');
+          fromId = methodKey.get(`${relPath}#${edge.from.slice(0, dot)}#${edge.from.slice(dot + 1)}`) ?? null;
+        } else {
+          fromId = methodKey.get(`${relPath}##${edge.from}`) ?? null;
+        }
+        const fromMethod = fromId ? methodById.get(fromId) : null;
+        if (!fromMethod) continue;
+        const seen = new Set();
+        for (const c of edge.to) {
+          let toId = null;
+          if (c.kind === 'pkg' || c.kind === 'pkgchain') {
+            const r = goResolver.resolve(c.toPkg);
+            if (r.kind === 'internal') {
+              toId = (goDirModuleFns.get(`${r.dir}#${c.to}`) ?? [])[0] ?? null;
+              if (!toId && c.kind === 'pkgchain') {
+                // 目标包目录子树内同名方法（任意接收者）：ApiGroupApp.SystemApiGroup.BaseApi.Register 形态
+                for (const cand of goMethodNameIndex.get(c.to) ?? []) {
+                  if (cand.filePath.startsWith(`${r.dir}/`)) { toId = cand.id; break; }
+                }
+              }
+            }
+          } else if (c.kind === 'local') {
+            toId = methodKey.get(`${relPath}##${c.to}`) ?? null;
+            if (!toId) {
+              // 同包其他文件的同名顶层函数（Go 包级可见性，无 import 记录）
+              for (const id of goDirModuleFns.get(`${dir}#${c.to}`) ?? []) {
+                const m = methodById.get(id);
+                if (m && m.filePath !== relPath) { toId = id; break; }
+              }
+            }
+          } else if (c.kind === 'method') {
+            toId = goDirClassMethods.get(`${dir}#${c.receiverType}#${c.to}`) ?? null;
+          }
+          if (!toId || toId === fromId || seen.has(toId)) continue;
+          seen.add(toId);
+          if (!fromMethod.callIds.includes(toId)) fromMethod.callIds.push(toId);
+          const toM = methodById.get(toId);
+          if (toM && !toM.calledByIds.includes(fromId)) toM.calledByIds.push(fromId);
+        }
+      }
+    }
+  }
+
   // 导出符号的全仓库导入索引（export * 再导出 / 命名空间导入 / 动态 import 的目标文件——无法按名追踪，整文件豁免）
   const indirectlyReferencedFiles = new Set();
   const importedTypeRefs = new Set(); // `targetFile#importedName`
@@ -917,6 +1120,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const exportedModuleFns = methods.filter((m) => m.ownerKind === 'module' && m.exported);
   for (const e of [...interfaces, ...classes, ...exportedModuleFns]) {
     if (!e.exported || e.deadCandidate) continue;
+    if (e.filePath.endsWith('.go')) continue; // Go 跨包引用走 pkg.Name 标识符（无 import 名记录），由下方包级重判段处理
     if (indirectlyReferencedFiles.has(e.filePath)) continue;
     if (importedTypeRefs.has(`${e.filePath}#${e.name}`)) continue;
     if (e.filePath.endsWith('.rs') && rustUsedNames.has(e.name)) continue; // Rust use 名字级兜底豁免
@@ -924,6 +1128,48 @@ export async function buildOntologyData(projectRoot, options = {}) {
     if (span && refsOutsideSpan(e.filePath, e.name, span.pos, span.end) === 0) {
       e.deadCandidate = true;
       e.deadReason = '导出但全仓库零导入且本文件零引用';
+    }
+  }
+
+  // 5b-0d. Go 死代码重判（包级标识符引用）：Go 包 = 目录，同包跨文件共享符号且无 import 记录，
+  // 泛 TS 判定（本文件零引用 / 全仓库零导入）对 Go 失真——按「声明至少出现一次」的计数语义重判：
+  //   未导出（小写）：包内（同目录全部 .go 文件）引用计数 ≤ 1（仅声明自身）→ 死；
+  //   导出（大写）：包内 ≤ 1 且全仓库 ≤ 1 → 死（跨包引用以标识符出现为准，词法近似、宁漏报不误报）
+  {
+    const goFilesList = scan.files.filter((f) => f.endsWith('.go'));
+    if (goFilesList.length > 0) {
+      const totalByName = new Map(); // name → 全仓库 .go 标识符出现计数
+      const byDirByName = new Map(); // `${dir}#${name}` → 该目录出现计数
+      for (const f of goFilesList) {
+        const facts = factsMap.get(f);
+        const dir = dirOf(f);
+        for (const [name, positions] of facts.nameReferences ?? []) {
+          totalByName.set(name, (totalByName.get(name) ?? 0) + positions.length);
+          const key = `${dir}#${name}`;
+          byDirByName.set(key, (byDirByName.get(key) ?? 0) + positions.length);
+        }
+      }
+      const judge = (e, exported) => {
+        const dir = dirOf(e.filePath);
+        const inPkg = byDirByName.get(`${dir}#${e.name}`) ?? 0;
+        if (!exported) {
+          e.deadCandidate = inPkg <= 1;
+          e.deadReason = e.deadCandidate ? '包内（同目录）零引用' : null;
+          return;
+        }
+        const total = totalByName.get(e.name) ?? 0;
+        e.deadCandidate = inPkg <= 1 && total <= 1;
+        e.deadReason = e.deadCandidate ? '导出但全仓库零引用' : null;
+      };
+      for (const e of methods) {
+        if (!e.filePath?.endsWith('.go') || e.ownerKind === 'interface') continue; // 接口方法为契约声明，不判死
+        // 类方法的 exported 沿用 Go 可见性（首字母大写），collectTypeEntities 的恒 false 仅适用 TS
+        judge(e, e.ownerKind === 'module' ? e.exported : /^[A-Z]/.test(e.name));
+      }
+      for (const e of [...interfaces, ...classes]) {
+        if (e.language !== 'go') continue;
+        judge(e, e.exported);
+      }
     }
   }
 
@@ -945,68 +1191,196 @@ export async function buildOntologyData(projectRoot, options = {}) {
     scriptFunctions.push(...set.scriptFunctions);
   }
 
-  // 6. renders 关系：文件主组件的 JSX 标签 → 导入来源文件的组件
+  // 6. renders 关系：文件主组件的 JSX/模板标签 → 导入来源文件的组件
+  // 统一标签解析（React 具名导入精确匹配为基底的超集）：
+  //   局部 components 注册表 → import 索引（local 名 + PascalCase 双键）→ 全局 Vue.component 注册 → 同文件兜底；
+  //   default 导入 → 目标文件 primary 组件（修复 Vue 默认导入名与组件名不一致的断裂）
+  const globalVueComponents = new Map(); // PascalCase(全局注册名) → {file, exported}
+  for (const [, facts] of factsMap) {
+    for (const g of facts.vueGlobalComponents ?? []) {
+      const key = pascalCaseName(g.name);
+      if (globalVueComponents.has(key)) continue;
+      for (const imp of facts.imports) {
+        if (!imp.resolved || imp.resolved.kind !== 'internal' || imp.isTypeOnly) continue;
+        const n = (imp.names ?? []).find((x) => x.local === g.local && x.imported && x.imported !== '*');
+        if (!n) continue;
+        globalVueComponents.set(key, { file: imp.resolved.file, exported: n.imported });
+        break;
+      }
+    }
+  }
+  // 导入索引：local 名 + PascalCase(local 名) 双键 → {file, exported}
+  const buildImportIndex = (facts, relPath) => {
+    const index = new Map();
+    for (const imp of facts.imports) {
+      if (!imp.resolved || imp.resolved.kind !== 'internal' || imp.isTypeOnly) continue;
+      for (const n of imp.names) {
+        if (!n.local || !n.imported || n.imported === '*') continue;
+        const entry = { file: imp.resolved.file, exported: n.imported };
+        if (!index.has(n.local)) index.set(n.local, entry);
+        const pc = pascalCaseName(n.local);
+        if (pc !== n.local && !index.has(pc)) index.set(pc, entry);
+      }
+    }
+    // defineAsyncComponent / React.lazy 包装：const X = defineAsyncComponent(() => import('./x.vue'))
+    // 模板/JSX 可直接用 X 作标签（snowy 等 Vue3 项目惯用）
+    for (const w of facts.lazyWrappers ?? []) {
+      if (!w.name || index.has(w.name)) continue;
+      const r = resolver.resolve(relPath, w.importPath);
+      if (r.kind === 'internal') index.set(w.name, { file: r.file, exported: 'default' });
+    }
+    return index;
+  };
+  // 导入目标 → 目标文件组件（default → primary；具名 → exported 名 → tag 名；.vue 文件 primary 兜底）
+  const pickTargetComponent = (target, tag) => {
+    const targetComps = componentsByFile.get(target.file) ?? [];
+    if (!targetComps.length) return null;
+    if (target.exported === 'default') {
+      return targetComps.find((c) => c.isPrimary) ?? targetComps[0];
+    }
+    return targetComps.find((c) => c.name === target.exported)
+      ?? targetComps.find((c) => c.name === tag)
+      ?? (target.file.endsWith('.vue') ? (targetComps.find((c) => c.isPrimary) ?? targetComps[0]) : null);
+  };
+  // 模板/JSX 标签 → 目标组件条目（componentsByFile 项）
+  const resolveTagToComponent = (facts, tag, importIndex, fileComps) => {
+    const pcTag = pascalCaseName(tag);
+    // 1. Vue 局部注册表（Options API components 选项）：PascalCase(tag) → local 名 → 导入索引
+    const regLocal = facts.vueComponents?.[pcTag] ?? facts.vueComponents?.[tag];
+    if (regLocal) {
+      const t = importIndex.get(regLocal);
+      if (t) {
+        const hit = pickTargetComponent(t, pcTag);
+        if (hit) return hit;
+      }
+    }
+    // 2. 导入索引直接命中（React 具名导入 / Vue3 setup 无注册表直用）
+    const direct = importIndex.get(tag) ?? importIndex.get(pcTag);
+    if (direct) {
+      const hit = pickTargetComponent(direct, pcTag);
+      if (hit) return hit;
+    }
+    // 3. 全局注册兜底（main.js 的 Vue.component）
+    const globalTarget = globalVueComponents.get(pcTag) ?? globalVueComponents.get(tag);
+    if (globalTarget) {
+      const hit = pickTargetComponent(globalTarget, pcTag);
+      if (hit) return hit;
+    }
+    // 4. 同文件兜底（无 import 记录的同文件导出组件）
+    return fileComps.find((c) => c.name === tag) ?? fileComps.find((c) => c.name === pcTag) ?? null;
+  };
   for (const relPath of scan.files) {
     const facts = factsMap.get(relPath);
     if (!facts.primaryComponentName) continue;
     const primaryId = compIdByName.get(facts.primaryComponentName);
     if (!primaryId || !facts.jsxTags.size) continue;
-    // local 名 → (目标文件, 导出名) 映射
-    const localToExport = new Map();
-    for (const imp of facts.imports) {
-      if (!imp.resolved || imp.resolved.kind !== 'internal' || imp.isTypeOnly) continue;
-      for (const n of imp.names) {
-        if (n.local && n.imported && n.imported !== '*') {
-          localToExport.set(n.local, { file: imp.resolved.file, exported: n.imported });
-        }
-      }
-    }
+    const importIndex = buildImportIndex(facts, relPath);
     const primary = components.find((c) => c.id === primaryId);
     if (!primary) continue;
+    const fileComps = componentsByFile.get(relPath) ?? [];
     for (const tag of facts.jsxTags) {
-      const target = localToExport.get(tag);
-      if (!target) continue;
-      const targetComps = componentsByFile.get(target.file) ?? [];
-      const hit = targetComps.find((c) => c.name === target.exported) ?? targetComps.find((c) => c.name === tag);
+      const hit = resolveTagToComponent(facts, tag, importIndex, fileComps);
       if (hit && hit.id !== primaryId && !primary.rendersIds.includes(hit.id)) {
         primary.rendersIds.push(hit.id);
       }
     }
   }
 
-  // 6b. Props 传递链：tsx/jsx 的 jsxPropRenders（含来源分类）→ 按组件对聚合的 PropEdge 对象
+  // 6a. Vue 组件类视图实体：.vue 主组件 → kind='component' 的 Class 实体
+  // props 为字段、computed/methods 为方法；renders 组合边回填（目标同为 vclass 才成边）
+  // 插在死代码检测之后，vclass 恒不判死（组件被模板引用，无 import 记录属常态）
+  {
+    const vclassIdUsed = new Set();
+    const vmethodIdUsed = new Set();
+    const vclassByCompId = new Map(); // comp:xxx → vclass:xxx
+    const compById = new Map(components.map((c) => [c.id, c]));
+    for (const relPath of scan.files) {
+      if (!relPath.endsWith('.vue')) continue;
+      const facts = factsMap.get(relPath);
+      const fileObj = fileObjectByPath.get(relPath);
+      if (!fileObj || !facts?.vueOptions) continue;
+      const primary = (componentsByFile.get(relPath) ?? []).find((c) => c.isPrimary)
+        ?? (componentsByFile.get(relPath) ?? [])[0];
+      if (!primary) continue;
+      const opts = facts.vueOptions;
+      const id = uniqueId(`vclass:${primary.name}`, vclassIdUsed);
+      const entity = {
+        id, name: primary.name,
+        fileId: fileObj.id, filePath: relPath,
+        line: facts.components.find((c) => c.name === primary.name)?.line ?? 1,
+        exported: true,
+        language: 'vue',
+        kind: 'component',
+        derives: [],
+        fields: opts.propsDefs.map((p) => ({ name: p.name, type: p.type ?? null })),
+        variants: [],
+        isSingleton: false,
+        isWidget: false,
+        widgetBase: null,
+        isStore: false,
+        withNames: [],
+        methodIds: [],
+        implementsIds: [],
+        implementsNames: [],
+        extendsId: null, extendsName: null,
+        rendersIds: [],
+        deadCandidate: false, deadReason: null,
+        reviewed: false, notes: null,
+      };
+      for (const key of [...opts.computedKeys, ...opts.methodKeys]) {
+        const mid = uniqueId(`vmethod:${primary.name}.${key}`, vmethodIdUsed);
+        methods.push({
+          id: mid, name: key,
+          ownerKind: 'class', ownerId: id, ownerName: primary.name,
+          fileId: fileObj.id, filePath: relPath,
+          line: null,
+          isStatic: false, isAsync: false, isOverride: false, exported: false,
+          signature: null,
+          overridesId: null, overriddenByIds: [],
+          callIds: [], calledByIds: [], compCallIds: [],
+          deadCandidate: false, deadReason: null,
+          reviewed: false, notes: null,
+        });
+        entity.methodIds.push(mid);
+      }
+      classes.push(entity);
+      vclassByCompId.set(primary.id, id);
+    }
+    // renders 组合边回填：组件 renders 关系映射到 vclass（非 vclass 目标不成边，保持类图纯净）
+    for (const [compId, vclassId] of vclassByCompId) {
+      const comp = compById.get(compId);
+      const vclass = classes.find((c) => c.id === vclassId);
+      if (!comp?.rendersIds?.length || !vclass) continue;
+      for (const rid of comp.rendersIds) {
+        const targetVclass = vclassByCompId.get(rid);
+        if (targetVclass && targetVclass !== vclassId && !vclass.rendersIds.includes(targetVclass)) {
+          vclass.rendersIds.push(targetVclass);
+        }
+      }
+    }
+  }
+
+  // 6b. Props 传递链：tsx/jsx 的 jsxPropRenders + .vue 的 vuePropRenders（含来源分类）→ 按组件对聚合的 PropEdge 对象
   const propEdges = [];
   {
     const SOURCE_PRIORITY = { forward: 6, state: 5, store: 4, handler: 3, computed: 2, literal: 1, spread: 0 };
     const compById = new Map(components.map((c) => [c.id, c]));
     const agg = new Map(); // `${fromId}→${toId}` → { fromId, toId, props: Map<name, prop>, renderCount }
     for (const relPath of scan.files) {
-      if (!/\.(tsx|jsx)$/.test(relPath)) continue;
+      const isVue = relPath.endsWith('.vue');
+      if (!isVue && !/\.(tsx|jsx)$/.test(relPath)) continue;
       const facts = factsMap.get(relPath);
-      if (!facts?.jsxPropRenders?.length) continue;
-      const localToExport = new Map();
-      for (const imp of facts.imports) {
-        if (!imp.resolved || imp.resolved.kind !== 'internal' || imp.isTypeOnly) continue;
-        for (const n of imp.names) {
-          if (n.local && n.imported && n.imported !== '*') {
-            localToExport.set(n.local, { file: imp.resolved.file, exported: n.imported });
-          }
-        }
-      }
+      const passes = isVue ? facts?.vuePropRenders : facts?.jsxPropRenders;
+      if (!passes?.length) continue;
+      const importIndex = buildImportIndex(facts, relPath);
       const fileComps = componentsByFile.get(relPath) ?? [];
-      for (const pass of facts.jsxPropRenders) {
-        if (!pass.fromComponent) continue;
-        const from = fileComps.find((c) => c.name === pass.fromComponent);
+      for (const pass of passes) {
+        // .vue 为单组件语义：from 固定取文件 primary 组件（vuePropRenders 无 fromComponent 字段）
+        const from = isVue
+          ? (fileComps.find((c) => c.isPrimary) ?? fileComps[0])
+          : (pass.fromComponent ? fileComps.find((c) => c.name === pass.fromComponent) : null);
         if (!from) continue;
-        const target = localToExport.get(pass.tag);
-        let to = null;
-        if (target) {
-          const targetComps = componentsByFile.get(target.file) ?? [];
-          to = targetComps.find((c) => c.name === target.exported) ?? targetComps.find((c) => c.name === pass.tag) ?? null;
-        } else {
-          // 同文件导出组件（无 import 记录）
-          to = fileComps.find((c) => c.name === pass.tag) ?? null;
-        }
+        const to = resolveTagToComponent(facts, pass.tag, importIndex, fileComps);
         if (!to || to.id === from.id) continue;
         const key = `${from.id}→${to.id}`;
         let entry = agg.get(key);
@@ -1309,6 +1683,212 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
+  // 7c-c. Go cobra CLI 命令树 + gin HTTP 路由 → Route
+  // cobra：var xxxCmd = &cobra.Command{Use/Short} + AddCommand 边 → 命令链路径（routeType='go-cli'）
+  // gin：Group 前缀累积 + .GET/.POST(...) → 完整路径（routeType='go'，apiMethods/middlewares/handler Method 关联）
+  const goRouteIds = new Set(routes.map((r) => r.id));
+  {
+    // --- cobra 命令树（varName 全局首见优先——cobra 命令 var 惯例全仓库唯一，cmd/ 先于 internal/ 扫描） ---
+    const commandByVar = new Map();
+    const commandByDirVar = new Map(); // `${dir}#${varName}` → varName（跨包限定子命令解析用）
+    const commands = [];
+    const edgeFiles = []; // {relPath, edges}（命令声明可能晚于 AddCommand 边出现，两遍处理）
+    for (const relPath of scan.files) {
+      if (!relPath.endsWith('.go')) continue;
+      const facts = factsMap.get(relPath);
+      for (const cmd of facts.goCommands ?? []) {
+        if (!commandByVar.has(cmd.varName)) {
+          commandByVar.set(cmd.varName, { ...cmd, file: relPath });
+          commands.push(commandByVar.get(cmd.varName));
+        }
+        const dir = path.posix.dirname(relPath) === '.' ? '' : path.posix.dirname(relPath);
+        commandByDirVar.set(`${dir}#${cmd.varName}`, cmd.varName);
+      }
+      if (facts.goCommandEdges?.length) edgeFiles.push({ relPath, facts });
+    }
+    const cmdEdges = [];
+    for (const { facts } of edgeFiles) {
+      for (const e of facts.goCommandEdges) {
+        if (!e.childPkg) { cmdEdges.push(e); continue; }
+        // 跨包限定子命令 host.HostGetCmd → importMap 定位目录 → 该目录声明的命令 var
+        let resolved = e.childVar;
+        const spec = facts.importMap.get(e.childPkg);
+        if (spec) {
+          const r = goResolver.resolve(spec);
+          if (r.kind === 'internal') {
+            const target = commandByDirVar.get(`${r.dir}#${e.childName}`);
+            if (target) resolved = target;
+          }
+        }
+        cmdEdges.push({ parentVar: e.parentVar, childVar: resolved });
+      }
+    }
+    const childrenOf = new Map();
+    const childVars = new Set();
+    for (const e of cmdEdges) {
+      if (e.parentVar === e.childVar) continue;
+      if (!childrenOf.has(e.parentVar)) childrenOf.set(e.parentVar, []);
+      childrenOf.get(e.parentVar).push(e.childVar);
+      childVars.add(e.childVar);
+    }
+    const walkCmd = (varName, chain, depth) => {
+      if (depth > 8) return; // 防御环
+      const cmd = commandByVar.get(varName);
+      if (!cmd) return;
+      const use = cmd.use || varName;
+      const routePath = chain ? `${chain} ${use}` : use;
+      routes.push({
+        id: uniqueId(`route:go-cli:${routePath}`, goRouteIds),
+        overlayId: `go-cli:${routePath}`,
+        name: use,
+        routePath,
+        backTarget: null, hidesNav: null,
+        domain: 'cli',
+        group: cmd.file,
+        componentRef: cmd.varName,
+        componentFileId: `file:${cmd.file}`,
+        componentId: null,
+        navigatesToIds: [],
+        hasPropsFactory: false,
+        factoryProps: [],
+        routeType: 'go-cli',
+        rawPath: null, layoutFileIds: [],
+        specialFiles: (cmd.flags ?? []).map((f) => (f.shorthand ? `-${f.shorthand}/--${f.name}` : `--${f.name}`)),
+        isDynamic: null, isClient: null, apiMethods: null,
+        description: cmd.short,
+        reviewed: false, notes: null,
+      });
+      for (const child of childrenOf.get(varName) ?? []) walkCmd(child, routePath, depth + 1);
+    };
+    for (const cmd of commands) {
+      if (!childVars.has(cmd.varName)) walkCmd(cmd.varName, '', 0);
+    }
+
+    // --- gin 路由（handler 'controller.Register' → importMap 定位包目录 → Register 顶层函数 Method） ---
+    // 方法名 → [{ id, filePath }]：handlerChain（v1.ApiGroupApp...BaseApi.Register）子树搜索用
+    const goRouteMethodNameIndex = new Map();
+    for (const m of methods) {
+      if (!m.filePath?.endsWith('.go')) continue;
+      if (!goRouteMethodNameIndex.has(m.name)) goRouteMethodNameIndex.set(m.name, []);
+      goRouteMethodNameIndex.get(m.name).push({ id: m.id, filePath: m.filePath });
+    }
+    for (const relPath of scan.files) {
+      if (!relPath.endsWith('.go')) continue;
+      const facts = factsMap.get(relPath);
+      for (const gr of facts.goRoutes ?? []) {
+        let handlerMethodId = null;
+        let handlerFile = null;
+        // handler 解析三级：pkg.Fn（importMap 直达顶层函数）→ handlerChain（v1.ApiGroupApp...BaseApi.Register
+        // 链首 import 别名 → 目标包子树内同名方法搜索，gin-vue-admin 惯例）
+        const hm = /^([A-Za-z_]\w*)\.([A-Za-z_]\w*)$/.exec(gr.handlers?.[0] ?? '');
+        if (hm) {
+          const spec = facts.importMap.get(hm[1]);
+          if (spec) {
+            const r = goResolver.resolve(spec);
+            if (r.kind === 'internal') {
+              handlerFile = r.file;
+              for (const f of r.files) {
+                const mid = methodKey.get(`${f}##${hm[2]}`);
+                if (mid) { handlerMethodId = mid; handlerFile = f; break; }
+              }
+            }
+          }
+        }
+        if (!handlerMethodId && gr.handlerChain) {
+          const cm = /^([A-Za-z_]\w*)((?:\.[A-Za-z_]\w*)+)\.([A-Za-z_]\w*)$/.exec(gr.handlerChain);
+          if (cm) {
+            const spec = facts.importMap.get(cm[1]);
+            if (spec) {
+              const r = goResolver.resolve(spec);
+              if (r.kind === 'internal') {
+                for (const f of r.files) {
+                  const mid = methodKey.get(`${f}##${cm[3]}`);
+                  if (mid) { handlerMethodId = mid; handlerFile = f; break; }
+                }
+                if (!handlerMethodId) {
+                  // 子树内同名方法（任意接收者）；同时记录最近声明文件供跳转
+                  for (const cand of goRouteMethodNameIndex.get(cm[3]) ?? []) {
+                    if (cand.filePath.startsWith(`${r.dir}/`)) { handlerMethodId = cand.id; handlerFile = cand.filePath; break; }
+                  }
+                }
+              }
+            }
+          }
+        }
+        // 域取首个业务段：跳过 api/v1 等网关前缀（后续仍有静态段时）；动态段开头归 root
+        const segs = gr.path.split('/').filter(Boolean);
+        let si = 0;
+        while (si < segs.length - 1 && /^(api|apis|v\d+)$/i.test(segs[si])) si += 1;
+        const seg = segs[si] ?? null;
+        const domain = !seg || seg.startsWith(':') || seg.startsWith('*') ? 'root' : seg;
+        routes.push({
+          id: uniqueId(`route:${gr.method} ${gr.path}`, goRouteIds),
+          overlayId: `${gr.method} ${gr.path}`,
+          name: gr.path,
+          routePath: gr.path,
+          backTarget: null, hidesNav: null,
+          domain,
+          group: relPath,
+          componentRef: gr.handlers?.[0] ?? null,
+          componentFileId: `file:${handlerFile ?? relPath}`,
+          componentId: handlerMethodId, // 复用 componentId 承载 handler Method（viewer 按 routeType='go' 渲染方法链接）
+          navigatesToIds: [],
+          hasPropsFactory: false,
+          factoryProps: [],
+          routeType: 'go',
+          rawPath: null, layoutFileIds: [],
+          specialFiles: [],
+          middlewares: gr.middlewares ?? [],
+          isDynamic: /\/[:*]/.test(gr.path),
+          isClient: null,
+          apiMethods: gr.method === 'ANY' ? ['*'] : [gr.method],
+          reviewed: false, notes: null,
+        });
+      }
+    }
+  }
+
+  // 7c-d. 前后端逻辑映射：tsAnalyzer httpCalls（前端 API.get / axios.x / fetch）↔ go 路由路径匹配
+  // :param / *wildcard 通配前端任意段；去 query、尾斜杠归一；method 不一致仍记录（详情可见）
+  const unmatchedFrontendCalls = [];
+  {
+    const goApiRoutes = routes.filter((r) => r.routeType === 'go');
+    if (goApiRoutes.length > 0) {
+      const normPath = (p) => (p.split('?')[0].replace(/\/+$/, '') || '/');
+      const routeSegs = goApiRoutes.map((r) => ({ r, segs: normPath(r.routePath).split('/').filter(Boolean) }));
+      const matchRoute = (feSegs) => {
+        for (const { r, segs } of routeSegs) {
+          const segMatches = (s, fe) => s.startsWith(':') || s.startsWith('*') || s === fe;
+          if (segs.length === feSegs.length) {
+            if (segs.every((s, i) => segMatches(s, feSegs[i]))) return r;
+          } else if (segs.length < feSegs.length && segs.some((s) => s.startsWith('*'))) {
+            // 后端尾段 *wildcard 可吞前端剩余段
+            const prefix = segs.slice(0, -1);
+            if (prefix.length <= feSegs.length && prefix.every((s, i) => segMatches(s, feSegs[i]))) return r;
+          }
+        }
+        return null;
+      };
+      for (const [relPath, facts] of factsMap) {
+        if (/\.(go|rs|dart)$/.test(relPath)) continue;
+        for (const call of facts.httpCalls ?? []) {
+          const feSegs = normPath(call.path).split('/').filter(Boolean);
+          const route = matchRoute(feSegs);
+          const fileObj = fileObjectByPath.get(relPath);
+          const entry = { fileId: fileObj?.id ?? `file:${relPath}`, filePath: relPath, line: call.line, method: call.method };
+          if (route) {
+            if (!route.frontendCalls) route.frontendCalls = [];
+            if (!route.frontendCalls.some((c) => c.filePath === relPath && c.line === call.line)) {
+              route.frontendCalls.push(entry);
+            }
+          } else {
+            unmatchedFrontendCalls.push({ ...entry, path: call.path });
+          }
+        }
+      }
+    }
+  }
+
   // 7e. Next.js App Router 路由（文件约定式：page/route/layout）
   //     导航边仅归属 page 文件内的 Link href / router.push（layout/共享组件文件不归属，避免边爆炸）
   if (scan.framework === 'next') {
@@ -1503,12 +2083,67 @@ export async function buildOntologyData(projectRoot, options = {}) {
       if (id.startsWith('file:')) importedByCount.set(id, (importedByCount.get(id) ?? 0) + 1);
     }
   }
+  // import.meta.glob([...]) 动态批量导入的文件（如 snowy 的 views 菜单路由 / icon 选择器）豁免孤儿候选
+  const globReferencedFiles = new Set();
+  {
+    const globToRegExp = (pattern) => {
+      let re = '';
+      let i = 0;
+      while (i < pattern.length) {
+        const ch = pattern[i];
+        if (ch === '*') {
+          if (pattern[i + 1] === '*') {
+            if (pattern[i + 2] === '/') { re += '(?:[^/]+/)*'; i += 3; continue; }
+            re += '[\\s\\S]*'; i += 2; continue;
+          }
+          re += '[^/]*'; i += 1; continue;
+        }
+        re += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+        i += 1;
+      }
+      return new RegExp(`^${re}$`);
+    };
+    // glob 模式归一为项目相对路径模式（/x → x；../y 相对声明文件目录解析）
+    const normalizePattern = (pattern, fromFile) => {
+      let p = pattern;
+      if (p.startsWith('/')) return p.slice(1);
+      if (!p.startsWith('.')) return p; // 相对同目录简写（assets/...）
+      const parts = path.posix.dirname(fromFile).split('/');
+      for (const seg of p.split('/')) {
+        if (seg === '..') parts.pop();
+        else if (seg !== '.') parts.push(seg);
+      }
+      return parts.join('/');
+    };
+    for (const [relPath, facts] of factsMap) {
+      for (const g of facts.globPatterns ?? []) {
+        const includes = g.patterns.filter((p) => !p.startsWith('!'))
+          .map((p) => globToRegExp(normalizePattern(p.replace(/^!/, ''), g.fromFile)));
+        const excludes = g.patterns.filter((p) => p.startsWith('!'))
+          .map((p) => globToRegExp(normalizePattern(p.slice(1), g.fromFile)));
+        if (!includes.length) continue;
+        for (const f of fileObjects) {
+          if (!includes.some((re) => re.test(f.path))) continue;
+          if (excludes.some((re) => re.test(f.path))) continue;
+          globReferencedFiles.add(f.path);
+        }
+      }
+    }
+  }
   const routeComponentFiles = new Set(routes.map((r) => r.componentFileId).filter(Boolean));
+  // unplugin-vue-components（组件自动注册目录）/ unplugin-auto-import（导出自动导入目录）：
+  // 编译期自动注入 import，源码零 import 记录属常态，豁免孤儿候选
+  const autoComponentDirs = scan.autoComponentDirs ?? [];
+  const autoImportDirs = scan.autoImportDirs ?? [];
+  const isAutoRegistered = (p) => (p.endsWith('.vue') && autoComponentDirs.some((d) => p.startsWith(`${d}/`)))
+    || autoImportDirs.some((d) => p.startsWith(`${d}/`));
   const orphanCandidates = fileObjects
     .filter((f) => (f.path.startsWith('src/') || f.path.startsWith('lib/'))
       && !f.isTest && !f.isEntry
       && !routeComponentFiles.has(f.id)
       && !lazyReferencedFiles.has(f.path)
+      && !globReferencedFiles.has(f.path)
+      && !isAutoRegistered(f.path)
       && (importedByCount.get(f.id) ?? 0) === 0)
     .map((f) => f.path);
   // 导出级死代码：导出符号全仓库零导入且本文件零使用（仅 export 冗余，代码可安全去导出/删除）
@@ -1518,6 +2153,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   for (const f of fileObjects) {
     f.unusedExports = [];
     if (f.isEntry || f.isTest) continue;
+    if (f.path.endsWith('.go')) continue; // Go 导出符号的包级判定已在 5b-0d 完成
     if (indirectlyReferencedFiles.has(f.path)) continue;
     if ((importedByCount.get(f.id) ?? 0) === 0) continue;
     const facts = factsMap.get(f.path);
@@ -1551,6 +2187,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       if ((scan.tsFileCount ?? 0) + (scan.tsxFileCount ?? 0) + (scan.jsFileCount ?? 0) + (scan.vueFileCount ?? 0) > 0) parts.push('TypeScript');
       if ((scan.rustFileCount ?? 0) > 0) parts.push('Rust');
       if ((scan.dartFileCount ?? 0) > 0) parts.push('Dart');
+      if ((scan.goFileCount ?? 0) > 0) parts.push('Go');
       return parts.join(' + ') || 'TypeScript';
     })(),
     commitHash: scan.commitHash,
@@ -1562,6 +2199,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
     vueFileCount: scan.vueFileCount,
     rustFileCount: scan.rustFileCount ?? 0,
     dartFileCount: scan.dartFileCount ?? 0,
+    goFileCount: scan.goFileCount ?? 0,
+    goModule: scan.goModule ?? null,
+    subProjects: scan.subProjects ?? [],
+    siblingProjects: scan.siblingProjects ?? [],
     flutterDetected: scan.flutterDetected ?? false,
     tauriDetected: scan.tauriDetected ?? false,
     electronDetected: scan.electronDetected ?? false,
@@ -1593,6 +2234,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       cycles,
       orphanCandidates,
       deadExportCandidates,
+      unmatchedFrontendCalls,
       objectCounts: {
         Module: modules.length, SourceFile: fileObjects.length, Component: components.length,
         Hook: hooks.length, Store: stores.length, Service: services.length,
@@ -1634,10 +2276,12 @@ export async function buildSingleFileOntology(absFilePath) {
   const fileName = path.basename(absFilePath);
   const dir = path.dirname(absFilePath);
 
-  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.dart → dartAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
+  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
   let facts;
   if (fileName.endsWith('.rs')) {
     facts = analyzeRustFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
+  } else if (fileName.endsWith('.go')) {
+    facts = analyzeGoFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
   } else if (fileName.endsWith('.dart')) {
     facts = analyzeDartFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
   } else if (fileName.endsWith('.vue')) {

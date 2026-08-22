@@ -189,3 +189,93 @@ test('HTML 入口探测：script src 根绝对路径引用的源文件记为入�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- 根目录识别优化：兄弟项目 / 上级 go.mod / 依赖并入防护 ----
+
+// 融合仓库骨架：repo（git 根）+ web/（npm 子项目）+ server/（go 子项目）
+function buildFusionRepo() {
+  const repo = tmpProject();
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true }); // 仓库根标记（兄弟项目发现依据）
+  fs.mkdirSync(path.join(repo, 'web/src'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'server/api/v1'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'server/service'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'web/package.json'), JSON.stringify({
+    name: 'gva-web',
+    dependencies: { vue: '^3.2.0', pinia: '^2.0.0' },
+  }));
+  fs.writeFileSync(path.join(repo, 'web/src/main.js'), "import { createApp } from 'vue';\n");
+  fs.writeFileSync(path.join(repo, 'server/go.mod'), 'module smartide-server\n\ngo 1.18\n\nrequire github.com/gin-gonic/gin v1.9.1\n');
+  fs.writeFileSync(path.join(repo, 'server/api/v1/router.go'), 'package v1\n\nfunc Register() {}\n');
+  fs.writeFileSync(path.join(repo, 'server/service/user.go'), 'package service\n\ntype UserService struct{}\n\nfunc (u *UserService) RegisterUser() {}\n');
+  return repo;
+}
+
+test('根识别：定位子项目目录（web/）时发现兄弟项目（server/），依赖不并入', () => {
+  const repo = buildFusionRepo();
+  try {
+    const scan = scanProject(path.join(repo, 'web'));
+    assert.equal(scan.framework, 'vue');
+    assert.deepEqual(scan.siblingProjects.map((s) => `${s.path}:${s.kind}`).sort(), ['server:go']);
+    // 兄弟项目只报告不并入：gin 依赖不在 web 自身清单中
+    assert.equal(scan.dependencies['github.com/gin-gonic/gin'], undefined);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('根识别：定位代码子目录（web/src）时同样发现兄弟项目', () => {
+  const repo = buildFusionRepo();
+  try {
+    const scan = scanProject(path.join(repo, 'web', 'src'));
+    assert.ok(scan.siblingProjects.some((s) => s.path === 'server' && s.kind === 'go'));
+    // 宿主依赖（vue）来自 web/package.json（向上定位）
+    assert.ok(scan.dependencies.vue);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('根识别：定位仓库根时不报告兄弟（子项目由 subProjects 报告），无 git 根的普通目录不吸附邻居', () => {
+  const repo = buildFusionRepo();
+  try {
+    const atRoot = scanProject(repo);
+    assert.deepEqual(atRoot.siblingProjects, []);
+    assert.deepEqual(atRoot.subProjects.map((s) => s.path).sort(), ['server', 'web']);
+    // 融合仓库根（git 根 + 子项目 ≤4）：web 依赖并入画像（framework 判定信号）
+    assert.ok(atRoot.dependencies.vue);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+  // 普通目录（无 .git / 无根清单）下 5 个子项目：只报告，依赖不并入（代码集合目录防误吸附）
+  const plain = tmpProject();
+  try {
+    for (let i = 0; i < 5; i += 1) {
+      fs.mkdirSync(path.join(plain, `app${i}`, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(plain, `app${i}`, 'package.json'), JSON.stringify({
+        name: `app${i}`,
+        dependencies: { [`lib-${i}`]: '1.0.0' },
+      }));
+      fs.writeFileSync(path.join(plain, `app${i}`, 'src', 'main.js'), 'export const x = 1;\n');
+    }
+    const scan = scanProject(plain);
+    assert.equal(scan.subProjects.length, 5);
+    assert.equal(scan.dependencies['lib-0'], undefined, '代码集合目录不并入子项目依赖');
+  } finally {
+    fs.rmSync(plain, { recursive: true, force: true });
+  }
+});
+
+test('根识别：定位 Go module 子目录（server/api）时向上发现 go.mod（dir 含 ../）', () => {
+  const repo = buildFusionRepo();
+  try {
+    const scan = scanProject(path.join(repo, 'server', 'api'));
+    assert.equal(scan.framework, 'go', JSON.stringify(scan.framework));
+    assert.equal(scan.goModule.name, 'smartide-server');
+    assert.equal(scan.goModule.dir, '..', 'module 基准目录相对扫描根表达');
+    assert.ok(scan.dependencies['github.com/gin-gonic/gin']);
+    // 兄弟项目发现：server/api 的同级无清单，但仓库根下 web 被识别
+    assert.ok(scan.siblingProjects.some((s) => s.path === 'web' && s.kind === 'npm'));
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});

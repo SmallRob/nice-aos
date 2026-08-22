@@ -3,14 +3,18 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isUserScriptCandidate } from './userScriptAnalyzer.js';
 
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart']);
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart', '.go']);
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'dist-ssr', 'build', 'out',
   'coverage', '.next', '.nuxt', 'public', 'docs',
   '.codebuddy', '.codegraph', '.asdm', '.trae', '.claude',
   '.cursor', '.kiro', '.sisyphus', '.vscode', '.idea', '__pycache__',
   'android', 'ios', 'target', '.dart_tool', 'linux', 'macos', 'windows',
+  'vendor', 'testdata', 'bin',
 ]);
+// 产物目录名可能被业务用作源码目录名（如 RuoYi 的 src/views/tool/build/）：
+// 位于 src/ 源码树内时不跳过；node_modules/.git 等其余跳过项恒跳过
+const NAME_COLLISION_DIRS = new Set(['build']);
 
 // 扫描根解析：显式 roots 优先；Flutter/Dart 项目（pubspec.yaml + lib/）优先扫 lib/；
 // 否则 src/ 存在则扫 src/；否则扫项目根（排除 SKIP_DIRS）
@@ -35,7 +39,11 @@ function walk(dir, projectRoot, files) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
+      if (SKIP_DIRS.has(entry.name)) {
+        const relDir = path.relative(projectRoot, full).split(path.sep).join('/');
+        const inSourceTree = relDir.startsWith('src/');
+        if (!(inSourceTree && NAME_COLLISION_DIRS.has(entry.name))) continue;
+      }
       walk(full, projectRoot, files);
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name);
@@ -287,6 +295,107 @@ function parseTsconfigPaths(tsconfigPath) {
   return paths;
 }
 
+// vue.config.js 的 configureWebpack.resolve.alias 文本解析（不 require，避免执行副作用/缺失依赖）：
+// 支持 '@': resolve('src') / '@': path.resolve(__dirname, 'src') / '@': 'src' 三种值形式
+function parseVueConfigAliases(vueConfigPath) {
+  let text;
+  try {
+    text = fs.readFileSync(vueConfigPath, 'utf-8');
+  } catch {
+    return {};
+  }
+  const aliases = {};
+  const valueRe = /^(?:resolve|path\.resolve)\(\s*(?:__dirname\s*,\s*)?['"]([^'"]+)['"]\s*\)$|^['"]([^'"]+)['"]$/;
+  const aliasRe = /alias\s*:\s*\{/g;
+  let m;
+  while ((m = aliasRe.exec(text)) !== null) {
+    let depth = 1;
+    let end = m.index + m[0].length;
+    while (end < text.length && depth > 0) {
+      if (text[end] === '{') depth += 1;
+      else if (text[end] === '}') depth -= 1;
+      end += 1;
+    }
+    const block = text.slice(m.index + m[0].length, end - 1);
+    const pairRe = /['"]([^'"]+)['"]\s*:\s*([^,\n}]+)/g;
+    let p;
+    while ((p = pairRe.exec(block)) !== null) {
+      const hit = valueRe.exec(p[2].trim());
+      if (!hit) continue;
+      const target = hit[1] ?? hit[2];
+      if (!target) continue;
+      const key = p[1].endsWith('/*') ? p[1] : `${p[1]}/*`;
+      const val = target.endsWith('/*') ? target : `${target}/*`;
+      if (!(key in aliases)) aliases[key] = val;
+    }
+    aliasRe.lastIndex = end;
+  }
+  return aliases;
+}
+
+// unplugin-vue-components / unplugin-auto-import 的 dirs 自动注册目录解析（vite.config 词法解析，不 require）：
+// Components({ dirs: [r('src/components'), './src/components/HomeCard'] })、AutoImport({ dirs: ['./src/utils/permission'] })
+// 这些目录的组件/导出被模板与代码直接使用且无 import 记录（编译期自动注入），builder 豁免其孤儿候选
+function parseViteUnpluginDirs(projectRoot, hostDir) {
+  const configDirs = [projectRoot, hostDir].filter(Boolean);
+  let text = null;
+  let baseDir = projectRoot;
+  for (const dir of configDirs) {
+    for (const name of ['vite.config.mjs', 'vite.config.js', 'vite.config.ts']) {
+      const p = path.join(dir, name);
+      if (fs.existsSync(p)) {
+        text = fs.readFileSync(p, 'utf-8');
+        baseDir = dir;
+        break;
+      }
+    }
+    if (text !== null) break;
+  }
+  const result = { componentDirs: null, autoImportDirs: [] };
+  if (text === null) return result;
+  // 从 plugin 调用的选项对象中提取 dirs 数组（平衡大括号截取后正则）
+  const extractDirs = (callName) => {
+    const callRe = new RegExp(`\\b${callName}\\s*\\(\\s*\\{`);
+    const m = callRe.exec(text);
+    if (!m) return null;
+    let depth = 1;
+    let end = m.index + m[0].length;
+    while (end < text.length && depth > 0) {
+      if (text[end] === '{') depth += 1;
+      else if (text[end] === '}') depth -= 1;
+      end += 1;
+    }
+    const block = text.slice(m.index + m[0].length, end - 1);
+    const dirsM = /\bdirs\s*:\s*\[/.exec(block);
+    if (!dirsM) return null; // 未配置 dirs（Components 用默认 src/components；AutoImport 默认不扫目录）
+    let bDepth = 1;
+    let bEnd = dirsM.index + dirsM[0].length;
+    while (bEnd < block.length && bDepth > 0) {
+      if (block[bEnd] === '[') bDepth += 1;
+      else if (block[bEnd] === ']') bDepth -= 1;
+      bEnd += 1;
+    }
+    const arrText = block.slice(dirsM.index + dirsM[0].length, bEnd - 1);
+    const dirs = [];
+    const elRe = /(?:\br\(|\bresolve\(\s*__dirname\s*,\s*)?['"]([^'"]+)['"]/g;
+    let e;
+    while ((e = elRe.exec(arrText)) !== null) {
+      let p = e[1].replace(/^\.\//, '');
+      if (!p) continue;
+      // 归一为扫描根相对路径（配置文件在宿主根、扫描根为其子目录时加前缀）
+      if (baseDir !== projectRoot) {
+        const rel = path.relative(projectRoot, baseDir).split(path.sep).join('/');
+        if (rel && !rel.startsWith('..')) p = `${rel}/${p}`;
+      }
+      dirs.push(p.replace(/\/+$/, ''));
+    }
+    return dirs;
+  };
+  result.componentDirs = extractDirs('Components');
+  result.autoImportDirs = extractDirs('AutoImport') ?? [];
+  return result;
+}
+
 // tsconfig 别名目标重定基：宿主 tsconfig 的 targets（如 "./src/*"）相对宿主根，
 // 扫描根嵌在其内（如 host/src）时剥离扫描根前缀，使 "@/services" 在扫描 src 时正确映射到 "services"
 function rebaseTsconfigPaths(paths, scanRelInHost) {
@@ -308,6 +417,33 @@ function rebaseTsconfigPaths(paths, scanRelInHost) {
   return out;
 }
 
+// go.mod 轻量文本解析：module 名、go 版本、require 依赖（分组块与单行形式；exclude/retract 块跳过）
+function parseGoMod(goModPath) {
+  const text = fs.readFileSync(goModPath, 'utf-8');
+  let name = null;
+  let goVersion = null;
+  const deps = [];
+  let section = null; // 'require' | 'exclude' | 'retract' | null
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('//')) continue;
+    if (line === 'require (') { section = 'require'; continue; }
+    if (line === 'exclude (' || line === 'retract (') { section = line.slice(0, -2); continue; }
+    if (line === ')') { section = null; continue; }
+    if (section === 'require') {
+      const m = /^(\S+)\s+(\S+)/.exec(line.replace(/\/\/.*$/, '').trim());
+      if (m) deps.push({ name: m[1], version: m[2] });
+      continue;
+    }
+    if (section) continue;
+    if (line.startsWith('module ')) { name = line.slice(7).trim(); continue; }
+    if (line.startsWith('go ')) { goVersion = line.slice(3).trim(); continue; }
+    const m = /^require\s+(\S+)\s+(\S+)/.exec(line);
+    if (m) deps.push({ name: m[1], version: m[2] });
+  }
+  return { name, goVersion, deps };
+}
+
 function gitInfo(projectRoot) {
   try {
     const commitHash = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot, encoding: 'utf-8' }).trim();
@@ -325,13 +461,101 @@ function findHostProjectDir(startDir) {
   let dir = path.resolve(startDir);
   const home = process.env.HOME ? path.resolve(process.env.HOME) : null;
   for (let i = 0; i < 4; i += 1) {
-    if (fs.existsSync(path.join(dir, 'package.json')) || fs.existsSync(path.join(dir, 'pubspec.yaml'))) return dir;
+    if (fs.existsSync(path.join(dir, 'package.json')) || fs.existsSync(path.join(dir, 'pubspec.yaml')) || fs.existsSync(path.join(dir, 'go.mod'))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break; // 已到文件系统根
     if (home && (dir === home || parent === home)) break; // 不越过用户 home
     dir = parent;
   }
   return null;
+}
+
+// go.mod 发现：根目录优先；否则从 .go 文件所在目录逐级向上（不越过 projectRoot）收集。
+// 融合仓库（server/go.mod + web/ 前端）场景：go.mod 不在根也能识别为 Go 模块。
+// projectRoot 树内无 go.mod 时再向上探测（上限 4 层、不越过 home）——用户定位到
+// Go module 子目录（如 server/api）时 module 基准在上级，dir 以相对 projectRoot 路径表达（可含 '../'）
+function discoverGoModuleDirs(projectRoot, goFiles) {
+  const dirs = new Set();
+  const addDir = (dir) => {
+    if (fs.existsSync(path.join(projectRoot, dir === '' ? '.' : dir, 'go.mod'))) dirs.add(dir);
+  };
+  addDir('');
+  for (const f of goFiles) {
+    let dir = path.posix.dirname(f);
+    for (let i = 0; i < 12; i += 1) {
+      addDir(dir === '.' ? '' : dir);
+      if (dir === '.' || dir === '') break;
+      dir = path.posix.dirname(dir);
+    }
+  }
+  if (dirs.size === 0) {
+    let abs = path.resolve(projectRoot);
+    const home = process.env.HOME ? path.resolve(process.env.HOME) : null;
+    for (let i = 0; i < 4; i += 1) {
+      const parent = path.dirname(abs);
+      if (parent === abs) break;
+      if (home && parent === home) break;
+      abs = parent;
+      if (fs.existsSync(path.join(abs, 'go.mod'))) {
+        const rel = path.relative(path.resolve(projectRoot), abs).split(path.sep).join('/');
+        if (rel) dirs.add(rel);
+        break;
+      }
+    }
+  }
+  return [...dirs];
+}
+
+// 子项目发现：projectRoot 一级子目录含项目清单（package.json/go.mod/pubspec.yaml）且含源码。
+// 融合仓库 / monorepo 场景：识别同级子项目（不自动并入扫描范围——显式 roots 仍是用户意图边界）
+function discoverSubProjects(projectRoot) {
+  const out = [];
+  let entries;
+  try { entries = fs.readdirSync(projectRoot, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    if (!e.isDirectory() || SKIP_DIRS.has(e.name) || e.name.startsWith('.')) continue;
+    const dir = path.join(projectRoot, e.name);
+    const kind = fs.existsSync(path.join(dir, 'go.mod')) ? 'go'
+      : fs.existsSync(path.join(dir, 'pubspec.yaml')) ? 'dart'
+        : fs.existsSync(path.join(dir, 'package.json')) ? 'npm' : null;
+    if (!kind) continue;
+    const pkg = kind === 'npm' ? readJson(path.join(dir, 'package.json')) : null;
+    out.push({ name: pkg?.name ?? e.name, path: e.name, kind });
+  }
+  return out;
+}
+
+// 仓库根定位：向上找 .git / monorepo 工作区清单（上限 4 层、不越过 home）。
+// 普通目录（如代码集合目录）无这些标记 → null，防止误吸附无关邻居项目
+function findRepoRoot(startDir) {
+  let dir = path.resolve(startDir);
+  const home = process.env.HOME ? path.resolve(process.env.HOME) : null;
+  for (let i = 0; i < 4; i += 1) {
+    if (fs.existsSync(path.join(dir, '.git'))
+      || fs.existsSync(path.join(dir, 'go.work'))
+      || fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))
+      || fs.existsSync(path.join(dir, 'lerna.json'))
+      || fs.existsSync(path.join(dir, 'nx.json'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    if (home && (dir === home || parent === home)) break;
+    dir = parent;
+  }
+  return null;
+}
+
+// 兄弟项目发现：定位仓库根后在其一级子目录中发现子项目，排除扫描目录自身与其祖先。
+// 用户定位子项目（融合仓库 web/）或代码子目录（web/src）时，同级项目（server/）被识别报告；
+// 不并入扫描范围与依赖清单——显式定位仍是用户意图边界
+function discoverSiblingProjects(projectRoot) {
+  const repoRoot = findRepoRoot(projectRoot);
+  if (!repoRoot) return [];
+  const absRoot = path.resolve(projectRoot);
+  if (repoRoot === absRoot) return [];
+  return discoverSubProjects(repoRoot).filter((sp) => {
+    const spAbs = path.resolve(repoRoot, sp.path);
+    return spAbs !== absRoot && !absRoot.startsWith(`${spAbs}${path.sep}`);
+  });
 }
 
 // 宿主配置文件探测（src 同级）：框架识别的旁证信号 + Project.hostConfigs 证据清单
@@ -364,10 +588,12 @@ function isExpoAppJson(hostDir, configs) {
   return Boolean(appJson?.expo);
 }
 
-function detectFramework({ deps, configs, hostDir, userScriptCount, codeSignals, flutterDetected, dartDetected }) {
+function detectFramework({ deps, configs, hostDir, userScriptCount, codeSignals, flutterDetected, dartDetected, goDetected }) {
   // Flutter/Dart 客户端（pubspec.yaml + lib/）优先
   if (flutterDetected) return 'flutter';
   if (dartDetected) return 'dart';
+  // Go 项目（go.mod + .go 源码）：CLI / agent / Gin 后端，混合仓库时 Go 后端为主体
+  if (goDetected) return 'go';
   // 元框架优先（依赖更具体的信号，react/vue 基座只作兜底）
   if (deps.expo) return 'expo';
   if (deps['react-native']) return 'react-native';
@@ -397,12 +623,16 @@ function detectFrameworkVariants({ deps, configs }) {
   if (deps.flutter_bloc || deps.bloc) variants.push('bloc');
   if (deps.get || deps.getx) variants.push('getx');
   if (deps.go_router) variants.push('go_router');
+  // Go 框架变体（go.mod require）
+  if (deps['github.com/gin-gonic/gin']) variants.push('gin');
+  if (deps['github.com/spf13/cobra']) variants.push('cobra');
   return variants;
 }
 
 const FRAMEWORK_LABELS_FULL = {
   flutter: 'Flutter 应用',
   dart: 'Dart 应用',
+  go: 'Go 应用',
   expo: 'React Native（Expo）',
   'react-native': 'React Native 应用',
   nuxt: 'Nuxt 应用',
@@ -423,6 +653,8 @@ const VARIANT_LABELS = {
   bloc: 'Bloc 状态管理',
   getx: 'GetX 状态管理',
   go_router: 'GoRouter 路由',
+  gin: 'Gin Web 框架',
+  cobra: 'Cobra CLI',
 };
 
 // 组合展示标签：React 单页应用 + Capacitor 跨端（Vite 构建）
@@ -483,6 +715,24 @@ export function scanProject(projectRoot, options = {}) {
     const rel = path.relative(tsconfigBase, projectRoot).split(path.sep).join('/');
     tsconfigPaths = rebaseTsconfigPaths(tsconfigPaths, rel);
   }
+  // Vue CLI 项目补充：jsconfig.json paths 与 vue.config.js 的 configureWebpack.resolve.alias
+  // （Vue CLI 项目常无 tsconfig，@ 别名仅存在于 vue.config.js / jsconfig.json）
+  const ownVueConfig = path.join(projectRoot, 'vue.config.js');
+  if (fs.existsSync(ownVueConfig)) {
+    const jsconfigPath = path.join(projectRoot, 'jsconfig.json');
+    const jsconfigPaths = fs.existsSync(jsconfigPath) ? parseTsconfigPaths(jsconfigPath) : {};
+    const vueAliases = parseVueConfigAliases(ownVueConfig);
+    for (const [k, v] of Object.entries(jsconfigPaths)) {
+      if (!(k in tsconfigPaths)) tsconfigPaths[k] = v;
+    }
+    for (const [k, v] of Object.entries(vueAliases)) {
+      if (!(k in tsconfigPaths)) tsconfigPaths[k] = v;
+    }
+    // vue-cli 兜底：有 vue.config.js 与 src/ 但仍未解析出 @ 别名时按惯例补默认值
+    if (!('@/*' in tsconfigPaths) && fs.existsSync(path.join(projectRoot, 'src'))) {
+      tsconfigPaths['@/*'] = 'src/*';
+    }
+  }
   const dependencies = {};
   for (const scope of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
     const deps = packageJson?.[scope] ?? {};
@@ -500,14 +750,56 @@ export function scanProject(projectRoot, options = {}) {
   for (const [name, info] of Object.entries(pubspecDeps)) {
     if (!dependencies[name]) dependencies[name] = info;
   }
+  // 子项目发现：一级子目录的项目清单（package.json/go.mod/pubspec.yaml）。
+  // npm 子项目的依赖并入画像（融合仓库 web/ 前端的 vue/pinia/element 等对框架判定与依赖清单有价值；
+  // 名称冲突时主清单优先）。误吸附防护：无 .git、无根清单且子项目 >4 个视为代码集合目录，只报告不并入
+  const subProjects = discoverSubProjects(projectRoot);
+  const mergeSubDeps = fs.existsSync(path.join(projectRoot, '.git'))
+    || Boolean(ownPackageJson) || hasOwnPubspec || fs.existsSync(path.join(projectRoot, 'go.mod'))
+    || subProjects.length <= 4;
+  if (mergeSubDeps) {
+    for (const sp of subProjects) {
+      if (sp.kind !== 'npm') continue;
+      const pkg = readJson(path.join(projectRoot, sp.path, 'package.json'));
+      for (const scope of ['dependencies', 'devDependencies']) {
+        for (const [name, version] of Object.entries(pkg?.[scope] ?? {})) {
+          if (!dependencies[name]) dependencies[name] = { version: String(version), scope, registry: 'npm', from: sp.path };
+        }
+      }
+    }
+  }
+  // 兄弟项目发现：定位仓库根后识别同级项目（用户定位子项目/代码子目录场景）
+  const siblingProjects = discoverSiblingProjects(projectRoot);
 
-  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0 };
+  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0 };
   for (const f of files) {
     const ext = path.extname(f).slice(1);
     if (counts[ext] !== undefined) counts[ext] += 1;
   }
 
-  const allDeps = { ...(packageJson?.dependencies ?? {}), ...(packageJson?.devDependencies ?? {}), ...Object.keys(pubspecDeps).reduce((a, k) => { a[k] = pubspecDeps[k].version; return a; }, {}) };
+  // go.mod（Go 项目）：根目录优先，否则从 .go 文件目录向上发现（融合仓库 server/go.mod 场景）。
+  // 多模块并存时全部 require 并入依赖，主模块取 .go 文件数最多者（module 名供 import internal 判定）
+  const goFilesList = files.filter((f) => f.endsWith('.go'));
+  const goModuleDirs = discoverGoModuleDirs(projectRoot, goFilesList);
+  let goModule = null;
+  let goModuleDirCount = -1;
+  const goAllDeps = [];
+  for (const dir of goModuleDirs) {
+    const mod = parseGoMod(path.join(projectRoot, dir === '' ? '.' : dir, 'go.mod'));
+    const dirCount = dir === ''
+      ? goFilesList.filter((f) => !f.includes('/')).length
+      : goFilesList.filter((f) => f.startsWith(`${dir}/`)).length;
+    goAllDeps.push(...mod.deps);
+    if (dirCount > goModuleDirCount) {
+      goModuleDirCount = dirCount;
+      goModule = { ...mod, dir };
+    }
+  }
+  for (const dep of goAllDeps) {
+    if (!dependencies[dep.name]) dependencies[dep.name] = { version: dep.version, scope: 'require', registry: 'go' };
+  }
+
+  const allDeps = { ...(packageJson?.dependencies ?? {}), ...(packageJson?.devDependencies ?? {}), ...Object.keys(pubspecDeps).reduce((a, k) => { a[k] = pubspecDeps[k].version; return a; }, {}), ...Object.fromEntries(goAllDeps.map((d) => [d.name, d.version])) };
   const framework = detectFramework({
     deps: allDeps,
     configs: hostConfigs,
@@ -516,7 +808,14 @@ export function scanProject(projectRoot, options = {}) {
     codeSignals: { vueFileCount: counts.vue, tsxFileCount: counts.tsx, jsxFileCount: counts.jsx },
     flutterDetected: flutterDetected && Object.keys(pubspecDeps).includes('flutter'),
     dartDetected: flutterDetected && !Object.keys(pubspecDeps).includes('flutter'),
+    goDetected: goModule !== null && counts.go > 0,
   });
+  // unplugin-vue-components / unplugin-auto-import 自动注册目录（vite.config 词法解析）：
+  // 依赖存在但未显式配置 dirs 时，unplugin-vue-components 默认扫描 src/components
+  const unpluginDirs = parseViteUnpluginDirs(projectRoot, hostDir);
+  const autoComponentDirs = !('unplugin-vue-components' in dependencies)
+    ? []
+    : (unpluginDirs.componentDirs ?? ['src/components']);
   const frameworkVariants = detectFrameworkVariants({ deps: allDeps, configs: hostConfigs });
   // 客户端组件发现结果并入变体（Tauri/Electron 桌面端）
   if (tauriDetected && !frameworkVariants.includes('tauri')) frameworkVariants.push('tauri');
@@ -542,12 +841,20 @@ export function scanProject(projectRoot, options = {}) {
     vueFileCount: counts.vue,
     rustFileCount: counts.rs,
     dartFileCount: counts.dart,
+    goFileCount: counts.go,
+    goDetected: goModule !== null && counts.go > 0,
+    goModule: goModule ? { name: goModule.name, goVersion: goModule.goVersion, dir: goModule.dir } : null,
+    goModuleDirs: goModuleDirs,
+    subProjects,
+    siblingProjects,
     tauriDetected,
     electronDetected,
     flutterDetected,
     userScriptFiles,
     userScriptFileCount: userScriptFiles.size,
     tsconfigPaths,
+    autoComponentDirs,
+    autoImportDirs: unpluginDirs.autoImportDirs,
     dependencies,
     ...gitInfo(projectRoot),
   };
