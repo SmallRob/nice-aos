@@ -9,12 +9,12 @@ export const ONTOLOGY_META = {
   abstractionLevels: [
     { level: 'L3', name: '架构层', description: '产品级聚合：整体架构画像与功能域划分', types: ['Project', 'Domain'] },
     { level: 'L2', name: '结构层', description: '代码组织结构：模块、文件、路由、脚本与运行环境', types: ['Module', 'SourceFile', 'Route', 'UserScript', 'Dependency'] },
-    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Method', 'ScriptFunction'] },
+    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Method', 'PropEdge', 'ScriptFunction'] },
     { level: 'L0', name: '事实层', description: '审计事实（AuditFact 概念族）：从代码提取的行为证据', types: ['GmApiUsage', 'InjectionPoint', 'NetworkEndpoint'] },
   ],
   categories: [
     { category: 'Container', label: '容器', description: '按结构聚合代码单元的节点', types: ['Project', 'Domain', 'Module', 'SourceFile'] },
-    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Method', 'ScriptFunction'] },
+    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Method', 'PropEdge', 'ScriptFunction'] },
     { category: 'EntryPoint', label: '行为入口', description: '用户可触达的行为入口', types: ['Route'] },
     { category: 'Script', label: '油猴脚本', description: '独立于宿主应用的脚本形态（自带子对象体系）', types: ['UserScript'] },
     { category: 'Environment', label: '运行环境', description: '外部环境要素', types: ['Dependency'] },
@@ -34,6 +34,7 @@ export const OBJECT_TYPES = [
   { type: 'Interface', prefix: 'iface:', category: 'CodeUnit', level: 'L1', description: '接口（TS interface / Rust trait / Dart abstract class；含方法签名与 extends 继承）' },
   { type: 'Class', prefix: 'class:', category: 'CodeUnit', level: 'L1', description: '类（TS class / Rust struct/enum / Dart class：kind 区分，含 implements/extends 关系、derives/fields/variants、isWidget/isStore 与单例标记）' },
   { type: 'Method', prefix: 'method:', category: 'CodeUnit', level: 'L1', description: '方法/函数（类方法、接口方法签名、模块函数、Rust impl fn、Dart 方法；含 overrides、callIds/calledByIds 逻辑调用链与 deadCandidate）' },
+  { type: 'PropEdge', prefix: 'prop:', category: 'CodeUnit', level: 'L1', description: '组件间 props 传递边（含来源分类 forward/state/store/handler/literal/computed/spread）' },
   { type: 'ScriptFunction', prefix: 'fn:', category: 'CodeUnit', level: 'L1', description: '脚本函数/类/对象（含业务角色 roles：render/data/state/event/ui/logic）' },
   { type: 'Route', prefix: 'route:', category: 'EntryPoint', level: 'L2', description: '路由条目（Overlay / react-router / vue-router / Flutter GoRoute）' },
   { type: 'UserScript', prefix: 'us:', category: 'Script', level: 'L2', description: '油猴脚本（Tampermonkey UserScript）' },
@@ -44,7 +45,7 @@ export const OBJECT_TYPES = [
 ];
 
 export const LINK_TYPES = [
-  'contains', 'imports', 'importedBy', 'renders', 'renderedBy', 'navigatesTo', 'registers', 'usesStore', 'usesHook',
+  'contains', 'imports', 'importedBy', 'renders', 'renderedBy', 'passesProps', 'navigatesTo', 'registers', 'usesStore', 'usesHook',
   'implements', 'implementedBy', 'extends', 'extendedBy', 'overrides', 'overriddenBy',
   'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy', 'belongsTo',
 ];
@@ -144,6 +145,24 @@ export function createBlueprint(dataMap) {
 
     renderedBy(srcId) {
       return components.filter((c) => (c.rendersIds ?? []).includes(srcId));
+    },
+
+    // props 传递链：comp: → 其传 props 的目标组件；prop: → 边的两端组件
+    passesProps(srcId) {
+      const propEdges = dataMap.PropEdge ?? [];
+      if (srcId.startsWith('comp:')) {
+        const out = new Map();
+        for (const e of propEdges) {
+          if (e.fromComponentId === srcId && e.toComponentId) out.set(e.toComponentId, true);
+        }
+        return objectsForIds(index, [...out.keys()]);
+      }
+      if (srcId.startsWith('prop:')) {
+        const edge = getObject(index, srcId);
+        if (!edge) return [];
+        return objectsForIds(index, [edge.fromComponentId, edge.toComponentId].filter(Boolean));
+      }
+      return [];
     },
 
     navigatesTo(srcId) {

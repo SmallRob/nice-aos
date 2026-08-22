@@ -103,14 +103,14 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 |---|---|---|---|
 | L3 | 架构层 | 产品级聚合：整体架构画像与功能域划分 | Project, Domain |
 | L2 | 结构层 | 代码组织结构：模块、文件、路由、脚本与运行环境 | Module, SourceFile, Route, UserScript, Dependency |
-| L1 | 单元层 | 可独立理解的代码单元（CodeUnit 概念族） | Component, Hook, Store, Service, Interface, Class, Method, ScriptFunction |
+| L1 | 单元层 | 可独立理解的代码单元（CodeUnit 概念族） | Component, Hook, Store, Service, Interface, Class, Method, ScriptFunction, PropEdge |
 | L0 | 事实层 | 审计事实（AuditFact 概念族）：从代码提取的行为证据 | GmApiUsage, InjectionPoint, NetworkEndpoint |
 
-概念范畴：**Container**（Project/Domain/Module/SourceFile，按结构聚合）、**CodeUnit**（Component/Hook/Store/Service/Interface/Class/Method/ScriptFunction，可独立理解的逻辑单元）、**EntryPoint**（Route，用户可触达的行为入口）、**Script**（UserScript，独立于宿主应用的脚本形态）、**Environment**（Dependency，外部环境要素）、**AuditFact**（GmApiUsage/InjectionPoint/NetworkEndpoint，安全审计原子事实）。
+概念范畴：**Container**（Project/Domain/Module/SourceFile，按结构聚合）、**CodeUnit**（Component/Hook/Store/Service/Interface/Class/Method/ScriptFunction/PropEdge，可独立理解的逻辑单元与单元间关系边）、**EntryPoint**（Route，用户可触达的行为入口）、**Script**（UserScript，独立于宿主应用的脚本形态）、**Environment**（Dependency，外部环境要素）、**AuditFact**（GmApiUsage/InjectionPoint/NetworkEndpoint，安全审计原子事实）。
 
 聚合节点（Project/Domain/Module）自动生成**职责画像与自然语言总结**（summary/architecture/health），避免"只罗列事实、没有抽象"。
 
-### 对象（18 种）
+### 对象（19 种）
 
 | 类型 | ID 前缀 | 层级/范畴 | 关键属性 |
 |---|---|---|---|
@@ -118,7 +118,7 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 | Domain | `dom:` | L3 Container | **name, sources**（route/module）, routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, **capability**（路由能力描述）, **summary**（职责画像） |
 | Module | `mod:` | L2 Container | path, **archLayer**（语义架构层）, **layerComposition**（子树层构成）, fileCount, **subtreeFileCount**, parentId, **unitCounts**, **routeCount**, **summary**（职责画像） |
 | SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames, **unusedExports**（导出级死代码候选） |
-| Component | `comp:` | L1 CodeUnit | kind（page/modal/card/…）, propsCount, hooksUsed, stateCount, rendersIds, routeIds, **archLayer**, **domainIds** |
+| Component | `comp:` | L1 CodeUnit | kind（page/modal/card/…）, propsCount, **propsNames**（解构 props 名清单）, hooksUsed, stateCount, rendersIds, routeIds, **propOutCount/propInCount**（props 传递出入度）, **archLayer**, **domainIds** |
 | Hook | `hook:` | L1 CodeUnit | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属）, **archLayer**, **domainIds** |
 | Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, location（Zustand / Pinia / Riverpod 统一归属）, **archLayer**, **domainIds** |
 | Service | `svc:` | L1 CodeUnit | pattern（singleton/class/functions）, exportsCount, **archLayer**, **domainIds** |
@@ -126,7 +126,8 @@ nice-aos link calls --src "fn:steam-game-library-viewer/steam-game-library-viewe
 | Class | `class:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart）, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入；Rust struct/enum → kind 区分，含 fields/derives/variants；Dart Widget → **isWidget/widgetBase**，Dart Store → **isStore/withNames**）, **deadCandidate/deadReason** |
 | Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, **callIds/calledByIds/compCallIds**（Dart 方法逻辑调用链：方法间双向 + Widget 构造渲染链）, exported（Rust impl fn 与模块级 fn 同构映射）, **deadCandidate/deadReason**（函数级死代码候选） |
 | ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **deadCandidate/deadReason**（函数级死代码候选）, **archLayer=script** |
-| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter）, domain, **domainIds**, componentFileId, navigatesToIds |
+| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter/**next/next-api**）, domain, **domainIds**, componentFileId, navigatesToIds, **rawPath/layoutFileIds/specialFiles/isDynamic/isClient/apiMethods**（Next.js App Router 路由）, **hasPropsFactory/factoryProps**（overlay 路由 props 工厂注入键） |
+| PropEdge | `prop:` | L1 CodeUnit | fromComponentId/toComponentId, fromFileId/toFileId, props（名称 + 来源分类 + valueText + storeHook）, renderCount（该组件对的渲染处数） |
 | UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **deadFunctionCount**, **archLayer=script**, **domainIds** |
 | Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared/pub）, importCount |
 | GmApiUsage | `gm:` | L0 AuditFact | name, category（network/storage/style/…）, callCount, declared（与 @grant 比对） |
@@ -143,12 +144,13 @@ Method ID 约定：类/接口方法 `method:<file>#<Owner>#<name>`，模块函�
 
 功能域（Domain）与架构层**正交**：架构层是纵向技术切片，功能域是横向业务切片（由路由域段 + 业务命名目录聚合而成）。
 
-### 链接（21 种）
+### 链接（22 种）
 
 ```
 contains     Project → Domain/Module → SourceFile → Component/Hook/Store/Service/Interface/Class/Method/UserScript（类型实体也可从 iface:/class: 下钻其方法）
 imports / importedBy    文件级依赖（含 dep: 外部包）— 变更影响分析主链路
 renders / renderedBy    组件 JSX/template 渲染关系
+passesProps  Component → Component / PropEdge → 两端组件（props 传递链：正向查某组件把 props 传给了谁；传 prop: 边 ID 返回两端组件）
 navigatesTo  Route → Route（React 的 Navigate/overlay 跳转、Vue 的 router.push/replace、Flutter 的 context.go/push GoRouter 导航边）
 registers    Route ↔ Component（路由注册）
 usesStore / usesHook    Store/Hook 使用关系（src 传 store:/hook: 反查使用者）
@@ -190,6 +192,7 @@ query Method --where "deadCandidate=true"            # 函数级死代码候选�
 query Interface --where "deadCandidate=true"         # 死接口（类型级）
 query Class --where "deadCandidate=true"             # 死类（类型级）
 query ScriptFunction --where "deadCandidate=true"    # 油猴死函数（函数级）
+query PropEdge --where "id~SettingsOverlay" --pretty # 按组件名查 props 传递边（含来源分类）
 ```
 
 `--where` 语法：逗号分隔多条件 AND；`k=v`（或 `k:v`）精确相等，`k~v` 模糊包含；值为数组时精确做成员包含、模糊做任一成员包含（如 `hooksUsed=useEffect`）。默认返回前 50 条，`--all` 全量、`--limit <n>` 限制。
@@ -199,6 +202,8 @@ query ScriptFunction --where "deadCandidate=true"    # 油猴死函数（函数�
 ```bash
 link importedBy --src "file:src/services/exerciseService.ts"   # 变更影响分析
 link renderedBy --src "comp:ExerciseReportPage"
+link passesProps --src "comp:SettingsOverlay"        # 该组件把 props 传给了谁（数据流正向）
+link passesProps --src "prop:SettingsOverlay→SettingsSection"   # 传递边两端组件
 link navigatesTo --src "route:dietary_health"                  # 页面导航图
 link registers --src "route:talent_result"                     # 路由 ↔ 组件
 link usesStore --src "store:useThemeStore"
@@ -283,6 +288,8 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 | **领域蓝图** | 每个功能域的业务层级构成（script/presentation/service/…）、代码组织（模块清单）、单元清单（组件/Store/Hook/Service/脚本）与职责画像；纯脚本仓库自动切换为**意图功能域**（按函数意图分组：渲染注入/数据获取/状态存取/事件监听/元素构建/纯逻辑） | 各业务领域的层级关系与代码组织关系 |
 | **业务数据图** | Store 数据枢纽（state/action 键、持久化、被哪些域使用）、跨域数据依赖、持久化状态汇总；无 Store 时自动切换为**脚本存储枢纽**（localStorage/sessionStorage/indexedDB/GM 存储信号 + 状态存取函数 + 宿主数据读取） | 业务数据在哪、谁依赖谁 |
 | **业务逻辑流向** | 架构层间导入流向矩阵（行=来源层，列=目标层）、跨域依赖边、高扇入 Service/Store 枢纽；无模块导入时自动切换为**函数意图流转矩阵**（调用边按「调用方意图 → 被调方意图」聚合）+ 高扇入函数 | 业务逻辑怎么流、哪些节点是枢纽 |
+| **路由地图** | **路由导航链 SVG 图**（节点按导航跳数分层：入口 → 1 跳 → 2 跳…，边框色 = 路由类型，悬停高亮相邻路由、点击查看详情含 use client/layout 链/API 方法）、路径层级树（动态段琥珀色高亮）、域分组、类型分布与入口/孤岛路由统计、全量路由清单表（导航去向/被导航双向）；覆盖 overlay / react-router / vue-router / Flutter GoRoute+原生 / Next.js App Router 全类型 | 页面怎么组织、怎么互相跳转：入口在哪、哪些路由是孤岛 |
+| **组件数据流** | **Props 传递图 SVG**（BFS 分层：顶层容器 → 子组件，边标签 = props 数，节点边框色 = 所属域，悬停高亮相邻边、点击查看 props 明细含来源与 store hook）、props 来源分布（forward/state/store/handler/computed/literal/spread 七类）、高传出/高传入组件 Top 榜（props 分发枢纽 vs 消费方）、Props 传递边清单（含跨域标记与渲染处数）；域筛选与组件名/文件路径搜索 | 数据怎么在组件间流动：谁分发 props、谁消费 props、某个 prop 从哪来 |
 | **脚本蓝图** | 每个油猴脚本的**函数调用关系图**（SVG，从左到右为调用深度）、DOM 注入锚点、网络端点、函数业务角色分布（render/data/state/event/ui/logic） | 这个脚本怎么注入页面的：谁调谁、注入到哪个页面锚点、请求哪些域 |
 | **实体类图** | **UML 风格类图**（SVG）：类框（名称 + 字段/变体 + 方法摘要，Rust struct 含 derives）、关系边（implements 虚线 / extends 实线 / 接口继承）、按派生层级分列布局；语言/类型/架构层分布条形图；模块/类型/语言/关键词过滤与实体清单表格 | 类型体系长什么样：谁实现谁、谁继承谁、跨语言（TS ↔ Rust）实体各占多少 |
 
@@ -325,17 +332,47 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 - 组件解析链：`element={<Guard><Page /></Guard>}` 取最内层组件；`element={layoutElement}`（`createElement` 布局变量）穿透到实际布局组件
 - 跳转边：`<Navigate to="/x" />` 字面量重定向，相对 `to` 基于所属路由归一为绝对路径（`to="_overview/summary"` → `/:scopeUid/_overview/summary`）
 
+### Next.js App Router 路由（文件约定式，自动探测）
+
+`framework=next` 且存在含约定文件（`page/route/layout`）的 `app/` 或 `src/app/` 目录（后者优先）时自动提取：
+
+- **页面路由**：`app/**/page.tsx` → Route（`routeType=next`），URL 按目录约定计算——路由组 `(group)` 与平行路由 `@slot` 段剔除出 URL、`_private` 段整目录不产出路由、`[id]` → `:id`、`[...slug]` → `:slug*`、`[[...slug]]` → `:slug?`（`isDynamic` 标记）
+- **API 路由**：`app/**/route.ts` → Route（`routeType=next-api`），导出的 `GET/POST/PUT/...` 方法名收集为 `apiMethods`
+- **layout 链**：`layout.tsx` 不单独成路由，而是沿真实目录链（外→内，含路由组层）收集进后代路由的 `layoutFileIds`；`loading/error/not-found/template/global-error` 记入 `specialFiles`
+- **客户端标记**：page/route 文件头 `'use client'` 指令探测为 `isClient`（读不到文件时为 null）
+- **跳转边**：page 文件内 `<Link href="/x">`（`next/link`，字符串或 `{ pathname: '/x' }` 对象形式）→ 目标路由的 `navigatesToIds`；layout/共享组件文件内的 Link 不归属路由（避免边爆炸），动态变量 href 不解析
+
 ### Vue 路由（vue-router + 文件路由，自动探测）
 
 - **显式声明**：`router/modules/*.ts` 中 `RouteRecordRaw` 对象（path/name/meta.title/component 动态 import/Layout 函数包装/children 拼接），`component: () => import('@/views/x.vue')` 经别名解析到具体文件
 - **文件路由**：`src/views|pages/**/*.vue` 未被显式声明时自动推导（`index.vue` → 父级路径，`[...all].vue` → catch-all）；`<route lang="yaml">` 的 meta（title/name/path）作为路由描述
 - **跳转边**：`router.push('/path')` / 解构 `push` / `router.replace` 字面量调用（数组 push 不误报）
 
-### Flutter 路由（GoRouter，自动探测）
+### Flutter 路由（GoRouter + 原生 routes Map，自动探测）
 
-- **路由条目**：`GoRoute(path: '/x', builder: (context, state) => const XxxPage())` 全量提取；`path: AppRoutes.dashboard` 常量引用自动回填（`static const String dashboard = '/dashboard'`）；builder/pageBuilder 目标 Widget 支持直接形式、块形式与包装函数形式
+- **GoRoute 路由条目**：`GoRoute(path: '/x', builder: (context, state) => const XxxPage())` 全量提取；`path: AppRoutes.dashboard` 常量引用自动回填（`static const String dashboard = '/dashboard'`）；builder/pageBuilder 目标 Widget 支持直接形式、块形式与包装函数形式
+- **原生路由表**：`Map<String, WidgetBuilder> routes = { '/x': (ctx) => const XxxPage() }`（MaterialApp `routes:` 命名路由）条目提取，深度感知扫描——builder 体内字符串（如 `arguments: {'tid': x}`）不误判为条目键，值取最后一个大写构造调用（`routeType=flutter`）
 - **组件解析链**：builderWidget 经具名/通配导入解析到具体组件文件，回退本文件组件；Route 关联 `componentId`/`componentFileId`
-- **跳转边**：任意 .dart 文件内 `context.go/push/replace('/path')` 字面量导航调用 → 该文件组件所属路由 → 目标路由（`navigatesToIds`）
+- **跳转边**：任意 .dart 文件内 `context.go/push/replace('/path')` 与 `Navigator.pushNamed/pushReplacementNamed/popAndPushNamed`（`Navigator.of(context).pushNamed(...)` / `Navigator.pushNamed(context, ...)` 两种形式）字面量导航调用 → 该文件组件所属路由 → 目标路由（`navigatesToIds`）
+
+### Props 传递链（React/Next 组件数据流，自动探测）
+
+`.tsx/.jsx` 中 PascalCase JSX 标签的属性传递按**组件对聚合**为 PropEdge 对象（`prop:A→B`），每个 prop 携带**来源分类**（词法近似：组件声明范围 + 文件级变量表判定，非作用域精确分析）：
+
+| 来源 | 判定 | 说明 |
+|------|------|------|
+| `forward` | 标识符命中父组件解构 props 名 | 父组件 props 透传（设置面板批量下发的 state/setter 对典型形态） |
+| `state` | 标识符为组件内 `useState` 解构首元素 | 本地状态下发 |
+| `store` | 标识符为非 builtin hook 变量（`useXxxStore`/`useQuery` 等） | 状态库数据源，附 `storeHook` 溯源 |
+| `handler` | 内联函数或本地函数引用 | 事件回调 |
+| `literal` | 字符串/数字/布尔/裸属性（`disabled` = true） | 常量配置 |
+| `computed` | 其余表达式 | 计算值 |
+| `spread` | `{...obj}` 整体透传 | 不展开成员，单条 spread 边 |
+
+- **聚合规则**：同一组件对的多处渲染聚合为一条边（`renderCount` 计渲染处数）；同名 prop 出现多种来源时取优先级最高者（forward > state > store > handler > computed > literal > spread）
+- **组件出入度**：Component 附 `propOutCount`/`propInCount`（传出/传入边数），配合 viewer「组件数据流」视图识别 props 分发枢纽与消费方
+- **路由工厂注入**：overlay 路由的 `props: (app) => ({ item: app.item })` 工厂函数提取注入键为 `factoryProps`（App → 工厂 → 页面组件的主干注入链，在路由地图以「工厂 N props」徽章展示，不计入组件间 PropEdge）
+- **边界**：路由库组件（Link/Navigate/Outlet 等）与 React 内部属性（key/ref/className/style 等）跳过；自渲染（递归组件）不成边；Vue/Dart 组件暂不采集
 
 ### 油猴脚本（Tampermonkey UserScript，自动探测）
 
@@ -396,6 +433,6 @@ node src/cli/index.js --help
 
 - `--where` 数值比较（`lineCount>500`）与索引
 - 增量刷新（按 git diff 重新解析变更文件）
-- Next.js App Router 路由提取
-- props 传递链分析
+- props 传递链分析与「组件数据流」展示
+- React 单页应用内部组织路由的推断
 - 更新日志见 [CHANGELOG.md](./CHANGELOG.md)

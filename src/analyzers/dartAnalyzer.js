@@ -256,6 +256,85 @@ function extractRouteConstants(clean) {
   return map;
 }
 
+// ---------- 原生路由表提取（commentsOnly）：Map<String, WidgetBuilder> routes = {...} ----------
+// 深度感知的条目扫描：仅 map 体顶层（深度 0）的 'path': 视为条目键，
+// builder 体内部的字符串（如 arguments: {'tid': x}）不误判；值取最后一个大写构造调用（与 GoRoute 一致）
+function extractNativeRoutes(clean) {
+  const routes = [];
+  const headRe = /Map\s*<\s*String\s*,\s*WidgetBuilder\s*>\s*[A-Za-z_]\w*\s*=\s*\{/g;
+  let m;
+  while ((m = headRe.exec(clean))) {
+    // 平衡花括号扫描取 map 体
+    let depth = 1;
+    let i = m.index + m[0].length;
+    let inStr = false;
+    let strCh = '';
+    for (; i < clean.length; i += 1) {
+      const ch = clean[i];
+      if (inStr) {
+        if (ch === '\\') { i += 1; continue; }
+        if (ch === strCh) inStr = false;
+        continue;
+      }
+      if (ch === "'" || ch === '"') { inStr = true; strCh = ch; continue; }
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    const body = clean.slice(m.index + m[0].length, i);
+    // 顶层条目扫描：深度 0 的字符串字面量后紧跟 ':' → 条目键（字符串整体跳过，避免吞掉后续内容）
+    const entries = [];
+    let j = 0;
+    let eDepth = 0;
+    while (j < body.length) {
+      const ch = body[j];
+      if (ch === "'" || ch === '"') {
+        const keyStart = j;
+        let k = j + 1;
+        while (k < body.length && body[k] !== ch) {
+          if (body[k] === '\\') k += 1;
+          k += 1;
+        }
+        const key = body.slice(keyStart + 1, k);
+        let p = k + 1;
+        while (p < body.length && /\s/.test(body[p])) p += 1;
+        if (eDepth === 0 && body[p] === ':') entries.push({ key, valueStart: p + 1 });
+        j = k + 1;
+        continue;
+      }
+      if (ch === '(' || ch === '{' || ch === '[') eDepth += 1;
+      else if (ch === ')' || ch === '}' || ch === ']') eDepth -= 1;
+      j += 1;
+    }
+    // 各条目值：扫描到深度 0 逗号为止，取最后一个大写构造调用
+    for (const entry of entries) {
+      let vDepth = 0;
+      let vStr = false;
+      let vStrCh = '';
+      let end = body.length;
+      for (let v = entry.valueStart; v < body.length; v += 1) {
+        const ch = body[v];
+        if (vStr) {
+          if (ch === '\\') { v += 1; continue; }
+          if (ch === vStrCh) vStr = false;
+          continue;
+        }
+        if (ch === "'" || ch === '"') { vStr = true; vStrCh = ch; continue; }
+        if (ch === '(' || ch === '{' || ch === '[') vDepth += 1;
+        else if (ch === ')' || ch === '}' || ch === ']') vDepth -= 1;
+        else if (ch === ',' && vDepth === 0) { end = v; break; }
+      }
+      const valueText = body.slice(entry.valueStart, end);
+      const constructions = [...valueText.matchAll(/(?<![A-Za-z0-9_.$])(?:const\s+|new\s+)?([A-Z][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(/g)];
+      const builderWidget = constructions.length ? constructions[constructions.length - 1][1] : null;
+      if (builderWidget) routes.push({ path: entry.key, name: null, builderWidget, native: true });
+    }
+  }
+  return routes;
+}
+
 // ---------- Riverpod Provider 变量解析（顶层 final xxxProvider = XxxProvider(...)） ----------
 const PROVIDER_TYPES = [
   'AsyncNotifierProvider', 'NotifierProvider', 'StateNotifierProvider',
@@ -382,6 +461,14 @@ function extractCalls(bodyText, lineStarts, commentsOnlyBody) {
       const navPath = arg.startsWith("'") || arg.startsWith('"') ? arg.slice(1, -1) : arg;
       calls.push({ to: m[2], kind: 'nav', owner: m[1], line: lineOf(m.index), navPath });
     }
+    // pushNamed 系列：Navigator.of(context).pushNamed('/x') 与 Navigator.pushNamed(context, '/x') 两种形式；
+    // 参数区取首个字符串字面量（跳过 context 位置参数），常量引用形式由 builder 常量表回填
+    const namedRe = /(?<![A-Za-z0-9_$])(pushNamed|pushReplacementNamed|popAndPushNamed|restorablePushNamed)\s*\(/g;
+    while ((m = namedRe.exec(commentsOnlyBody))) {
+      const argText = commentsOnlyBody.slice(m.index + m[0].length, m.index + m[0].length + 160);
+      const strM = /^\s*(?:[A-Za-z_]\w*\s*,\s*)?['"]([^'"]+)['"]/.exec(argText);
+      if (strM) calls.push({ to: m[1], kind: 'nav', owner: 'Navigator', line: lineOf(m.index), navPath: strM[1] });
+    }
   }
   return calls;
 }
@@ -482,8 +569,8 @@ export function analyzeDartFile(relPath, content) {
     }
   }
 
-  // GoRoute 与路由常量（commentsOnly 通道）
-  facts.dartRoutes = extractGoRoutes(clean);
+  // GoRoute、原生路由表与路由常量（commentsOnly 通道）
+  facts.dartRoutes = [...extractGoRoutes(clean), ...extractNativeRoutes(clean)];
   facts.dartRouteConstants = extractRouteConstants(clean);
   // 常量回填：path: AppRoutes.dashboard → '/dashboard'
   for (const r of facts.dartRoutes) {

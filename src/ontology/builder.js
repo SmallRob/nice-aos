@@ -7,6 +7,7 @@ import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
 import { analyzeUserScriptFromDisk, isUserScriptCandidate } from '../analyzers/userScriptAnalyzer.js';
 import { analyzeRustFileFromDisk, analyzeRustFile, resolveRustUse } from '../analyzers/rustAnalyzer.js';
 import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
+import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { analyzeDartFile, analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
@@ -973,6 +974,87 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
+  // 6b. Props 传递链：tsx/jsx 的 jsxPropRenders（含来源分类）→ 按组件对聚合的 PropEdge 对象
+  const propEdges = [];
+  {
+    const SOURCE_PRIORITY = { forward: 6, state: 5, store: 4, handler: 3, computed: 2, literal: 1, spread: 0 };
+    const compById = new Map(components.map((c) => [c.id, c]));
+    const agg = new Map(); // `${fromId}→${toId}` → { fromId, toId, props: Map<name, prop>, renderCount }
+    for (const relPath of scan.files) {
+      if (!/\.(tsx|jsx)$/.test(relPath)) continue;
+      const facts = factsMap.get(relPath);
+      if (!facts?.jsxPropRenders?.length) continue;
+      const localToExport = new Map();
+      for (const imp of facts.imports) {
+        if (!imp.resolved || imp.resolved.kind !== 'internal' || imp.isTypeOnly) continue;
+        for (const n of imp.names) {
+          if (n.local && n.imported && n.imported !== '*') {
+            localToExport.set(n.local, { file: imp.resolved.file, exported: n.imported });
+          }
+        }
+      }
+      const fileComps = componentsByFile.get(relPath) ?? [];
+      for (const pass of facts.jsxPropRenders) {
+        if (!pass.fromComponent) continue;
+        const from = fileComps.find((c) => c.name === pass.fromComponent);
+        if (!from) continue;
+        const target = localToExport.get(pass.tag);
+        let to = null;
+        if (target) {
+          const targetComps = componentsByFile.get(target.file) ?? [];
+          to = targetComps.find((c) => c.name === target.exported) ?? targetComps.find((c) => c.name === pass.tag) ?? null;
+        } else {
+          // 同文件导出组件（无 import 记录）
+          to = fileComps.find((c) => c.name === pass.tag) ?? null;
+        }
+        if (!to || to.id === from.id) continue;
+        const key = `${from.id}→${to.id}`;
+        let entry = agg.get(key);
+        if (!entry) {
+          entry = { fromId: from.id, toId: to.id, props: new Map(), renderCount: 0 };
+          agg.set(key, entry);
+        }
+        entry.renderCount += 1;
+        for (const p of pass.props) {
+          const prev = entry.props.get(p.name);
+          if (!prev || (SOURCE_PRIORITY[p.source] ?? 0) > (SOURCE_PRIORITY[prev.source] ?? 0)) {
+            entry.props.set(p.name, { name: p.name, source: p.source, valueText: p.valueText, storeHook: p.storeHook ?? null });
+          }
+        }
+      }
+    }
+    const propEdgeIdsUsed = new Set();
+    for (const entry of agg.values()) {
+      const props = [...entry.props.values()];
+      if (!props.length) continue;
+      const from = compById.get(entry.fromId);
+      const to = compById.get(entry.toId);
+      const id = uniqueId(`prop:${from.name}→${to.name}`, propEdgeIdsUsed);
+      propEdges.push({
+        id,
+        fromComponentId: entry.fromId,
+        toComponentId: entry.toId,
+        fromFileId: `file:${from.filePath}`,
+        toFileId: `file:${to.filePath}`,
+        props,
+        renderCount: entry.renderCount,
+        reviewed: false,
+        notes: null,
+      });
+    }
+    // 组件出入度统计
+    for (const c of components) {
+      c.propOutCount = 0;
+      c.propInCount = 0;
+    }
+    for (const e of propEdges) {
+      const from = components.find((c) => c.id === e.fromComponentId);
+      const to = components.find((c) => c.id === e.toComponentId);
+      if (from) from.propOutCount += 1;
+      if (to) to.propInCount += 1;
+    }
+  }
+
   // 7. Overlay 路由（自定义 overlayGroups/lazyImports 体系）+ React JSX 声明式路由（react-router <Routes>/<Route>）
   const rawRoutes = [
     ...analyzeOverlayRoutes(projectRoot, resolver, getFacts, scan.files),
@@ -1015,7 +1097,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
       componentId: compId,
       navigatesToIds: navigatesTo.map((id) => `route:${id}`),
       hasPropsFactory: route.hasPropsFactory,
+      factoryProps: route.factoryProps ?? [],
       routeType: route.routeType ?? 'overlay',
+      rawPath: null, layoutFileIds: [], specialFiles: [],
+      isDynamic: null, isClient: null, apiMethods: null,
       reviewed: false, notes: null,
     });
     if (compId) {
@@ -1091,7 +1176,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
       componentId: compId,
       navigatesToIds: [],
       hasPropsFactory: false,
+      factoryProps: [],
       routeType: 'vue',
+      rawPath: null, layoutFileIds: [], specialFiles: [],
+      isDynamic: null, isClient: null, apiMethods: null,
       description: vr.metaTitle ?? null,
       reviewed: false, notes: null,
     });
@@ -1176,7 +1264,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
         componentId: compId,
         navigatesToIds: [],
         hasPropsFactory: false,
+        factoryProps: [],
         routeType: 'flutter',
+        rawPath: null, layoutFileIds: [], specialFiles: [],
+        isDynamic: null, isClient: null, apiMethods: null,
         reviewed: false, notes: null,
       });
       if (compId) {
@@ -1214,6 +1305,67 @@ export async function buildOntologyData(projectRoot, options = {}) {
       for (const ownerId of ownerIds) {
         const route = routes.find((r) => r.id === ownerId);
         if (route && !route.navigatesToIds.includes(toId)) route.navigatesToIds.push(toId);
+      }
+    }
+  }
+
+  // 7e. Next.js App Router 路由（文件约定式：page/route/layout）
+  //     导航边仅归属 page 文件内的 Link href / router.push（layout/共享组件文件不归属，避免边爆炸）
+  if (scan.framework === 'next') {
+    const nextRawRoutes = analyzeNextAppRoutes(projectRoot, scan, resolver, factsMap);
+    const nextRouteIds = new Set(routes.map((r) => r.id));
+    const nextRouteByPath = new Map();
+    for (const route of nextRawRoutes) {
+      const componentFile = route.componentFile;
+      if (componentFile) lazyReferencedFiles.add(componentFile);
+      const compId = componentFile
+        ? ((componentsByFile.get(componentFile) ?? []).find((c) => c.isPrimary)?.id
+          ?? (componentsByFile.get(componentFile) ?? [])[0]?.id ?? null)
+        : null;
+      const routeId = uniqueId(`route:${route.overlayId}`, nextRouteIds);
+      nextRouteByPath.set(route.routePath, routeId);
+      routes.push({
+        id: routeId,
+        overlayId: route.overlayId,
+        name: route.overlayId,
+        routePath: route.routePath,
+        rawPath: route.rawPath,
+        backTarget: route.backTarget,
+        hidesNav: route.hidesNav,
+        domain: route.domain,
+        group: route.group,
+        componentRef: route.componentRef,
+        componentFileId: componentFile ? `file:${componentFile}` : null,
+        componentId: compId,
+        navigatesToIds: [],
+        hasPropsFactory: false,
+        factoryProps: [],
+        routeType: route.routeType,
+        layoutFileIds: route.layoutFileIds.map((f) => `file:${f}`),
+        specialFiles: route.specialFiles,
+        isDynamic: route.isDynamic,
+        isClient: route.isClient,
+        apiMethods: route.apiMethods,
+        reviewed: false, notes: null,
+      });
+      if (compId) {
+        const comp = components.find((c) => c.id === compId);
+        if (comp) {
+          comp.routeIds.push(routeId);
+          if (route.routeType === 'next' && comp.kind === 'common') comp.kind = 'page';
+        }
+      }
+    }
+    for (const route of nextRawRoutes) {
+      if (route.routeType !== 'next') continue;
+      const routeObj = routes.find((r) => r.id === nextRouteByPath.get(route.routePath));
+      const facts = factsMap.get(route.componentFile);
+      if (!routeObj || !facts) continue;
+      for (const o of facts.overlayOpens) {
+        if (!o.target.startsWith('/')) continue;
+        const toId = nextRouteByPath.get(o.target);
+        if (!toId || toId === routeObj.id) continue;
+        if (!routeObj.navigatesToIds.includes(toId)) routeObj.navigatesToIds.push(toId);
       }
     }
   }
@@ -1445,6 +1597,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
         Module: modules.length, SourceFile: fileObjects.length, Component: components.length,
         Hook: hooks.length, Store: stores.length, Service: services.length,
         Interface: interfaces.length, Class: classes.length, Method: methods.length,
+        PropEdge: propEdges.length,
         Route: routes.length, Dependency: dependencies.length,
         UserScript: userScripts.length, GmApiUsage: gmApiUsages.length,
         InjectionPoint: injectionPoints.length, NetworkEndpoint: networkEndpoints.length,
@@ -1461,6 +1614,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     Interface: interfaces,
     Class: classes,
     Method: methods,
+    PropEdge: propEdges,
     Route: routes,
     Dependency: dependencies,
     UserScript: userScripts,

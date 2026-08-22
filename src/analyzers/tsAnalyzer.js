@@ -21,6 +21,22 @@ const OVERLAY_OPENER_FUNCS = new Set([
 const REACT_LAZY_WRAPPERS = new Set(['lazy', 'memo', 'forwardRef', 'React.memo', 'React.forwardRef']);
 // vue-router 导航方法（仅当调用主体是 useRouter() 声明的变量时才计入）
 const VUE_ROUTER_NAV_METHODS = new Set(['push', 'replace']);
+// 路由库 JSX 组件（属性无业务传递语义，不进 props 传递链）
+const ROUTING_JSX_COMPONENTS = new Set(['Link', 'Navigate', 'NavLink', 'Outlet', 'Routes', 'Route']);
+// React 内部/DOM 透传属性（非业务 props，不计入传递链）
+const REACT_INTERNAL_ATTRS = new Set(['key', 'ref', 'className', 'style', 'id', 'htmlFor', 'dangerouslySetInnerHTML']);
+// React / 路由内置 hooks（props kind 分类时不算 store 数据源）
+const BUILTIN_HOOKS = new Set([
+  'useState', 'useEffect', 'useLayoutEffect', 'useInsertionEffect', 'useMemo', 'useCallback',
+  'useRef', 'useReducer', 'useContext', 'useDebugValue', 'useImperativeHandle', 'useSyncExternalStore',
+  'useTransition', 'useDeferredValue', 'useId', 'useOptimistic', 'useActionState', 'useFormState',
+  'useFormStatus', 'use', 'useSearchParams', 'useParams', 'useLocation', 'useNavigate', 'useHref',
+  'useMatch', 'useOutletContext', 'useOutlet', 'useResolvedPath', 'useInRouterContext',
+  'useNavigationType', 'useFetcher', 'useFetchers', 'useRevalidator', 'useRouteError',
+  'useRouteLoaderData', 'useLoaderData', 'useActionData', 'useAwaitError', 'useAsyncValue',
+  'useRouter', 'usePathname', 'useSelectedLayoutSegment', 'useSelectedLayoutSegments',
+  'useReportWebVitals', 'useLocale', 'useTranslations', 'useSearchParamsNext',
+]);
 
 function hasExportModifier(ts, node) {
   if (!ts.canHaveModifiers?.(node)) return false;
@@ -226,6 +242,7 @@ export function analyzeFile(filePath, content, projectRoot) {
     jsxTags: new Set(),
     useCalls: [],
     overlayOpens: [],
+    jsxPropRenders: [],
     zustandCreates: [],
     piniaCreates: [],
     vueRoutes: [],
@@ -268,6 +285,10 @@ export function analyzeFile(filePath, content, projectRoot) {
   // useRouter() 声明的变量名（含解构 { push }），用于归属 vue-router 导航调用
   const routerVarDecls = [];
   const pendingNavCalls = [];
+  // props 传递链采集：JSX 属性原文（visit 后统一分类，此时文件级 state/store/fn 索引已齐）
+  const pendingPropAttrs = [];
+  const hookVarNames = []; // { hook, names, pos }（useState 解构首元素 / useXxxStore 变量）
+  const localFnNames = new Set(); // 本文件函数声明与箭头函数变量（handler 判定）
 
   function visit(node) {
     if (ts.isIdentifier(node)) {
@@ -320,6 +341,22 @@ export function analyzeFile(filePath, content, projectRoot) {
           }
         } else if (/^use[A-Z]/.test(name)) {
           facts.useCalls.push({ name, pos: node.getStart(sourceFile) });
+          // 记录 hook 调用声明的变量名（props kind 分类用）：
+          // const [x, setX] = useState() 取首元素（state）；const items = useXxxStore() 全量（store）
+          const parent = node.parent;
+          if (parent && ts.isVariableDeclaration(parent)) {
+            const names = [];
+            if (ts.isIdentifier(parent.name)) names.push(parent.name.text);
+            else if (ts.isObjectBindingPattern(parent.name)) {
+              for (const el of parent.name.elements) {
+                if (ts.isIdentifier(el.name)) names.push(el.name.text);
+              }
+            } else if (ts.isArrayBindingPattern(parent.name)) {
+              const first = parent.name.elements[0];
+              if (first && ts.isBindingElement(first) && ts.isIdentifier(first.name)) names.push(first.name.text);
+            }
+            if (names.length) hookVarNames.push({ hook: name, names, pos: node.getStart(sourceFile) });
+          }
         } else if (name === 'create' || name === 'createStore') {
           // zustand create：支持 create((set)=>({...})) 与 create<State>()(...) 泛型形式。
           // 泛型形式中 create 是内层 call（parent 为外层 call），需穿透到外层 call 再定位变量声明
@@ -388,6 +425,27 @@ export function analyzeFile(filePath, content, projectRoot) {
     } else if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
       const tag = node.tagName;
       if (ts.isIdentifier(tag) && /^[A-Z]/.test(tag.text)) facts.jsxTags.add(tag.text);
+      // props 传递链：PascalCase 标签的属性原文（路由库组件 Link/Navigate 的属性无业务语义，跳过）
+      if (ts.isIdentifier(tag) && /^[A-Z]/.test(tag.text)
+        && !ROUTING_JSX_COMPONENTS.has(tag.text)) {
+        const attrs = node.attributes?.properties ?? [];
+        const propAttrs = [];
+        for (const p of attrs) {
+          if (ts.isJsxSpreadAttribute(p)) {
+            propAttrs.push({ name: null, node: p.expression });
+            continue;
+          }
+          if (!ts.isJsxAttribute(p) || !p.name) continue;
+          const attrName = p.name.getText(sourceFile);
+          if (REACT_INTERNAL_ATTRS.has(attrName)) continue;
+          let expr = p.initializer ?? null;
+          if (expr && ts.isJsxExpression(expr)) expr = expr.expression ?? null;
+          propAttrs.push({ name: attrName, node: expr });
+        }
+        if (propAttrs.length && pendingPropAttrs.length < 200) {
+          pendingPropAttrs.push({ toComponent: tag.text, pos: node.getStart(sourceFile), attrs: propAttrs.slice(0, 16) });
+        }
+      }
       // <Navigate to="/path" /> 重定向（react-router），计入 overlayOpens 供路由导航边使用
       if (tag.text === 'Navigate' && /react-router/.test(facts.importMap.get('Navigate') ?? '')) {
         const attrs = node.attributes?.properties ?? [];
@@ -395,6 +453,20 @@ export function analyzeFile(filePath, content, projectRoot) {
         if (toAttr?.initializer && ts.isStringLiteral(toAttr.initializer)) {
           facts.overlayOpens.push({ target: toAttr.initializer.text, pos: node.getStart(sourceFile) });
         }
+      }
+      // <Link href="/path">（next/link）：字符串或 { pathname: '/x' } 对象形式，计入 overlayOpens 供路由导航边使用
+      if (tag.text === 'Link' && facts.importMap.get('Link') === 'next/link') {
+        const attrs = node.attributes?.properties ?? [];
+        const hrefAttr = attrs.find((p) => ts.isJsxAttribute(p) && p.name?.getText(sourceFile) === 'href');
+        let expr = hrefAttr?.initializer ?? null;
+        if (expr && ts.isJsxExpression(expr)) expr = expr.expression;
+        let target = null;
+        if (expr && ts.isStringLiteralLike(expr)) target = expr.text;
+        else if (expr && ts.isObjectLiteralExpression(expr)) {
+          const pn = expr.properties.find((p) => ts.isPropertyAssignment(p) && p.name?.getText(sourceFile) === 'pathname');
+          if (pn && ts.isStringLiteralLike(pn.initializer)) target = pn.initializer.text;
+        }
+        if (target) facts.overlayOpens.push({ target, pos: node.getStart(sourceFile) });
       }
     } else if (ts.isInterfaceDeclaration(node) && node.name) {
       const exported = hasExportModifier(ts, node);
@@ -496,6 +568,7 @@ export function analyzeFile(filePath, content, projectRoot) {
         });
       }
     } else if (ts.isFunctionDeclaration(node) && node.name) {
+      localFnNames.add(node.name.text);
       const exported = hasExportModifier(ts, node);
       if (exported || hasDefaultModifier(ts, node)) {
         facts.exportSymbols.push({
@@ -505,6 +578,11 @@ export function analyzeFile(filePath, content, projectRoot) {
           node, statementNode: node,
           description: exported ? extractJsdoc(ts, node, content) : '',
         });
+      }
+    } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      const init = node.initializer;
+      if (init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+        localFnNames.add(node.name.text);
       }
     }
     ts.forEachChild(node, visit);
@@ -719,8 +797,13 @@ export function analyzeFile(filePath, content, projectRoot) {
       const end = sym.statementNode.end;
       const params = fnNode.parameters ?? [];
       let propsCount = null;
+      const propsNames = [];
       if (params.length > 0 && ts.isObjectBindingPattern(params[0].name)) {
-        propsCount = params[0].name.elements.filter((e) => !ts.isOmittedExpression(e)).length;
+        for (const el of params[0].name.elements) {
+          if (ts.isOmittedExpression(el) || !ts.isIdentifier(el.name)) continue;
+          propsNames.push(el.propertyName ? el.propertyName.getText(sourceFile) : el.name.text);
+        }
+        propsCount = propsNames.length;
       } else if (params.length > 0) {
         propsCount = 1;
       } else {
@@ -735,10 +818,86 @@ export function analyzeFile(filePath, content, projectRoot) {
         pos: start,
         end,
         propsCount,
+        propsNames,
         hooksUsed,
         stateCount: inRange.filter((c) => c.name === 'useState').length,
         lineCount: sourceFile.text.slice(start, end).split('\n').length,
         description: sym.description || '',
+      });
+    }
+  }
+
+  // props 传递链分类：JSX 属性表达式按来源归类（forward/state/store/handler/literal/computed/spread）
+  // 词法近似：按标识符名 + 组件声明范围 + 文件级变量表判定，非作用域精确分析
+  const trimText = (node) => {
+    let t = node.getText(sourceFile).replace(/\s+/g, ' ');
+    if (t.length > 60) t = `${t.slice(0, 57)}...`;
+    return t;
+  };
+  for (const pass of pendingPropAttrs) {
+    const owner = facts.components.find((c) => pass.pos >= c.pos && pass.pos < c.end) ?? null;
+    const props = [];
+    for (const attr of pass.attrs) {
+      const expr = attr.node;
+      // spread 属性（不展开成员）：{...obj} 记为单条 spread 边
+      if (attr.name === null) {
+        props.push({ name: `...${trimText(expr)}`, source: 'spread', valueText: null, storeHook: null });
+        continue;
+      }
+      // 无 initializer 的裸属性（<Xxx disabled />）→ boolean 字面量
+      if (!expr) {
+        props.push({ name: attr.name, source: 'literal', valueText: 'true', storeHook: null });
+        continue;
+      }
+      if (ts.isStringLiteralLike(expr) || expr.kind === ts.SyntaxKind.NumericLiteral
+          || expr.kind === ts.SyntaxKind.TrueKeyword || expr.kind === ts.SyntaxKind.FalseKeyword
+          || expr.kind === ts.SyntaxKind.NullKeyword) {
+        props.push({ name: attr.name, source: 'literal', valueText: trimText(expr), storeHook: null });
+        continue;
+      }
+      // 内联函数 → handler
+      if (ts.isArrowFunction(expr) || ts.isFunctionExpression(expr)) {
+        props.push({ name: attr.name, source: 'handler', valueText: trimText(expr), storeHook: null });
+        continue;
+      }
+      if (ts.isIdentifier(expr)) {
+        const name = expr.text;
+        // 父组件 props 转发（解构 props 遮蔽模块级同名符号，优先判定）
+        if (owner && owner.propsNames.includes(name)) {
+          props.push({ name: attr.name, source: 'forward', valueText: name, storeHook: null });
+          continue;
+        }
+        // 本地函数引用（组件内定义或模块级工具函数）→ handler
+        if (localFnNames.has(name)) {
+          props.push({ name: attr.name, source: 'handler', valueText: name, storeHook: null });
+          continue;
+        }
+        // 组件范围内 useState 解构变量 → 本地状态
+        const stateHit = hookVarNames.find((h) => h.hook === 'useState' && h.names.includes(name)
+          && h.pos < pass.pos && (!owner || (h.pos >= owner.pos && h.pos < owner.end)));
+        if (stateHit) {
+          props.push({ name: attr.name, source: 'state', valueText: name, storeHook: null });
+          continue;
+        }
+        // 组件范围内非内置 hook 变量（useXxxStore/useQuery 等）→ 状态库数据源
+        const hookHit = hookVarNames.find((h) => h.hook !== 'useState' && !BUILTIN_HOOKS.has(h.hook)
+          && h.names.includes(name) && h.pos < pass.pos
+          && (!owner || (h.pos >= owner.pos && h.pos < owner.end)));
+        if (hookHit) {
+          props.push({ name: attr.name, source: 'store', valueText: name, storeHook: hookHit.hook });
+          continue;
+        }
+        props.push({ name: attr.name, source: 'computed', valueText: name, storeHook: null });
+        continue;
+      }
+      props.push({ name: attr.name, source: 'computed', valueText: trimText(expr), storeHook: null });
+    }
+    if (props.length) {
+      facts.jsxPropRenders.push({
+        tag: pass.toComponent,
+        fromComponent: owner?.name ?? null,
+        pos: pass.pos,
+        props,
       });
     }
   }

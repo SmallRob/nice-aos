@@ -16,6 +16,25 @@ function getTs(projectRoot) {
   return ts;
 }
 
+// props 工厂提取：props: (app) => ({...}) 箭头/函数体为对象字面量时取属性名
+function extractFactoryProps(ts, propsProp, sourceFile) {
+  const init = propsProp.initializer;
+  if (!init || (!ts.isArrowFunction(init) && !ts.isFunctionExpression(init))) return [];
+  let body = init.body;
+  if (ts.isBlock(body)) {
+    body = body.statements.find((s) => ts.isReturnStatement(s) && s.expression)?.expression ?? null;
+  }
+  while (body && ts.isParenthesizedExpression(body)) body = body.expression;
+  if (!body || !ts.isObjectLiteralExpression(body)) return [];
+  const names = [];
+  for (const prop of body.properties) {
+    if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) continue;
+    const name = prop.name?.getText(sourceFile);
+    if (name) names.push(name);
+  }
+  return names;
+}
+
 // 从扫描文件中自动探测 overlay 路由结构（对无该体系的普通 React 项目返回空列表）
 // 探测规则：路径含 /overlayGroups/ 或以 overlayGroup.ts 结尾 → group 文件；
 //           路径含 /lazyImports/ 或以 lazyImports.ts 结尾 → lazy 文件
@@ -134,6 +153,9 @@ export function analyzeOverlayRoutes(projectRoot, resolver, getFacts, allFiles =
           const hidesNavProp = node.properties.find((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'hidesNav');
           const hidesNav = hidesNavProp ? hidesNavProp.initializer.getText(sourceFile) === 'true' : true;
 
+          const propsFactoryProp = node.properties.find((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'props');
+          const factoryProps = propsFactoryProp ? extractFactoryProps(ts, propsFactoryProp, sourceFile) : [];
+
           routes.push({
             overlayId: idProp.initializer.text,
             routePath: strProp(node.properties, 'routePath'),
@@ -144,7 +166,8 @@ export function analyzeOverlayRoutes(projectRoot, resolver, getFacts, allFiles =
             componentRef,
             componentFile,
             factoryNavigatesTo: navigatesFromFactory,
-            hasPropsFactory: node.properties.some((x) => ts.isPropertyAssignment(x) && x.name?.getText(sourceFile) === 'props'),
+            hasPropsFactory: !!propsFactoryProp,
+            factoryProps,
           });
         }
       }
@@ -382,6 +405,7 @@ export function analyzeJsxRoutes(projectRoot, resolver, getFacts, allFiles = [])
           componentFile: elem.componentFile,
           factoryNavigatesTo: navigates,
           hasPropsFactory: false,
+          factoryProps: [],
           routeType: 'react',
         });
       }

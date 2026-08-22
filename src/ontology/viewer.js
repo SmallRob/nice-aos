@@ -723,6 +723,212 @@ export function buildViewerModel(dataMap) {
     };
   })();
 
+  // ---- 8. 路由地图：路由清单 / 类型与域分布 / 路径层级树 / 导航链（含 Next.js App Router 与 Flutter 原生路由）----
+  // 无路由时置 null 隐藏 Tab；导航边去重，入度 0 的路由视为入口
+  const routeMap = (() => {
+    if (!routes.length) return null;
+    const routeById = new Map(routes.map((r) => [r.id, r]));
+
+    const items = routes
+      .slice()
+      .sort((a, b) => (a.routePath ?? a.overlayId ?? '').localeCompare(b.routePath ?? b.overlayId ?? ''))
+      .map((r) => {
+        const navTargets = (r.navigatesToIds ?? [])
+          .map((id) => routeById.get(id))
+          .filter((x) => x && x.id !== r.id);
+        return {
+          id: r.id,
+          path: r.routePath ?? r.overlayId,
+          routeType: r.routeType ?? 'overlay',
+          domain: r.domain ?? null,
+          componentRef: r.componentRef ?? null,
+          componentFile: r.componentFileId ? r.componentFileId.replace(/^file:/, '') : null,
+          isDynamic: r.isDynamic ?? null,
+          isClient: r.isClient ?? null,
+          apiMethods: r.apiMethods ?? null,
+          layoutCount: (r.layoutFileIds ?? []).length,
+          specialCount: (r.specialFiles ?? []).length,
+          factoryPropsCount: (r.factoryProps ?? []).length,
+          factoryProps: r.factoryProps ?? [],
+          navToPaths: [...new Set(navTargets.map((x) => x.routePath ?? x.overlayId))],
+          navToIds: navTargets.map((x) => x.id),
+        };
+      });
+    const itemById = new Map(items.map((it) => [it.id, it]));
+
+    // 导航边（去重）+ 出入度
+    const navEdges = [];
+    const edgeSeen = new Set();
+    const outDeg = new Map();
+    const inDeg = new Map();
+    for (const it of items) {
+      for (const toId of it.navToIds) {
+        const to = itemById.get(toId);
+        if (!to) continue;
+        const k = it.id + '>' + to.id;
+        if (edgeSeen.has(k)) continue;
+        edgeSeen.add(k);
+        navEdges.push({ from: it.id, fromPath: it.path, to: to.id, toPath: to.path });
+        inDeg.set(to.id, (inDeg.get(to.id) ?? 0) + 1);
+        outDeg.set(it.id, (outDeg.get(it.id) ?? 0) + 1);
+      }
+    }
+    const entryCount = items.filter((it) => !inDeg.get(it.id) && outDeg.get(it.id)).length;
+    const orphanCount = items.filter((it) => !inDeg.get(it.id) && !outDeg.get(it.id)).length;
+
+    // 类型分布（固定顺序，仅保留出现的类型）
+    const TYPE_ORDER = ['overlay', 'react', 'vue', 'flutter', 'next', 'next-api'];
+    const byType = TYPE_ORDER
+      .filter((k) => items.some((it) => it.routeType === k))
+      .map((k) => ({ key: k, count: items.filter((it) => it.routeType === k).length }));
+
+    // 域分组：按路由 domain 字段聚合（null → 未分组），组内按 path 排序
+    const domainGroups = [];
+    const groupIdx = new Map();
+    for (const it of items) {
+      const name = it.domain ?? '（未分组）';
+      if (!groupIdx.has(name)) {
+        groupIdx.set(name, { name, routes: [] });
+        domainGroups.push(groupIdx.get(name));
+      }
+      groupIdx.get(name).routes.push(it);
+    }
+    domainGroups.sort((a, b) => b.routes.length - a.routes.length || a.name.localeCompare(b.name));
+
+    // 路径层级树：'/' 为根，逐段嵌套（每节点独立子段索引，不同分支同名段不合并）；
+    // 中间段节点 routes 为空数组；静态段在前动态段在后
+    const root = { seg: '/', full: '/', routes: [], children: [] };
+    for (const it of items) {
+      const segs = it.path === '/' ? [] : it.path.replace(/^\//, '').split('/');
+      let node = root;
+      for (const seg of segs) {
+        if (!node._idx) node._idx = new Map();
+        let child = node._idx.get(seg);
+        if (!child) {
+          child = { seg, full: node.full === '/' ? '/' + seg : node.full + '/' + seg, routes: [], children: [] };
+          node._idx.set(seg, child);
+          node.children.push(child);
+        }
+        node = child;
+      }
+      node.routes.push(it);
+    }
+    const stripIdx = (node) => { delete node._idx; node.children.forEach(stripIdx); };
+    stripIdx(root);
+    const sortTree = (node) => {
+      node.children.sort((a, b) => {
+        const dyn = (x) => (x.seg.startsWith(':') ? 1 : 0);
+        return dyn(a) - dyn(b) || a.seg.localeCompare(b.seg);
+      });
+      node.children.forEach(sortTree);
+    };
+    sortTree(root);
+    let maxDepth = 0;
+    const walkDepth = (node, d) => {
+      if (d > maxDepth) maxDepth = d;
+      node.children.forEach((c) => walkDepth(c, d + 1));
+    };
+    walkDepth(root, 0);
+
+    return {
+      totalCount: items.length,
+      navEdgeCount: navEdges.length,
+      entryCount,
+      orphanCount,
+      dynamicCount: items.filter((it) => it.isDynamic).length,
+      apiRouteCount: items.filter((it) => it.routeType === 'next-api').length,
+      byType,
+      domainGroups,
+      tree: root,
+      maxDepth,
+      navEdges,
+      items,
+    };
+  })();
+
+  // ---- 9. 组件数据流：PropEdge 传递边 / 来源分类分布 / 组件出入度（React props 传递链）----
+  // 无 PropEdge 时置 null 隐藏 Tab；来源分类 spread 不计入六类分布
+  const propFlow = (() => {
+    const propEdges = dataMap.PropEdge ?? [];
+    if (!propEdges.length) return null;
+    const compById = new Map(components.map((c) => [c.id, c]));
+    const domainNameOf = (c) => {
+      const did = (c.domainIds ?? [])[0];
+      return did ? (domainById.get(did)?.name ?? null) : null;
+    };
+
+    const SOURCE_ORDER = ['forward', 'state', 'store', 'handler', 'computed', 'literal'];
+    const sourceDist = {};
+    let propTotal = 0;
+    const edges = [];
+    for (const e of propEdges) {
+      const from = compById.get(e.fromComponentId);
+      const to = compById.get(e.toComponentId);
+      if (!from || !to) continue;
+      for (const p of e.props) {
+        if (p.source !== 'spread') sourceDist[p.source] = (sourceDist[p.source] ?? 0) + 1;
+      }
+      propTotal += e.props.length;
+      edges.push({
+        id: e.id,
+        fromId: from.id,
+        fromName: from.name,
+        fromFile: from.filePath,
+        fromDomain: domainNameOf(from),
+        toId: to.id,
+        toName: to.name,
+        toFile: to.filePath,
+        toDomain: domainNameOf(to),
+        propCount: e.props.length,
+        renderCount: e.renderCount ?? 1,
+        props: e.props.map((p) => ({ name: p.name, source: p.source, valueText: p.valueText ?? null, storeHook: p.storeHook ?? null })),
+      });
+    }
+    if (!edges.length) return null;
+    edges.sort((a, b) => b.propCount - a.propCount || (a.fromName + '>' + a.toName).localeCompare(b.fromName + '>' + b.toName));
+
+    // 参与边的组件及出入度
+    const nodes = [];
+    const nodeIdx = new Map();
+    const touch = (comp, dir, propCount) => {
+      let n = nodeIdx.get(comp.id);
+      if (!n) {
+        n = {
+          id: comp.id, name: comp.name, file: comp.filePath, domain: domainNameOf(comp),
+          kind: comp.kind ?? null, inCount: 0, outCount: 0, propInCount: 0, propOutCount: 0,
+        };
+        nodeIdx.set(comp.id, n);
+        nodes.push(n);
+      }
+      if (dir === 'out') { n.outCount += 1; n.propOutCount += propCount; }
+      else { n.inCount += 1; n.propInCount += propCount; }
+    };
+    for (const e of edges) {
+      touch(compById.get(e.fromId), 'out', e.propCount);
+      touch(compById.get(e.toId), 'in', e.propCount);
+    }
+
+    const topOut = nodes.slice().sort((a, b) => b.outCount - a.outCount || b.propOutCount - a.propOutCount).slice(0, 12);
+    const topIn = nodes.slice().sort((a, b) => b.inCount - a.inCount || b.propInCount - a.propInCount).slice(0, 12);
+    const domainOptions = [...new Set(nodes.map((n) => n.domain).filter(Boolean))]
+      .map((name) => ({ name, count: nodes.filter((n) => n.domain === name).length }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+    return {
+      edgeCount: edges.length,
+      nodeCount: nodes.length,
+      propTotal,
+      sourceDist,
+      sourceOrder: SOURCE_ORDER.filter((k) => sourceDist[k]),
+      spreadCount: propEdges.reduce((a, e) => a + e.props.filter((p) => p.source === 'spread').length, 0),
+      topOut,
+      topIn,
+      domainOptions,
+      edges,
+      nodes,
+    };
+  })();
+
   return {
     viewerVersion: '1.0',
     generatedAt: meta.generatedAt ?? new Date().toISOString(),
@@ -748,6 +954,8 @@ export function buildViewerModel(dataMap) {
     scriptFlow,
     scriptBlueprint,
     entities,
+    routeMap,
+    propFlow,
     quality: {
       cycles: meta.cycles ?? [],
       orphanCandidateCount: (meta.orphanCandidates ?? []).length,
@@ -909,6 +1117,28 @@ svg .ge.ext { stroke: rgba(188,140,255,.7); }
 .filter-bar input { width: 200px; }
 #entity-info { margin-top: 10px; min-height: 20px; }
 #entity-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
+/* ---- 路由地图：导航链 SVG + 路径层级树 ---- */
+svg text.rpath { font-size: 12px; font-weight: 600; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg); }
+svg text.rmeta { font-size: 10px; font-family: -apple-system, 'PingFang SC', sans-serif; fill: var(--fg-dim); }
+svg .gn rect.rbox { fill: var(--panel); }
+#route-info { margin-top: 10px; min-height: 20px; }
+#route-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
+#props-info { margin-top: 10px; min-height: 20px; }
+#props-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
+ul.tree, ul.tree ul { list-style: none; }
+ul.tree ul { padding-left: 18px; margin-left: 8px; border-left: 1px solid var(--border); }
+ul.tree li { padding: 2px 0; font-size: 13px; }
+ul.tree li .seg { font-family: 'SF Mono', Menlo, monospace; color: var(--fg); }
+ul.tree li .seg.dyn { color: var(--amber); }
+ul.tree li .cnt { color: var(--fg-faint); font-size: 11px; margin-left: 6px; }
+
+/* 组件数据流（props 传递链） */
+svg text.pe-label { font-size: 9px; fill: var(--fg-faint); font-family: 'SF Mono', Menlo, monospace; }
+svg.focus text.pe-label { opacity: .15; }
+svg.focus text.pe-label.hl { opacity: 1; fill: var(--fg); }
+.prop-edge { padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.prop-edge:last-child { border-bottom: none; }
+.prop-item { display: inline-block; margin: 2px 6px 2px 0; font-family: 'SF Mono', Menlo, monospace; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -920,6 +1150,8 @@ svg .ge.ext { stroke: rgba(188,140,255,.7); }
     <div class="tab" data-tab="blueprint">领域蓝图</div>
     <div class="tab" data-tab="data">业务数据图</div>
     <div class="tab" data-tab="flow">业务逻辑流向</div>
+    <div class="tab" data-tab="routemap">路由地图</div>
+    <div class="tab" data-tab="props">组件数据流</div>
     <div class="tab" data-tab="entities">实体类图</div>
     <div class="tab" data-tab="scripts">脚本蓝图</div>
   </nav>
@@ -929,6 +1161,8 @@ svg .ge.ext { stroke: rgba(188,140,255,.7); }
   <section class="view" id="view-blueprint"></section>
   <section class="view" id="view-data"></section>
   <section class="view" id="view-flow"></section>
+  <section class="view" id="view-routemap"></section>
+  <section class="view" id="view-props"></section>
   <section class="view" id="view-entities"></section>
   <section class="view" id="view-scripts"></section>
 </main>
@@ -1356,6 +1590,461 @@ function renderScriptFlow(el) {
     + (hubRows.length ? table([{ label: '函数' }, { label: '意图' }, { label: '被调数', num: true }, { label: '调出数', num: true }, { label: '所属脚本' }], hubRows)
       : '<div class="empty">无高扇入函数。</div>')
     + '<div class="note">被调数最多的函数改动影响面最大——修改前优先检查其调用方。</div></div>';
+}
+
+// ---------- Tab 4.5: 路由地图（路由总览 / 导航链 SVG / 路径层级树 / 域分组 / 全量清单）----------
+const ROUTE_TYPE_META = {
+  overlay: { label: 'overlay', color: '#bc8cff' },
+  react: { label: 'react-router', color: '#58a6ff' },
+  vue: { label: 'vue-router', color: '#3fb950' },
+  flutter: { label: 'Flutter', color: '#00b4ab' },
+  next: { label: 'Next 页面', color: '#d29922' },
+  'next-api': { label: 'Next API', color: '#f85149' },
+};
+const routeTypeMeta = (t) => ROUTE_TYPE_META[t] ?? { label: t || 'route', color: '#8b949e' };
+const routeTypeChip = (t) => {
+  const m = routeTypeMeta(t);
+  return '<span class="chip" style="color:' + m.color + ';border-color:' + m.color + '55">' + esc(m.label) + '</span>';
+};
+
+function buildRouteGraphSvg(rm) {
+  const ROUTE_NODE_CAP = 60;
+  const out = {}, inn = {};
+  rm.navEdges.forEach((e) => { out[e.from] = (out[e.from] || 0) + 1; inn[e.to] = (inn[e.to] || 0) + 1; });
+  let nodes = rm.items.slice();
+  if (nodes.length > ROUTE_NODE_CAP) {
+    nodes.sort((a, b) => ((out[b.id] || 0) + (inn[b.id] || 0)) - ((out[a.id] || 0) + (inn[a.id] || 0))
+      || a.path.split('/').length - b.path.split('/').length || a.path.localeCompare(b.path));
+    nodes = nodes.slice(0, ROUTE_NODE_CAP);
+  }
+  const nodeSet = {};
+  nodes.forEach((n) => { nodeSet[n.id] = 1; });
+  const edges = rm.navEdges.filter((e) => nodeSet[e.from] && nodeSet[e.to]);
+
+  // BFS 分层：入度 0 的路由为第 0 层入口，沿导航边取最短跳数；未被覆盖的（环内/被截断）沉到最后一列
+  const adj = {};
+  edges.forEach((e) => { (adj[e.from] = adj[e.from] || []).push(e.to); });
+  const level = {};
+  const q = [];
+  nodes.forEach((n) => { if (!inn[n.id]) { level[n.id] = 0; q.push(n.id); } });
+  while (q.length) {
+    const cur = q.shift();
+    (adj[cur] || []).forEach((to) => {
+      if (level[to] === undefined || level[to] > level[cur] + 1) { level[to] = level[cur] + 1; q.push(to); }
+    });
+  }
+  let maxLv = 0;
+  Object.keys(level).forEach((k) => { if (level[k] > maxLv) maxLv = level[k]; });
+  nodes.forEach((n) => { if (level[n.id] === undefined) level[n.id] = maxLv + 1; });
+  maxLv = Math.max.apply(null, nodes.map((n) => level[n.id]));
+
+  const COL = 300, ROW = 58, W = 244, H = 46, PADX = 24, PADY = 34;
+  const cols = [];
+  nodes.forEach((n) => { const lv = level[n.id]; (cols[lv] = cols[lv] || []).push(n); });
+  cols.forEach((c) => c.sort((a, b) => a.path.localeCompare(b.path)));
+  const pos = {};
+  let maxRows = 1;
+  cols.forEach((c, lv) => {
+    c.forEach((n, i) => { pos[n.id] = { x: PADX + lv * COL, y: PADY + i * ROW }; });
+    if (c.length > maxRows) maxRows = c.length;
+  });
+  const svgW = PADX * 2 + maxLv * COL + W;
+  const svgH = PADY * 2 + Math.max(1, maxRows - 1) * ROW + H;
+
+  let s = '<svg width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">';
+  s += '<defs><marker id="rarr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/></marker></defs>';
+  s += '<text class="col-label" x="' + PADX + '" y="16">入口</text>';
+  for (let lv = 1; lv <= maxLv; lv += 1) s += '<text class="col-label" x="' + (PADX + lv * COL) + '" y="16">' + lv + ' 跳</text>';
+  edges.forEach((e) => {
+    const a = pos[e.from]; const b = pos[e.to];
+    if (!a || !b) return;
+    const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2;
+    let d;
+    if (b.x > a.x + 20) {
+      const mx = (x1 + x2) / 2;
+      d = 'M' + x1 + ' ' + y1 + ' C' + mx + ' ' + y1 + ',' + mx + ' ' + y2 + ',' + (x2 - 3) + ' ' + y2;
+    } else {
+      const cy = Math.min(y1, y2) - 24;
+      d = 'M' + x1 + ' ' + y1 + ' C' + (x1 + 56) + ' ' + cy + ',' + (x2 - 56) + ' ' + cy + ',' + x2 + ' ' + y2;
+    }
+    s += '<path class="ge" data-e="' + esc(e.from) + '§' + esc(e.to) + '" d="' + d + '" marker-end="url(#rarr)"/>';
+  });
+  nodes.forEach((n) => {
+    const p = pos[n.id]; const m = routeTypeMeta(n.routeType);
+    const label = n.path.length > 30 ? n.path.slice(0, 29) + '…' : n.path;
+    let meta = m.label + (n.componentRef ? ' · ' + n.componentRef : '') + (n.isDynamic ? ' · 动态' : '');
+    if (meta.length > 38) meta = meta.slice(0, 37) + '…';
+    s += '<g class="gn" data-n="' + esc(n.id) + '">'
+      + '<rect class="rbox" x="' + p.x + '" y="' + p.y + '" width="' + W + '" height="' + H + '" rx="6" stroke="' + m.color + '"' + (!inn[n.id] ? ' stroke-width="2.5"' : '') + '/>'
+      + '<text class="rpath" x="' + (p.x + 10) + '" y="' + (p.y + 19) + '">' + esc(label) + '</text>'
+      + '<text class="rmeta" x="' + (p.x + 10) + '" y="' + (p.y + 35) + '">' + esc(meta) + '</text>'
+      + '<title>' + esc(n.path + ' · ' + m.label + (n.componentFile ? ' · ' + n.componentFile : '')) + '</title>'
+      + '</g>';
+  });
+  s += '</svg>';
+  return s;
+}
+
+function bindRouteGraphEvents(svgEl) {
+  if (!svgEl) return;
+  const info = document.getElementById('route-info');
+  svgEl.querySelectorAll('.gn').forEach((g) => {
+    g.addEventListener('mouseenter', () => {
+      svgEl.classList.add('focus');
+      const n = g.dataset.n;
+      const related = {};
+      related[n] = 1;
+      svgEl.querySelectorAll('.ge').forEach((e) => {
+        const parts = e.dataset.e.split('§');
+        if (parts[0] === n || parts[1] === n) {
+          e.classList.add('hl');
+          related[parts[0]] = 1;
+          related[parts[1]] = 1;
+        }
+      });
+      svgEl.querySelectorAll('.gn').forEach((x) => { if (related[x.dataset.n]) x.classList.add('hl'); });
+    });
+    g.addEventListener('mouseleave', () => {
+      svgEl.classList.remove('focus');
+      svgEl.querySelectorAll('.hl').forEach((x) => x.classList.remove('hl'));
+    });
+    g.addEventListener('click', () => {
+      const it = M.routeMap.items.find((x) => x.id === g.dataset.n);
+      if (!it) return;
+      info.innerHTML = '<b class="name">' + esc(it.path) + '</b> ' + routeTypeChip(it.routeType)
+        + (it.domain ? chip(it.domain, 'blue') : '')
+        + (it.isDynamic ? chip('动态段', 'amber') : '')
+        + (it.isClient === true ? chip('use client', 'cyan') : (it.isClient === false ? chip('server', '') : ''))
+        + (it.apiMethods && it.apiMethods.length ? chip('API ' + it.apiMethods.join('/'), 'red') : '')
+        + (it.layoutCount ? chip(it.layoutCount + ' 层 layout', 'purple') : '')
+        + (it.factoryPropsCount ? chip('工厂注入 ' + it.factoryPropsCount + ' props', 'green') : '')
+        + (it.componentRef ? '<span class="sub"> 组件 ' + esc(it.componentRef) + (it.componentFile ? '（' + esc(it.componentFile) + '）' : '') + '</span>' : '')
+        + (it.factoryProps?.length ? '<div class="sub">工厂 props：' + esc(it.factoryProps.join('、')) + '</div>' : '')
+        + '<div class="sub">导航 → ' + (it.navToPaths.length ? it.navToPaths.map(esc).join('、') : '（无）') + '</div>';
+    });
+  });
+}
+
+function renderRouteMap() {
+  const el = document.getElementById('view-routemap');
+  const rm = M.routeMap;
+
+  // 反向索引：路由 ← 被哪些路由导航
+  const navBy = {};
+  rm.navEdges.forEach((e) => { (navBy[e.to] = navBy[e.to] || []).push(e.fromPath); });
+
+  const TYPE_CLS = { overlay: 'purple', react: 'blue', vue: 'green', flutter: 'teal', next: 'amber', 'next-api': 'red' };
+  const maxType = Math.max(1, ...rm.byType.map((t) => t.count));
+  const typeRows = rm.byType.map((t) => barRow(routeTypeMeta(t.key).label, t.count, maxType, TYPE_CLS[t.key]));
+  const kv = (v, k) => '<div class="item"><div class="v">' + fmt(v) + '</div><div class="k">' + k + '</div></div>';
+
+  // 路径层级树（递归缩进；段名 + 类型徽标 + 主组件名）
+  const treeHtml = (node) => node.children.map((c) => '<li><span class="seg' + (c.seg.startsWith(':') ? ' dyn' : '') + '">' + esc(c.seg) + '</span>'
+    + c.routes.map((r) => routeTypeChip(r.routeType)).join('')
+    + (c.routes.length && c.routes.some((r) => r.componentRef) ? '<span class="cnt">' + esc(c.routes.map((r) => r.componentRef).filter(Boolean).join(' / ')) + '</span>' : '')
+    + (c.children.length ? '<ul>' + treeHtml(c) + '</ul>' : '')
+    + '</li>').join('');
+  const treeFull = '<ul class="tree"><li><span class="seg">/</span>' + rm.tree.routes.map((r) => routeTypeChip(r.routeType)).join('')
+    + (rm.tree.children.length ? '<ul>' + treeHtml(rm.tree) + '</ul>' : '') + '</li></ul>';
+
+  // 域分组（每组路由清单 + 导航去向）
+  const groupHtml = rm.domainGroups.slice(0, 12).map((g) => {
+    const lis = g.routes.slice(0, 40).map((r) => '<li><b>' + esc(r.path) + '</b> ' + routeTypeChip(r.routeType)
+      + (r.factoryPropsCount ? ' ' + chip('工厂 ' + r.factoryPropsCount + ' props', 'green') : '')
+      + (r.componentRef ? ' <span class="path">' + esc(r.componentRef) + '</span>' : '')
+      + (r.navToPaths.length ? '<span class="cnt">→ ' + r.navToPaths.map(esc).join('、') + '</span>' : '')
+      + '</li>').join('');
+    return '<div><h3>' + esc(g.name) + ' <span class="sub">' + g.routes.length + ' 条</span></h3><ul class="plain">' + lis + '</ul></div>';
+  }).join('');
+
+  // 全量清单表
+  const tableRows = rm.items.slice(0, 150).map((r) => [
+    { v: r.path, html: '<b>' + esc(r.path) + '</b>' + (r.isDynamic ? ' ' + chip('动态', 'amber') : '') },
+    { v: r.routeType, html: routeTypeChip(r.routeType) },
+    { v: r.domain ?? '-', html: r.domain ? chip(r.domain, 'blue') : '-' },
+    { v: r.componentRef ?? '-', html: r.componentRef ? esc(r.componentRef) : '-' },
+    { v: r.navToPaths.join('、'), html: r.navToPaths.length ? esc(r.navToPaths.join('、')) : '·' },
+    { v: (navBy[r.id] || []).join('、'), html: (navBy[r.id] || []).length ? esc(navBy[r.id].join('、')) : '·' },
+  ]);
+
+  el.innerHTML =
+    '<div class="panel"><h2>路由总览（' + fmt(rm.totalCount) + ' 条路由 · ' + rm.maxDepth + ' 级路径深度 · ' + rm.domainGroups.length + ' 个域分组）</h2>'
+    + '<div class="kv">' + kv(rm.totalCount, '路由') + kv(rm.navEdgeCount, '导航边') + kv(rm.entryCount, '入口路由')
+    + kv(rm.orphanCount, '孤岛路由') + (rm.dynamicCount ? kv(rm.dynamicCount, '动态路由') : '')
+    + (rm.apiRouteCount ? kv(rm.apiRouteCount, 'API 路由') : '') + '</div>'
+    + '<h3>路由类型分布</h3>' + typeRows.join('')
+    + '<div class="note">入口路由 = 无任何路由导航指向它（通常为应用首屏 / 登录页）；孤岛路由 = 无进出导航边（深链入口或仅被外部直达）。</div></div>'
+
+    + '<div class="panel"><h2>路由导航链（' + rm.navEdgeCount + ' 条导航边 · 悬停高亮相邻路由，点击查看详情）</h2>'
+    + '<div class="graph-wrap">' + buildRouteGraphSvg(rm) + '</div>'
+    + '<div class="legend">' + rm.byType.map((t) => {
+      const m = routeTypeMeta(t.key);
+      return '<span class="legend-dot" style="background:' + m.color + '"></span>' + esc(m.label);
+    }).join('') + '</div>'
+    + '<div id="route-info"></div>'
+    + '<div class="note">节点从左到右按导航跳数分层（入口 → 1 跳 → 2 跳…），边框加粗 = 入口路由；边 = 源路由页面内的导航调用（Link / pushNamed / go 等）。超过 ' + 60 + ' 条路由时按导航活跃度截断。</div></div>'
+
+    + '<div class="split">'
+    + '<div class="panel"><h2>路径层级树（' + rm.maxDepth + ' 级）</h2>' + treeFull + '</div>'
+    + '<div class="panel"><h2>域分组（' + rm.domainGroups.length + ' 组）</h2>' + groupHtml + '</div>'
+    + '</div>'
+
+    + '<details class="panel"><summary>全量路由清单（' + rm.items.length + ' 条' + (rm.items.length > 150 ? '，表内截断至 150' : '') + '）</summary>'
+    + table([{ label: '路径' }, { label: '类型' }, { label: '域' }, { label: '组件' }, { label: '导航去向' }, { label: '被导航' }], tableRows)
+    + '</details>';
+
+  bindRouteGraphEvents(el.querySelector?.('.graph-wrap svg'));
+}
+
+// ---------- Tab: 组件数据流（React Props 传递链）----------
+const PROP_SOURCE_META = {
+  forward: { label: '转发', cls: 'blue', desc: '父组件 props 原样转发' },
+  state: { label: '本地状态', cls: 'amber', desc: 'useState 声明的组件内状态' },
+  store: { label: '状态库', cls: 'green', desc: 'useXxxStore / useQuery 等外部数据源' },
+  handler: { label: '回调', cls: 'purple', desc: '内联函数或本地函数引用' },
+  computed: { label: '计算值', cls: 'cyan', desc: '成员访问 / 调用结果 / 表达式计算' },
+  literal: { label: '字面量', cls: '', desc: '字符串 / 数字 / 布尔常量' },
+  spread: { label: '展开', cls: 'red', desc: '{...obj} 整体透传（不展开成员）' },
+};
+const propSourceChip = (s) => {
+  const m = PROP_SOURCE_META[s] ?? { label: s || '?', cls: '' };
+  return '<span class="chip ' + (m.cls || '') + '">' + esc(m.label) + '</span>';
+};
+
+const PROP_DOMAIN_PALETTE = ['#58a6ff', '#bc8cff', '#3fb950', '#d29922', '#39c5cf', '#f85149', '#7ee787', '#ffa657', '#d2a8ff', '#79c0ff'];
+const propDomainColor = (name) => {
+  if (!name || !M.propFlow) return '#8b949e';
+  const idx = M.propFlow.domainOptions.findIndex((d) => d.name === name);
+  return idx >= 0 ? PROP_DOMAIN_PALETTE[idx % PROP_DOMAIN_PALETTE.length] : '#8b949e';
+};
+
+const PROP_NODE_CAP = 80;
+function buildPropFlowSvg(nodes, edges) {
+  // BFS 分层：入度 0（无父组件传 props）为第 0 层顶层容器；环内 / 被截断节点沉到最后一列
+  const adj = {};
+  const inn = {};
+  edges.forEach((e) => {
+    (adj[e.fromId] = adj[e.fromId] || []).push(e.toId);
+    inn[e.toId] = (inn[e.toId] || 0) + 1;
+  });
+  const level = {};
+  const q = [];
+  nodes.forEach((n) => { if (!inn[n.id]) { level[n.id] = 0; q.push(n.id); } });
+  while (q.length) {
+    const cur = q.shift();
+    (adj[cur] || []).forEach((to) => {
+      if (level[to] === undefined || level[to] > level[cur] + 1) { level[to] = level[cur] + 1; q.push(to); }
+    });
+  }
+  let maxLv = 0;
+  Object.keys(level).forEach((k) => { if (level[k] > maxLv) maxLv = level[k]; });
+  nodes.forEach((n) => { if (level[n.id] === undefined) level[n.id] = maxLv + 1; });
+  maxLv = Math.max.apply(null, nodes.map((n) => level[n.id]));
+
+  const COL = 260, ROW = 54, W = 208, H = 42, PADX = 24, PADY = 34;
+  const cols = [];
+  nodes.forEach((n) => { const lv = level[n.id]; (cols[lv] = cols[lv] || []).push(n); });
+  cols.forEach((c) => c.sort((a, b) => a.name.localeCompare(b.name)));
+  const pos = {};
+  let maxRows = 1;
+  cols.forEach((c, lv) => {
+    c.forEach((n, i) => { pos[n.id] = { x: PADX + lv * COL, y: PADY + i * ROW }; });
+    if (c.length > maxRows) maxRows = c.length;
+  });
+  const svgW = PADX * 2 + maxLv * COL + W;
+  const svgH = PADY * 2 + Math.max(1, maxRows - 1) * ROW + H;
+
+  let s = '<svg width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">';
+  s += '<defs><marker id="parr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/></marker></defs>';
+  s += '<text class="col-label" x="' + PADX + '" y="16">顶层</text>';
+  for (let lv = 1; lv <= maxLv; lv += 1) s += '<text class="col-label" x="' + (PADX + lv * COL) + '" y="16">' + lv + ' 层</text>';
+  edges.forEach((e) => {
+    const a = pos[e.fromId]; const b = pos[e.toId];
+    if (!a || !b) return;
+    const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2;
+    let c1x, c1y, c2x, c2y;
+    if (b.x > a.x + 20) {
+      const mx = (x1 + x2) / 2;
+      c1x = mx; c1y = y1; c2x = mx; c2y = y2;
+    } else {
+      const cy = Math.min(y1, y2) - 24;
+      c1x = x1 + 56; c1y = cy; c2x = x2 - 56; c2y = cy;
+    }
+    s += '<path class="ge" data-e="' + esc(e.fromId) + '§' + esc(e.toId) + '" d="M' + x1 + ' ' + y1 + ' C' + c1x + ' ' + c1y + ',' + c2x + ' ' + c2y + ',' + (x2 - 3) + ' ' + y2 + '" marker-end="url(#parr)"/>';
+    // 边中点标签 = props 数（三次贝塞尔中点 = (P0 + 3C1 + 3C2 + P3) / 8）
+    const lx = (x1 + 3 * c1x + 3 * c2x + x2) / 8;
+    const ly = (y1 + 3 * c1y + 3 * c2y + y2) / 8;
+    s += '<text class="pe-label" data-e="' + esc(e.fromId) + '§' + esc(e.toId) + '" x="' + lx + '" y="' + (ly - 3) + '" text-anchor="middle">' + e.propCount + '</text>';
+  });
+  nodes.forEach((n) => {
+    const p = pos[n.id];
+    const color = propDomainColor(n.domain);
+    const label = n.name.length > 24 ? n.name.slice(0, 23) + '…' : n.name;
+    const meta = (n.domain || '无域') + ' · 出' + n.outCount + ' / 入' + n.inCount;
+    s += '<g class="gn" data-n="' + esc(n.id) + '">'
+      + '<rect class="rbox" x="' + p.x + '" y="' + p.y + '" width="' + W + '" height="' + H + '" rx="6" stroke="' + color + '"'
+      + (n.inCount === 0 ? ' stroke-width="2.5"' : '') + '/>'
+      + '<text class="rpath" x="' + (p.x + 10) + '" y="' + (p.y + 18) + '">' + esc(label) + '</text>'
+      + '<text class="rmeta" x="' + (p.x + 10) + '" y="' + (p.y + 33) + '">' + esc(meta) + '</text>'
+      + '<title>' + esc(n.name + ' · ' + n.file) + '</title>'
+      + '</g>';
+  });
+  s += '</svg>';
+  return s;
+}
+
+let PROP_NODES_BY_ID = {};
+function bindPropFlowEvents(svgEl) {
+  if (!svgEl) return;
+  const info = document.getElementById('props-info');
+  svgEl.querySelectorAll('.gn').forEach((g) => {
+    g.addEventListener('mouseenter', () => {
+      svgEl.classList.add('focus');
+      const n = g.dataset.n;
+      const related = {};
+      related[n] = 1;
+      svgEl.querySelectorAll('.ge, .pe-label').forEach((e) => {
+        const parts = e.dataset.e.split('§');
+        if (parts[0] === n || parts[1] === n) {
+          e.classList.add('hl');
+          related[parts[0]] = 1;
+          related[parts[1]] = 1;
+        }
+      });
+      svgEl.querySelectorAll('.gn').forEach((x) => { if (related[x.dataset.n]) x.classList.add('hl'); });
+    });
+    g.addEventListener('mouseleave', () => {
+      svgEl.classList.remove('focus');
+      svgEl.querySelectorAll('.hl').forEach((x) => x.classList.remove('hl'));
+    });
+    g.addEventListener('click', () => {
+      const node = PROP_NODES_BY_ID[g.dataset.n];
+      if (!node) return;
+      const pf = M.propFlow;
+      const outEdges = pf.edges.filter((e) => e.fromId === node.id);
+      const inEdges = pf.edges.filter((e) => e.toId === node.id);
+      const propChips = (props) => props.slice(0, 8).map((p) =>
+        '<span class="prop-item">' + esc(p.name) + ' ' + propSourceChip(p.source)
+        + (p.storeHook ? '<span class="sub"> ← ' + esc(p.storeHook) + '</span>' : '')
+        + (p.valueText && p.source !== 'literal' ? '<span class="sub"> ' + esc(p.valueText) + '</span>' : '')
+        + '</span>').join('');
+      const edgeList = (list, dir) => list.slice(0, 8).map((e) =>
+        '<div class="prop-edge"><b>' + esc(dir === 'out' ? e.toName : e.fromName) + '</b>'
+        + '<span class="sub"> ' + (dir === 'out' ? '传出' : '传入') + ' ' + e.propCount + ' props · ' + e.renderCount + ' 处渲染</span>'
+        + '<div class="chips">' + (propChips(e.props) || '<span class="sub">（无）</span>') + '</div></div>').join('');
+      info.innerHTML = '<b class="name">' + esc(node.name) + '</b>'
+        + (node.domain ? chip(node.domain, 'blue') : '')
+        + chip('传出 ' + node.outCount + ' 边 / ' + node.propOutCount + ' props', 'purple')
+        + chip('传入 ' + node.inCount + ' 边 / ' + node.propInCount + ' props', 'cyan')
+        + '<div class="sub">' + esc(node.file) + '</div>'
+        + (outEdges.length ? '<h3>传出（' + outEdges.length + ' 个目标组件）</h3>' + edgeList(outEdges, 'out') : '<div class="sub">无传出边。</div>')
+        + (inEdges.length ? '<h3>传入（' + inEdges.length + ' 个来源组件）</h3>' + edgeList(inEdges, 'in') : '<div class="sub">无传入边。</div>');
+    });
+  });
+}
+
+function currentPropFilter() {
+  const domain = document.getElementById('prop-domain').value;
+  const q = document.getElementById('prop-search').value.trim().toLowerCase();
+  return (n) => (!domain || n.domain === domain)
+    && (!q || n.name.toLowerCase().includes(q) || (n.file || '').toLowerCase().includes(q));
+}
+
+function renderPropFlowGraph() {
+  const pf = M.propFlow;
+  const match = currentPropFilter();
+  let nodes = pf.nodes.filter(match);
+  let capped = false;
+  if (nodes.length > PROP_NODE_CAP) {
+    nodes = nodes.slice()
+      .sort((a, b) => (b.inCount + b.outCount) - (a.inCount + a.outCount) || a.name.localeCompare(b.name))
+      .slice(0, PROP_NODE_CAP);
+    capped = true;
+  }
+  const nodeSet = {};
+  nodes.forEach((n) => { nodeSet[n.id] = 1; });
+  const edges = pf.edges.filter((e) => nodeSet[e.fromId] && nodeSet[e.toId]);
+  PROP_NODES_BY_ID = {};
+  nodes.forEach((n) => { PROP_NODES_BY_ID[n.id] = n; });
+  const wrap = document.getElementById('prop-graph');
+  wrap.innerHTML = buildPropFlowSvg(nodes, edges)
+    + (capped ? '<div class="note">匹配组件超过 ' + PROP_NODE_CAP + ' 个，已按连接度截断；使用域筛选或搜索缩小范围。</div>' : '');
+  const svgEl = wrap.querySelector('svg');
+  if (svgEl) bindPropFlowEvents(svgEl);
+}
+
+function renderPropFlow() {
+  const el = document.getElementById('view-props');
+  const pf = M.propFlow;
+  const kv = (v, k) => '<div class="item"><div class="v">' + fmt(v) + '</div><div class="k">' + k + '</div></div>';
+
+  const maxSrc = Math.max(1, ...pf.sourceOrder.map((k) => pf.sourceDist[k]));
+  const srcRows = pf.sourceOrder.map((k) => {
+    const m = PROP_SOURCE_META[k];
+    return barRow(m.label, pf.sourceDist[k], maxSrc, m.cls, m.desc);
+  });
+
+  const degRows = (list, dir) => list.map((n) => [
+    { html: '<b>' + esc(n.name) + '</b>' },
+    { html: n.domain ? chip(n.domain, 'blue') : '-' },
+    { v: dir === 'out' ? n.outCount : n.inCount, num: true },
+    { v: dir === 'out' ? n.propOutCount : n.propInCount, num: true },
+    { html: '<span class="path">' + esc(n.file) + '</span>' },
+  ]);
+
+  const edgeRows = pf.edges.slice(0, 80).map((e) => [
+    { html: '<b>' + esc(e.fromName) + '</b>' + '<span class="sub"> → </span>' + '<b>' + esc(e.toName) + '</b>' },
+    { v: e.propCount, num: true },
+    { v: e.renderCount, num: true },
+    { html: e.props.slice(0, 6).map((p) => esc(p.name) + ' ' + propSourceChip(p.source)).join(' ')
+      + (e.props.length > 6 ? ' <span class="sub">+' + (e.props.length - 6) + '</span>' : '') },
+    { html: (e.fromDomain && e.toDomain && e.fromDomain !== e.toDomain) ? chip('跨域', 'amber') : '·' },
+  ]);
+
+  const domainOptions = pf.domainOptions.map((d) =>
+    '<option value="' + esc(d.name) + '">' + esc(d.name) + ' (' + d.count + ')</option>').join('');
+  const legendHtml = pf.domainOptions.slice(0, 10).map((d) =>
+    '<span class="legend-dot" style="background:' + propDomainColor(d.name) + '"></span>' + esc(d.name)).join('');
+
+  el.innerHTML =
+    '<div class="panel"><h2>组件数据流总览（' + fmt(pf.edgeCount) + ' 条传递边 · ' + fmt(pf.nodeCount) + ' 组件 · ' + fmt(pf.propTotal) + ' 个 props）</h2>'
+    + '<div class="kv">' + kv(pf.edgeCount, '传递边') + kv(pf.nodeCount, '参与组件') + kv(pf.propTotal, 'props 总数')
+    + (pf.spreadCount ? kv(pf.spreadCount, 'spread 透传') : '') + '</div>'
+    + '<h3>props 来源分布</h3>' + srcRows.join('')
+    + '<div class="note">PropEdge = 组件对间聚合的 props 传递边；来源分类为词法近似（组件声明范围 + 文件级变量表），spread 属性整体透传不展开成员。路由地图中 overlay 路由的工厂注入（App → 工厂 → 页面组件主干链）另以「工厂 N props」徽章展示。</div></div>'
+
+    + '<div class="panel"><h2>Props 传递图（' + pf.nodeCount + ' 组件，BFS 分层：顶层容器 → 子组件，边标签 = props 数）</h2>'
+    + '<div class="filter-bar">'
+    + '<select id="prop-domain"><option value="">全部域</option>' + domainOptions + '</select>'
+    + '<input id="prop-search" placeholder="搜索组件名 / 文件路径…">'
+    + '<button class="btn" id="prop-reset">重置</button>'
+    + '</div>'
+    + '<div class="graph-wrap" id="prop-graph"></div>'
+    + '<div class="legend">' + (legendHtml || '<span class="sub">组件未归属功能域</span>') + '</div>'
+    + '<div id="props-info"></div>'
+    + '<div class="note">节点从左到右按 props 传递层数分层（边框加粗 = 无入边的顶层组件）；边 = 组件对间的 props 传递（同名 prop 聚合）；悬停高亮相邻边，点击节点在下方查看 props 明细（名称 + 来源 + store hook）。默认渲染连接度 Top ' + PROP_NODE_CAP + ' 组件。</div></div>'
+
+    + '<div class="split">'
+    + '<div class="panel"><h3>高传出组件 Top ' + pf.topOut.length + '（props 分发枢纽）</h3>'
+    + (pf.topOut.length ? table([{ label: '组件' }, { label: '域' }, { label: '出边', num: true }, { label: '传出 props', num: true }, { label: '文件' }], degRows(pf.topOut, 'out')) : '<div class="empty">无。</div>')
+    + '</div>'
+    + '<div class="panel"><h3>高传入组件 Top ' + pf.topIn.length + '（props 消费方）</h3>'
+    + (pf.topIn.length ? table([{ label: '组件' }, { label: '域' }, { label: '入边', num: true }, { label: '传入 props', num: true }, { label: '文件' }], degRows(pf.topIn, 'in')) : '<div class="empty">无。</div>')
+    + '</div>'
+    + '</div>'
+
+    + '<details class="panel"><summary>Props 传递边清单（' + pf.edges.length + ' 条' + (pf.edges.length > 80 ? '，表内截断至 80' : '') + '，按 props 数排序）</summary>'
+    + table([{ label: '来源 → 目标' }, { label: 'props', num: true }, { label: '渲染处', num: true }, { label: 'props 明细' }, { label: '跨域' }], edgeRows)
+    + '</details>';
+
+  document.getElementById('prop-domain').addEventListener('change', renderPropFlowGraph);
+  document.getElementById('prop-search').addEventListener('input', renderPropFlowGraph);
+  document.getElementById('prop-reset').addEventListener('click', () => {
+    document.getElementById('prop-domain').value = '';
+    document.getElementById('prop-search').value = '';
+    renderPropFlowGraph();
+  });
+  renderPropFlowGraph();
 }
 
 // ---------- Tab 5: 脚本蓝图（油猴脚本函数调用图 + 逻辑注入链）----------
@@ -1975,10 +2664,14 @@ if (!M.domains.length && !M.scriptDomains) hideTab('blueprint');
 if (!M.dataMap.stores.length && !M.scriptDataMap) hideTab('data');
 if (!M.logicFlow.layerFlowTotal && !M.scriptFlow) hideTab('flow');
 if (!M.entities) hideTab('entities');
+if (!M.routeMap) hideTab('routemap');
+if (!M.propFlow) hideTab('props');
 renderOverview();
 renderBlueprint();
 renderData();
 renderFlow();
+if (M.routeMap) renderRouteMap();
+if (M.propFlow) renderPropFlow();
 if (M.entities) renderEntities();
 if (M.scriptBlueprint) renderScripts();
 </script>

@@ -2,6 +2,66 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.15.0] - 2026-08-22
+
+### 新增
+
+- **Props 传递链分析（PropEdge 对象体系，React/Next 组件数据流）**：`.tsx/.jsx` 中 PascalCase JSX 标签的属性传递按**组件对聚合**为 PropEdge 对象（`prop:A→B`，19 种对象类型之一），回答"数据怎么在组件间流动"
+  - **来源七类分类**（词法近似：组件声明范围 + 文件级变量表判定）：`forward`（父组件 props 透传）/ `state`（useState 解构）/ `store`（useXxxStore 等非内置 hook，附 storeHook 溯源）/ `handler`（内联或本地函数）/ `literal`（字符串/数字/布尔/裸属性）/ `computed`（其余表达式）/ `spread`（`{...obj}` 整体透传不展开）
+  - **聚合规则**：同一组件对多处渲染聚合一条边（`renderCount`）；同名 prop 多来源取优先级最高者（forward > state > store > handler > computed > literal > spread）；路由库组件（Link/Navigate/Outlet 等）与 React 内部属性（key/ref/className/style 等）跳过，自渲染不成边
+  - **Component 扩展**：`propsNames`（解构 props 名清单）与 `propOutCount`/`propInCount`（传递出入度）
+  - **passesProps 链接**（第 22 种链接类型）：`link passesProps --src comp:X` 正向查传递目标；传 `prop:` 边 ID 返回两端组件
+- **overlay 路由 props 工厂注入提取**：路由条目的 `props: (app) => ({ item: app.item })` 工厂函数提取注入键为 `factoryProps`（`hasPropsFactory` 标记），App → 工厂 → 页面组件的主干注入链在路由地图以「工厂 N props」徽章展示
+- **蓝图查看器「组件数据流」标签页**（新 Tab，位于路由地图之后）：无 PropEdge 项目自动隐藏
+  - **组件数据流总览**：传递边 / 参与组件 / props 总数 / spread 透传统计卡 + props 来源分布条形图（七类固定配色与判定说明）
+  - **Props 传递图 SVG**：节点按 BFS 传递层数分层（无入边顶层容器 → 1 层 → 2 层…），节点边框色 = 所属域、顶层加粗，边中点标签 = props 数；悬停高亮相邻边、点击节点查看 props 明细（名称 + 来源 + store hook + 值摘要）与传出/传入清单；域下拉筛选 + 组件名/文件路径搜索（默认渲染连接度 Top 80 组件）
+  - **高传出 / 高传入组件 Top 榜**：props 分发枢纽 vs 消费方（出入边数 + props 数 + 所属域）
+  - **Props 传递边清单**：来源 → 目标 / props 数 / 渲染处 / props 明细（名称:来源）/ 跨域标记（80 条截断保护）
+- **propFlow 视图模型**（`buildViewerModel` 新增第 9 节）：传递边（含来源分类与域归属）/ 参与组件出入度 / 来源分布 / 高传出高传入 Top 榜 / 域选项；`export --format viewmodel` 同步携带
+- **Markdown 导出扩展**：项目概览新增「Props 传递边数」指标；路由表新增「工厂 props」列；新增「Props 传递链（PropEdge）」章节（汇总行 + 来源分布 + 传递边清单 + 高扇入组件统计）
+
+### 验证
+
+- 新增 `test/propsChain.test.mjs`（7 个用例）：tsAnalyzer 来源分类（七类全覆盖 + propsNames 声明提取）、PropEdge 跨文件聚合与出入度/passesProps 链接、多处渲染 renderCount 聚合与来源优先级、同文件组件对成边、overlay 工厂 factoryProps 提取、propFlow 模型层与渲染输出（mock DOM 执行内嵌脚本）、无 PropEdge 项目 Tab 隐藏
+- 总计 132 个测试全部通过；真实项目冒烟：nice-today-2.0（414 条传递边 / 434 组件 / 1120 props，来源分布 computed×323 / handler×273 / state×184 / forward×150 / literal×151 / store×39；高传出 App(23)/HealingTab(18)，高传入 CopyTextButton(27)；SettingsOverlay→SettingsSection 16 个 forward props 批量透传等典型形态命中）与 next-web-app（3 条传递边，服务端组件为主的项目如实稀疏）
+
+## [0.14.0] - 2026-08-22
+
+### 新增
+
+- **蓝图查看器「路由地图」标签页**（新 Tab，位于业务逻辑流向与实体类图之间）：把 0.13.0 扩展后的全类型路由（overlay / react-router / vue-router / Flutter GoRoute+原生 / Next.js App Router）组织为可视化地图；无路由项目自动隐藏 Tab
+  - **路由总览**：路由总数 / 导航边 / 入口路由 / 孤岛路由 / 动态路由 / API 路由统计卡 + 路由类型分布条形图（每种类型固定配色：overlay 紫、react 蓝、vue 绿、flutter 青、next 页面琥珀、next API 红）
+  - **路由导航链 SVG 图**：节点按导航跳数 BFS 分层（入度 0 的入口路由为第 0 列 → 1 跳 → 2 跳…，环内/未覆盖节点沉底），节点框两行（路径 + 类型·组件），边框色 = 路由类型、入口加粗；悬停高亮相邻路由与导航边、点击查看路由详情（域 / 动态段 / use client·server / API 方法 / layout 层数 / 组件与文件 / 导航去向）；超过 60 条路由按导航活跃度截断
+  - **路径层级树**：路由 path 逐段嵌套的缩进树（每节点独立子段索引，不同分支同名段不合并），静态段在前动态段在后、动态段琥珀色高亮，节点标注类型徽标与主组件名
+  - **域分组**：按路由 domain 聚合（每组路由清单 + 组件 + 导航去向）
+  - **全量路由清单表**：路径 / 类型 / 域 / 组件 / 导航去向 / 被导航 双向列（150 条截断保护）
+- **routeMap 视图模型**（`buildViewerModel` 新增第 8 节）：路由条目（path/routeType/domain/componentRef/componentFile/isDynamic/isClient/apiMethods/layoutCount/navToPaths）、导航边（去重 + 自环剔除）、入口/孤岛路由计数（入度 0 且有出边 = 入口；无出入边 = 孤岛）、类型分布、域分组、路径层级树（maxDepth）；`export --format viewmodel` 同步携带
+- **Markdown 导出路由地图扩展**：路由表新增「类型 / 动态 / client / API 方法」四列（Next.js App Router 语义），表头前增加类型分布汇总行；页面导航图章节增加入口路由（无入边）清单
+
+### 验证
+
+- 新增 `test/routeMapView.test.mjs`（3 个用例）：routeMap 模型层契约（清单/导航边去重/入口孤岛计数/类型分布/路径层级树嵌套与动态段排序/域分组）、渲染输出（mock DOM 执行内嵌脚本，断言路由总览/导航链 SVG/层级树/域分组/全量清单与动态段高亮）、无路由项目 routeMap 为 null 且 Tab 隐藏
+- 总计 125 个测试全部通过；真实项目冒烟（含内嵌脚本运行时渲染验证）：next-web-app（6 路由/5 导航边/1 入口，六域分组）与 keylol_discourse_app（14 路由/6 导航边含自环剔除/1 入口/7 孤岛，`/space/*` 二级树深）
+
+## [0.13.0] - 2026-08-22
+
+### 新增
+
+- **Next.js App Router 路由提取（`nextAppAnalyzer`，文件约定式路由）**：`framework=next` 且存在含约定文件（`page/route/layout`）的 `app/` 或 `src/app/` 目录（后者优先）时自动提取，Route 对象体系新增 `next` / `next-api` 两个 routeType：
+  - **页面路由**：`app/**/page.tsx` → Route（`routeType=next`），URL 按目录约定计算——路由组 `(group)` 与平行路由 `@slot` 段剔除出 URL、`_private` 段整目录不产出路由、`[id]` → `:id`、`[...slug]` → `:slug*`、`[[...slug]]` → `:slug?`（`isDynamic` 标记）；`rawPath` 保留原始目录段
+  - **API 路由**：`app/**/route.ts` → Route（`routeType=next-api`），导出的 `GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS` 方法名收集为 `apiMethods`
+  - **layout 链**：`layout.tsx` 不单独成路由，而是沿真实目录链（外→内，含路由组层）收集进后代路由的 `layoutFileIds`；`loading/error/not-found/template/global-error` 约定文件记入 `specialFiles`
+  - **客户端标记**：page/route 文件头 `'use client'` 指令探测为 `isClient`；组件关联沿用 `componentId`/`componentFileId`，page 组件 kind 自动升级
+  - **跳转边**：tsAnalyzer 识别 `next/link` 的 `<Link href>`（字符串或 `{ pathname: '/x' }` 对象形式）计入 overlayOpens → 目标路由的 `navigatesToIds`；导航边仅归属 page 文件（layout/共享组件文件内的 Link 不归属，避免边爆炸）
+- **Flutter 原生路由表提取（`dartAnalyzer` 扩展）**：`Map<String, WidgetBuilder> routes = { '/x': (ctx) => const XxxPage() }`（MaterialApp `routes:` 命名路由）条目提取，`routeType=flutter`——与 GoRoute 路由并存合并；深度感知条目扫描（仅 map 体顶层的 `'path':` 视为条目键，builder 体内字符串如 `arguments: {'tid': x}` 不误判），值取最后一个大写构造调用（与 GoRoute builder 一致）
+- **Flutter 命名路由跳转边**：`Navigator.pushNamed / pushReplacementNamed / popAndPushNamed / restorablePushNamed`（`Navigator.of(context).pushNamed('/x')` 与 `Navigator.pushNamed(context, '/x')` 两种形式）→ 该文件组件所属路由 → 目标路由（`navigatesToIds`）
+
+### 验证
+
+- 新增 `test/nextRoutes.test.mjs`（4 个用例）：App Router 路由提取（页面/API 路由、动态段/路由组/私有目录归一、layout 链、`'use client'` 探测、apiMethods）、`src/app` 优先定位、Link href 跳转边（字符串 + pathname 对象形式 + 自环剔除）、路由条目字段契约（rawPath/specialFiles/componentFileId）
+- 新增 `test/dartNativeRoutes.test.mjs`（3 个用例）：原生 routes Map 条目提取（builder 体内字符串不误判 + 块体 builder）、pushNamed 两种调用形式跳转边、GoRoute 与原生 routes 并存合并
+- 总计 122 个测试全部通过；真实项目冒烟：next-web-app（6 条 next 路由 + 5 条导航边，`/` 页面 Link 五向导航全解析）与 keylol_discourse_app（14 条 flutter 路由 + 7 条导航边，含 `/space/friends|threads|posts` 同组件多路由与 `/settings → /log,/about` 二级导航）
+
 ## [0.12.0] - 2026-08-22
 
 ### 新增

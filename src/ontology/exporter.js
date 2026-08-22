@@ -54,7 +54,8 @@ export function exportToMarkdown(dataMap) {
     ['接口数（Interface）', counts.Interface ?? 0],
     ['类数（Class）', counts.Class ?? 0],
     ['方法/函数数（Method）', counts.Method ?? 0],
-    ['路由数（Overlay/Vue Router/GoRoute）', counts.Route],
+    ['路由数（Overlay/React/Vue Router/Flutter/Next.js）', counts.Route],
+    ['Props 传递边数（PropEdge）', counts.PropEdge ?? 0],
     ['依赖数（npm/pub）', counts.Dependency],
     ['油猴脚本数', counts.UserScript ?? 0],
     ['DOM 注入点数', counts.InjectionPoint ?? 0],
@@ -128,19 +129,80 @@ export function exportToMarkdown(dataMap) {
   ])));
   out.push('');
 
-  heading('路由地图（Overlay / Vue Router / Flutter GoRoute）');
-  out.push(table(['路由', 'routePath', 'backTarget', 'hidesNav', 'domain', '组件文件'], (dataMap.Route ?? []).map((r) => [
-    r.overlayId, r.routePath ?? '-', r.backTarget ?? '-', r.hidesNav ?? '-', r.domain,
+  heading('路由地图（Overlay / React Router / Vue Router / Flutter GoRoute+原生 / Next.js App Router）');
+  const routeList = dataMap.Route ?? [];
+  const routeTypeCounts = {};
+  for (const r of routeList) {
+    const k = r.routeType ?? 'overlay';
+    routeTypeCounts[k] = (routeTypeCounts[k] ?? 0) + 1;
+  }
+  out.push(`共 ${routeList.length} 条路由（类型分布：${Object.entries(routeTypeCounts).map(([k, v]) => `${k} ×${v}`).join('、') || '-'}）：`);
+  out.push('');
+  out.push(table(['路由', 'routePath', '类型', 'domain', '动态', 'client', 'API 方法', 'backTarget', 'hidesNav', '工厂 props', '组件文件'], routeList.map((r) => [
+    r.overlayId, r.routePath ?? '-', r.routeType ?? 'overlay', r.domain,
+    r.isDynamic === true ? '✓' : '-',
+    r.isClient === true ? 'use client' : (r.isClient === false ? 'server' : '-'),
+    (r.apiMethods ?? []).join('/') || '-',
+    r.backTarget ?? '-', r.hidesNav ?? '-',
+    (r.factoryProps ?? []).length ? `${(r.factoryProps ?? []).length}: ${(r.factoryProps ?? []).slice(0, 5).join(', ')}` : '-',
     r.componentFileId ? r.componentFileId.slice(5) : `⚠️ ${r.componentRef}`,
   ])));
   out.push('');
 
   heading('页面导航图（navigatesTo 边）');
-  const navEdges = (dataMap.Route ?? []).flatMap((r) => r.navigatesToIds.map((t) => [r.overlayId, t.slice(6)]));
-  out.push(`共 ${navEdges.length} 条跳转边：`);
+  const navEdges = routeList.flatMap((r) => r.navigatesToIds.map((t) => [r.overlayId, t.slice(6)]));
+  const navToSet = new Set(routeList.flatMap((r) => r.navigatesToIds ?? []));
+  const entryPaths = routeList.filter((r) => !navToSet.has(r.id)).map((r) => r.routePath ?? r.overlayId);
+  out.push(`共 ${navEdges.length} 条跳转边；入口路由（无入边）${entryPaths.length} 条：${entryPaths.join('、') || '-'}`);
   out.push('');
   out.push(table(['从 (overlay)', '到 (overlay)'], navEdges));
   out.push('');
+
+  // ---- Props 传递链（PropEdge：组件对间聚合的 props 传递边，含来源分类）----
+  const propEdgeList = dataMap.PropEdge ?? [];
+  if (propEdgeList.length > 0) {
+    const compById = new Map((dataMap.Component ?? []).map((c) => [c.id, c]));
+    const propEdges = propEdgeList
+      .map((e) => ({
+        ...e,
+        fromName: compById.get(e.fromComponentId)?.name ?? e.fromComponentId,
+        fromFile: compById.get(e.fromComponentId)?.filePath ?? '-',
+        toName: compById.get(e.toComponentId)?.name ?? e.toComponentId,
+        toFile: compById.get(e.toComponentId)?.filePath ?? '-',
+      }))
+      .sort((a, b) => b.props.length - a.props.length);
+    const sourceCounts = {};
+    for (const e of propEdges) {
+      for (const p of e.props ?? []) {
+        if (p.source !== 'spread') sourceCounts[p.source] = (sourceCounts[p.source] ?? 0) + 1;
+      }
+    }
+    const SOURCE_LABEL = { forward: '转发', state: '本地状态', store: '状态库', handler: '回调', computed: '计算值', literal: '字面量', spread: '展开' };
+    const propTotal = propEdges.reduce((a, e) => a + (e.props?.length ?? 0), 0);
+    heading('Props 传递链（PropEdge）');
+    out.push(`共 ${propEdges.length} 条传递边 · ${new Set(propEdges.flatMap((e) => [e.fromComponentId, e.toComponentId])).size} 个组件 · ${propTotal} 个 props（来源分布：${Object.entries(sourceCounts).map(([k, v]) => `${SOURCE_LABEL[k] ?? k} ×${v}`).join('、') || '-'}）`);
+    out.push('');
+    out.push(table(['来源组件', '目标组件', 'props 数', '渲染处', 'props 明细（名称:来源）'], propEdges.slice(0, 120).map((e) => [
+      `${e.fromName} (${e.fromFile})`,
+      `${e.toName} (${e.toFile})`,
+      e.props.length,
+      e.renderCount ?? 1,
+      (e.props ?? []).slice(0, 8).map((p) => `${p.name}:${SOURCE_LABEL[p.source] ?? p.source}${p.storeHook ? `←${p.storeHook}` : ''}`).join(', ') || '-',
+    ])));
+    if (propEdges.length > 120) out.push(`> 仅显示前 120 条边，共 ${propEdges.length} 条。`);
+    out.push('');
+
+    const inCount = new Map();
+    for (const e of propEdges) {
+      inCount.set(e.toComponentId, (inCount.get(e.toComponentId) ?? 0) + 1);
+    }
+    heading('高扇入组件 Top 20（props 传入最多）');
+    const topIn = [...inCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 20)
+      .map(([id, n]) => [compById.get(id)?.name ?? id.slice(5), compById.get(id)?.filePath ?? '-', n]);
+    out.push(table(['组件', '文件', '入边数'], topIn));
+    out.push('');
+  }
+
 
   heading('高扇入组件 Top 20（被渲染最多）');
   const renderedByCount = new Map();
