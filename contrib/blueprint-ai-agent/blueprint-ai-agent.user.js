@@ -1,0 +1,1449 @@
+// ==UserScript==
+// @name         AOS 蓝图 AI 代码分析助手
+// @name:zh-CN   AOS 蓝图 AI 代码分析助手
+// @name:en      AOS Blueprint AI Code Analysis Assistant
+// @namespace    https://github.com/nice-aos
+// @version      1.0.0
+// @description  nice-aos 蓝图页 AI 对话侧边栏。在 blueprint.html 右下角插入浮窗按钮，展开即可对项目代码本体（模块/组件/Hook/Store/Service/路由/接口/死代码/依赖/功能域等）进行自然语言问答分析。双数据源：优先读取页面内嵌 viewer-data，可配置本地 snapshot.json 地址。支持多模型供应商(DeepSeek/GLM/Qwen/Kimi/Doubao/OpenAI/自定义)、新建会话、会话历史、导出 JSON/Markdown。参考 steam-ai-agent 的 ToolRegistry + ReAct 工具循环架构。
+// @description:en nice-aos blueprint AI chat sidebar. Floating button in blueprint.html. Natural language Q&A over code ontology (modules/components/hooks/stores/services/routes/interfaces/deadcode/deps/domains). Dual data source. Multi-provider, sessions, history, export.
+// @icon         data:image/svg+xml,%3Csvg%20viewBox='0%200%2024%2024'%20fill='none'20xmlns='http://www.w3.org/2000/svg'%3E%3Crect%20width='24'%20height='24'%20rx='6'%20fill='%236366f1'/%3E%3Cpath%20d='M9%204h6a2%202%200%200%201%202%202v9a2%202%200%200%201-2%202h-2l-3%203v-3H9a2%202%200%200%201-2-2V6a2%202%200%200%201%202-2z'%20fill='white'/%3E%3Cpath%20d='M9%209h6M9%2012h4'%20stroke='%236366f1'%20stroke-width='1.6'%20stroke-linecap='round'/%3E%3C/svg%3E
+// @match        file:///*
+// @match        http://*/*
+// @match        https://*/*
+// @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
+// @grant        GM_listValues
+// @grant        GM_info
+// @grant        unsafeWindow
+// @connect      api.deepseek.com
+// @connect      open.bigmodel.cn
+// @connect      dashscope.aliyuncs.com
+// @connect      api.moonshot.cn
+// @connect      ark.cn-beijing.volces.com
+// @connect      api.openai.com
+// @connect      localhost
+// @connect      127.0.0.1
+// @run-at       document-idle
+// @noframes
+// @license      MIT
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // 仅对 nice-aos 蓝图页生效：页面必须内嵌 #viewer-data 或存在 #viewer 主容器
+    const $dataEl = document.getElementById('viewer-data');
+    if (!$dataEl && !document.querySelector('#viewer')) return;
+
+    // ============================================================
+    //  配置与常量
+    // ============================================================
+    const CONFIG = {
+        AI_DEFAULT_URL: 'https://api.deepseek.com/v1/chat/completions',
+        AI_DEFAULT_MODEL: 'deepseek-chat',
+        PANEL_WIDTH: 420,
+        MAX_ITERATIONS: 5,
+        TOOL_TIMEOUT: 25000,
+        AI_TIMEOUT: 120000,
+        CACHE_TTL: 30 * 60 * 1000,
+        TOAST_DURATION: 3000,
+        SK: { SETTINGS: 'ba_ai_settings', CHATS: 'ba_ai_chats', ACTIVE: 'ba_ai_active_chat', VER: 'ba_ai_ver', CACHE: 'ba_ai_cache', SNAP: 'ba_ai_snap' },
+    };
+
+    const MODEL_PROVIDERS = {
+        deepseek: {
+            name: 'DeepSeek', apiUrl: 'https://api.deepseek.com/v1/chat/completions',
+            models: [{ value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }, { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' }],
+            defaultModel: 'deepseek-v4-pro', apiKeyUrl: 'https://platform.deepseek.com/api_keys',
+        },
+        glm: {
+            name: '智谱GLM', apiUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+            models: [{ value: 'glm-4-flash', label: 'GLM-4-Flash (免费)' }, { value: 'glm-5', label: 'GLM-5' }],
+            defaultModel: 'glm-4-flash', apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
+        },
+        qwen: {
+            name: '通义千问', apiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+            models: [{ value: 'qwen-plus', label: 'Qwen Plus' }, { value: 'qwen-max', label: 'Qwen Max' }],
+            defaultModel: 'qwen-plus', apiKeyUrl: 'https://dashscope.console.aliyun.com/apiKey',
+        },
+        moonshot: {
+            name: 'Kimi', apiUrl: 'https://api.moonshot.cn/v1/chat/completions',
+            models: [{ value: 'kimi-k3', label: 'Kimi K3' }],
+            defaultModel: 'kimi-k3', apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys',
+        },
+        doubao: {
+            name: '豆包', apiUrl: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions',
+            models: [{ value: 'doubao-seed-1-6-pro-250528', label: 'Doubao Seed 1.6 Pro' }, { value: 'doubao-pro-32k', label: 'Doubao Pro 32K' }],
+            defaultModel: 'doubao-seed-1-6-pro-250528', apiKeyUrl: 'https://console.volcengine.com/ark',
+        },
+        openai: {
+            name: 'OpenAI', apiUrl: 'https://api.openai.com/v1/chat/completions',
+            models: [{ value: 'gpt-4o-mini', label: 'GPT-4o Mini' }, { value: 'gpt-4o', label: 'GPT-4o' }],
+            defaultModel: 'gpt-4o-mini', apiKeyUrl: 'https://platform.openai.com/api-keys',
+        },
+        custom: {
+            name: '自定义', apiUrl: '', models: [{ value: '', label: '自定义模型 ID' }], defaultModel: '',
+            apiKeyUrl: '', keyHint: '输入兼容 OpenAI 格式的 API 地址与模型 ID',
+        },
+    };
+
+    // ============================================================
+    //  小工具
+    // ============================================================
+    const $d = (sel, scope = document) => scope.querySelector(sel);
+    const $all = (sel, scope = document) => Array.from(scope.querySelectorAll(sel));
+    const el = (tag, cls = '', html = '') => {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (html) n.innerHTML = html;
+        return n;
+    };
+    const parseStored = (v, fallback) => { try { return v ? JSON.parse(v) : fallback; } catch { return fallback; } };
+    const deepClone = (o) => JSON.parse(JSON.stringify(o));
+    const uid = () => 's_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const trunc = (s, n = 120) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s; };
+
+    let toastTimer;
+    function toast(msg, type = 'info') {
+        let t = $d('.ba-toast');
+        if (!t) { t = el('div', 'ba-toast'); document.body.appendChild(t); }
+        t.textContent = msg;
+        t.className = 'ba-toast ba-toast-' + type + ' ba-toast-show';
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => t.classList.remove('ba-toast-show'), CONFIG.TOAST_DURATION);
+    }
+    function getIcon(name, size = 16) {
+        const I = SVG_ICONS[name] || SVG_ICONS.robot;
+        return `<svg class="ba-ic" style="width:${size}px;height:${size}px" viewBox="0 0 24 24" fill="none">${I}</svg>`;
+    }
+    function downloadFile(content, filename, mime = 'text/plain') {
+        const blob = new Blob([content], { type: mime + ';charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }
+
+    // ============================================================
+    //  存储封装（GM_* → 降级 localStorage）
+    // ============================================================
+    const Store = {
+        get(k, fb = null) {
+            try { return typeof GM_getValue === 'function' ? GM_getValue(k, fb) : localStorage.getItem(k) ?? fb; }
+            catch { return localStorage.getItem(k) ?? fb; }
+        },
+        set(k, v) {
+            try { typeof GM_setValue === 'function' ? GM_setValue(k, v) : localStorage.setItem(k, v); }
+            catch { localStorage.setItem(k, v); }
+        },
+        del(k) {
+            try { typeof GM_deleteValue === 'function' ? GM_deleteValue(k) : localStorage.removeItem(k); }
+            catch { localStorage.removeItem(k); }
+        },
+    };
+    function readSettings() {
+        const s = parseStored(Store.get(CONFIG.SK.SETTINGS, null), {});
+        if (!s.provider) s.provider = 'deepseek';
+        if (!s.apiUrl) s.apiUrl = MODEL_PROVIDERS[s.provider]?.apiUrl || '';
+        if (!s.model) s.model = MODEL_PROVIDERS[s.provider]?.defaultModel || '';
+        return s;
+    }
+    let settingsCache = null;
+    const getSettings = () => settingsCache || (settingsCache = readSettings());
+    const saveSettings = (patch) => { settingsCache = { ...getSettings(), ...patch }; Store.set(CONFIG.SK.SETTINGS, JSON.stringify(settingsCache)); };
+
+    // ============================================================
+    //  SVG 图标（精简子集）
+    // ============================================================
+    const SVG_ICONS = {
+        robot: `<path d="M9 4h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2l-3 3v-3H9a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M9 9h6M9 12h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>`,
+        chat: `<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>`,
+        send: `<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
+        stop: `<rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/>`,
+        plus: `<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
+        close: `<path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
+        download: `<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
+        trash: `<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`,
+        gear: `<circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.8"/>`,
+        history: `<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5M12 7v5l4 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
+        search: `<circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/><line x1="21" y1="21" x2="16.65" y2="16.65" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>`,
+        lightbulb: `<path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.2 1 2v.3h6v-.3c0-.8.4-1.5 1-2A7 7 0 0 0 12 2z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`,
+        book: `<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>`,
+        key: `<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.778-7.778zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>`,
+        copy: `<rect x="9" y="9" width="12" height="12" rx="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8"/>`,
+        check: `<path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`,
+        database: `<ellipse cx="12" cy="5" rx="8" ry="3" stroke="currentColor" stroke-width="1.6"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" stroke="currentColor" stroke-width="1.6"/>`,
+        code: `<path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
+        edit: `<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`,
+        file: `<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 2v6h6" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>`,
+    };
+
+    // ============================================================
+    //  数据源：双模式归一化
+    //   - 模式A：页面内嵌 #viewer-data（blueprint.html，零依赖离线）
+    //   - 模式B：本地 snapshot.json（设置里配置 http/file URL，GM_xmlhttpRequest 拉取）
+    // ============================================================
+    const DATA_TYPES = ['project', 'domain', 'module', 'sourcefile', 'component', 'hook', 'store', 'service', 'interface', 'class', 'method', 'route', 'userscript', 'scriptfunction', 'dependency', 'gmusage', 'injectionpoint', 'networkendpoint'];
+    const TYPE_LABELS = { project: '工程', domain: '功能域', module: '模块', sourcefile: '源文件', component: '组件', hook: 'Hook', store: 'Store', service: 'Service', interface: '接口', class: '类', method: '方法', route: '路由', userscript: '油猴脚本', scriptfunction: '脚本函数', dependency: '依赖', gmusage: 'GM调用', injectionpoint: '注入点', networkendpoint: '网络端点' };
+
+    const DataSource = {
+        ctx: null, // { byId, byType, project, meta, sourceLabel }
+        status: 'unloaded', // unloaded | loading | ready | error
+        error: '',
+
+        _typeArrays(raw) {
+            if (!raw || typeof raw !== 'object') return null;
+            const out = {};
+            for (const grouped of [raw, raw.dataMap, raw.model]) {
+                if (!grouped || typeof grouped !== 'object') continue;
+                for (const k of Object.keys(grouped)) {
+                    const lk = k.toLowerCase();
+                    if (DATA_TYPES.includes(lk) && Array.isArray(grouped[k])) {
+                        (out[lk] || (out[lk] = [])).push(...grouped[k]);
+                    }
+                }
+            }
+            return out;
+        },
+
+        _buildIndex(raw) {
+            const byId = new Map();
+            const byType = {};
+            const arrays = this._typeArrays(raw);
+            if (!arrays) return null;
+            for (const type of DATA_TYPES) {
+                const arr = arrays[type] || [];
+                byType[type] = arr;
+                for (const o of arr) {
+                    o._t = type;
+                    const id = o.id || o.path || o.name;
+                    if (id && !byId.has(id)) byId.set(id, o);
+                }
+            }
+            const meta = (Array.isArray(raw._meta) ? null : raw._meta) || (raw.dataMap?._meta) || {};
+            const project = raw.Project?.[0] || raw.dataMap?.project?.[0] || arrays.project?.[0] || this._buildFakeProject(raw, arrays);
+            return { byId, byType, project, meta, raw };
+        },
+
+        _buildFakeProject(raw, arrays) {
+            const all = Object.values(arrays).flat();
+            return {
+                id: 'proj:unknown', name: '未命名项目', path: '', version: '', framework: '',
+                fileCount: (arrays.sourcefile || []).length, commitHash: '', branch: '',
+            };
+        },
+
+        readInjected() {
+            const el = document.getElementById('viewer-data');
+            if (!el) return null;
+            try {
+                const parsed = JSON.parse(el.textContent);
+                // viewer-data 顶层可能是 { dataMap, domainBlueprint, ... } 或直接 dataMap
+                const body = parsed && typeof parsed === 'object' && ('dataMap' in parsed) ? parsed : { dataMap: parsed };
+                const idx = this._buildIndex(body);
+                if (idx) { idx.sourceLabel = '页面内嵌数据 (viewer-data)'; return idx; }
+            } catch (e) { console.warn('[BA-Agent] viewer-data 解析失败', e); }
+            return null;
+        },
+
+        fetchSnapshot(url) {
+            return new Promise((resolve, reject) => {
+                if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('无 GM_xmlhttpRequest')); return; }
+                GM_xmlhttpRequest({
+                    method: 'GET', url, timeout: 15000,
+                    onload: (r) => {
+                        try { resolve(JSON.parse(r.responseText)); }
+                        catch { reject(new Error('快照 JSON 解析失败')); }
+                    },
+                    onerror: (e) => reject(new Error(e.error || '快照拉取失败')),
+                    ontimeout: () => reject(new Error('快照拉取超时')),
+                });
+            });
+        },
+
+        async load() {
+            this.status = 'loading';
+            this.error = '';
+            try {
+                const s = getSettings();
+                // 模式A：页面内嵌优先（零依赖、即时可用）
+                const injected = this.readInjected();
+                if (injected) { this.ctx = injected; this.status = 'ready'; return injected; }
+                // 模式B：配置的本地 snapshot.json
+                if (s.snapshotUrl) {
+                    toast('拉取本地 snapshot.json…');
+                    const raw = await this.fetchSnapshot(s.snapshotUrl);
+                    const idx = this._buildIndex(raw);
+                    if (!idx) throw new Error('snapshot.json 结构无法识别');
+                    idx.sourceLabel = `本地快照 ${s.snapshotUrl}`;
+                    this.ctx = idx; this.status = 'ready'; return idx;
+                }
+                this.status = 'error';
+                this.error = '未找到可用数据：页面未内嵌 viewer-data，且未配置本地 snapshot.json。请在设置中填写快照地址。';
+                return null;
+            } catch (e) {
+                this.status = 'error'; this.error = String(e.message || e);
+                return null;
+            }
+        },
+    };
+
+    // ============================================================
+    //  代码分析工具（ToolRegistry + ReAct 文本协议）
+    //   参考 steam-ai-agent 的 ToolRegistry 弱协议设计，规避多模型 function-calling 差异
+    // ============================================================
+    const ToolRegistry = {
+        _tools: new Map(),
+        register(t) { this._tools.set(t.name, t); },
+        get(name) { return this._tools.get(name); },
+        getAll() { return Array.from(this._tools.values()); },
+        toolsDescription() {
+            return this.getAll().map((t) => `【${t.name}】${t.description}\n  参数: ${JSON.stringify(t.parameters.properties ?? {})}`).join('\n\n');
+        },
+        async execute(name, args, ctx) {
+            const t = this.get(name);
+            if (!t) return { success: false, error: `工具 "${name}" 不存在` };
+            try {
+                return await Promise.race([
+                    Promise.resolve(t.execute(args, ctx)),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('工具执行超时')), CONFIG.TOOL_TIMEOUT)),
+                ]);
+            } catch (e) { return { success: false, error: `工具执行错误: ${e.message}` }; }
+        },
+    };
+
+    // ---- 归一化的便捷查询辅助 ----
+    const matchObj = (o, kw) => {
+        kw = String(kw ?? '').trim().toLowerCase();
+        if (!kw) return true;
+        return [o.name, o.id, o.path, o.filePath].filter(Boolean).some((f) => String(f).toLowerCase().includes(kw));
+    };
+    const allFields = (o) => {
+        const out = {};
+        for (const k of Object.keys(o)) {
+            if (k.startsWith('_')) continue;
+            const v = o[k];
+            if (v === undefined || v === null || v === '') continue;
+            if (Array.isArray(v) && v.every((x) => typeof x === 'string') && v.length > 8) continue;
+            out[k] = v;
+        }
+        return out;
+    };
+    const compactInfo = (o, max = 12) => {
+        const r = { id: o.id, name: o.name, path: o.filePath || o.path, type: TYPE_LABELS[o._t] || o._t };
+        if (o.fileId) r.fileId = o.fileId;
+        return r;
+    };
+    const needsData = () => {
+        if (DataSource.status !== 'ready' || !DataSource.ctx) return '数据尚未加载，请先在设置中刷新数据源';
+        return null;
+    };
+
+    function registerAnalysisTools() {
+        ToolRegistry.register({
+            name: 'getStats',
+            description: '获取项目本体统计总览：工程信息、各类型对象数量、循环依赖、孤儿/死代码候选数量。适合回答"项目有多大/结构如何"',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const err = needsData(); if (err) return { success: false, error: err };
+                const { byType, project, meta } = DataSource.ctx;
+                const counts = {};
+                for (const t of DATA_TYPES) counts[TYPE_LABELS[t]] = (byType[t] || []).length;
+                const out = {
+                    project: project.name,
+                    framework: project.framework,
+                    frameworkVariants: project.frameworkVariants,
+                    branch: project.branch,
+                    commit: project.commitHash ? String(project.commitHash).slice(0, 7) : null,
+                    fileCount: project.fileCount ?? (byType.sourcefile || []).length,
+                    counts,
+                    cycles: (meta.cycles || []).map((c) => String(c).replace(/,/g, ' ⇄ ')),
+                    orphanCandidates: meta.orphanCandidates || [],
+                    deadExportCandidates: meta.deadExportCandidates || [],
+                    source: DataSource.ctx.sourceLabel,
+                };
+                return { success: true, data: out, summary: `共 ${byType.sourcefile?.length || 0} 个源文件，${byType.component?.length || 0} 组件，${byType.interface?.length || 0} 接口` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryObjects',
+            description: '按类型查询本体对象（type 取 project/domain/module/sourcefile/component/hook/store/service/interface/class/method/route/dependency；keyword 可选，按名称/文件路径模糊匹配）。适合"列出某类型对象/有哪些组件/Hook"',
+            parameters: { type: 'object', properties: { type: { type: 'string', description: '对象类型，小写单词，如 component/hook/store/service/interface/sourcefile' }, keyword: { type: 'string', description: '可选过滤关键词' }, limit: { type: 'number', description: '返回条数上限，默认20' } }, required: ['type'] },
+            execute(args) {
+                const err = needsData(); if (err) return { success: false, error: err };
+                const type = String(args.type || '').toLowerCase();
+                if (!DATA_TYPES.includes(type)) return { success: false, error: `未知类型 "${type}"，可选: ${DATA_TYPES.join(', ')}` };
+                const limit = Math.min(Number(args.limit) || 20, 50);
+                const arr = DataSource.ctx.byType[type] || [];
+                const hit = arr.filter((o) => matchObj(o, args.keyword)).slice(0, limit).map((o) => compactInfo(o));
+                if (!hit.length) return { success: false, error: `未找到类型 ${type}${args.keyword ? `(关键词 ${args.keyword})` : ''} 的对象` };
+                return { success: true, data: hit, summary: `${TYPE_LABELS[type]} ${hit.length} 条(共 ${arr.length})` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getNodeDetails',
+            description: '获取单个本体对象的完整详情（类型 + 名称或 id）。用于深入某个组件/Hook/Service/接口/类的方法与关系字段',
+            parameters: { type: 'object', properties: { query: { type: 'string', description: '对象类型+名称 或 直接 id，如 "service:ExportService" 或文件路径' } }, required: ['query'] },
+            execute(args) {
+                const err = needsData(); if (err) return { success: false, error: err };
+                const q = String(args.query || '').trim();
+                if (!q) return { success: false, error: '缺少 query 参数' };
+                const { byId, byType } = DataSource.ctx;
+                let o = byId.get(q);
+                if (!o) {
+                    const [pt, ...rest] = q.split(':');
+                    if (rest.length) {
+                        const type = pt.toLowerCase();
+                        if (DATA_TYPES.includes(type)) o = (byType[type] || []).find((x) => x.name === rest.join(':') || x.filePath === rest.join(':'));
+                    }
+                    if (!o) o = (byType.sourcefile || []).find((x) => x.path === q || x.filePath === q);
+                }
+                if (!o) return { success: false, error: `未找到对象 "${q}"（可先 queryObjects 查询）` };
+                return { success: true, data: allFields(o), summary: `${TYPE_LABELS[o._t]} ${o.name}` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'listLinks',
+            description: '列出某个对象的全部关系字段（importIds/rendersIds/hooksUsed/extendsIds/implementsIds/domainIds 等），用于回答"X 依赖谁 / 谁使用 / 引用关系"',
+            parameters: { type: 'object', properties: { query: { type: 'string', description: '对象类型:名称 或 id' }, keyword: { type: 'string', description: '可选：仅显示包含该关键词的关系字段' } }, required: ['query'] },
+            execute(args) {
+                const err = needsData(); if (err) return { success: false, error: err };
+                const q = String(args.query || '').trim();
+                const first = getNodeByQuery(q);
+                if (!first) return { success: false, error: `未找到对象 "${q}"` };
+                const links = {};
+                for (const [k, v] of Object.entries(first)) {
+                    if (!/Ids$|ases$|ers$|Count|candidates/i.test(k)) continue;
+                    if (Array.isArray(v) && v.length) links[k] = v.slice(0, 20);
+                    else if (v && typeof v !== 'object') links[k] = v;
+                }
+                if (args.keyword) {
+                    const kw = String(args.keyword).toLowerCase();
+                    for (const k of Object.keys(links)) if (!k.toLowerCase().includes(kw)) delete links[k];
+                }
+                if (!Object.keys(links).length) return { success: true, data: { note: '该对象无明显关系字段' }, summary: `${first.name} 无关系字段` };
+                // 补充所在文件维度的导入关系与反向引用者，便于 Service/Store 等无直接关系字段的对象也能分析引用
+                const { byType } = DataSource.ctx;
+                const fileObj = first.fileId ? byId.get(first.fileId) : (first.filePath ? (byType.sourcefile || []).find((x) => x.path === first.filePath || x.filePath === first.filePath) : null);
+                if (fileObj && Array.isArray(fileObj.importIds) && fileObj.importIds.length) links['file_imports'] = fileObj.importIds.slice(0, 20);
+                const fileKey = first.fileId || fileObj?.id;
+                if (fileKey) {
+                    const importers = (byType.sourcefile || []).filter((x) => Array.isArray(x.importIds) && x.importIds.includes(fileKey)).map((x) => x.path || x.name);
+                    if (importers.length) links['imported_by_files'] = importers.slice(0, 20);
+                }
+                if (Object.keys(links).length) return { success: true, data: links, summary: `${first.name} ${Object.keys(links).length} 类关系` };
+                return { success: true, data: { note: '该对象无明显关系字段' }, summary: `${first.name} 无关系字段` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getDomainDetail',
+            description: '分析指定功能域（domain）：列出所属的模块/文件/组件数量、域内清单。适合"xx功能域包含什么"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '功能域关键词（名称或 id）' } }, required: ['keyword'] },
+            execute(args) {
+                const err = needsData(); if (err) return { success: false, error: err };
+                const domains = DataSource.ctx.byType.domain || [];
+                const d = domains.find((x) => matchObj(x, args.keyword));
+                if (!d) return { success: false, error: `未找到功能域 "${args.keyword}"，可用: ${domains.map((x) => x.name).join(', ') || '无'}` };
+                const rel = {};
+                for (const k of ['moduleIds', 'fileIds', 'componentIds', 'storeIds', 'hookIds', 'serviceIds', 'routeIds']) {
+                    if (Array.isArray(d[k]) && d[k].length) rel[k] = d[k].slice(0, 30);
+                }
+                return { success: true, data: { id: d.id, name: d.name, sources: d.sources, ...rel }, summary: `功能域 ${d.name}：${d.componentCount ?? rel.componentIds?.length ?? 0} 组件` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'analyzeFile',
+            description: '分析单个源文件：导出符号、导入依赖、行数、所属模块/架构层。适合"这个文件是干什么的"',
+            parameters: { type: 'object', properties: { file: { type: 'string', description: '文件路径或文件关键词' } }, required: ['file'] },
+            execute(args) {
+                const err = needsData(); if (err) return { success: false, error: err };
+                const files = DataSource.ctx.byType.sourcefile || [];
+                const f = files.find((x) => matchObj(x, args.file));
+                if (!f) return { success: false, error: `未找到文件 "${args.file}"` };
+                return { success: true, data: allFields(f), summary: `${f.name} ${f.lineCount ?? ''}行 ${f.isTest ? '(测试)' : ''}` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getArchLayers',
+            description: '按架构分层（entry/presentation/state/service/integration/shared/test 等）统计文件与模块分布。适合"架构分层情况"',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const err = needsData(); if (err) return { success: false, error: err };
+                const layers = {};
+                for (const f of DataSource.ctx.byType.sourcefile || []) {
+                    const l = f.archLayer || f.layer || 'mixed';
+                    layers[l] = (layers[l] || 0) + 1;
+                }
+                return { success: true, data: layers, summary: `${Object.keys(layers).length} 个架构层` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'findDeadCode',
+            description: '列出血代码候选（孤儿文件 / 未使用导出 / 未使用接口/方法）。适合"哪些代码是死的/可清理"',
+            parameters: { type: 'object', properties: { kind: { type: 'string', description: '可选: file/export/interface/method/orphan，默认全部' } }, required: [] },
+            execute(args) {
+                const err = needsData(); if (err) return { success: false, error: err };
+                const { byType, meta } = DataSource.ctx;
+                const kind = String(args.kind || '').toLowerCase();
+                const out = {};
+                if (!kind || kind === 'orphan' || kind === 'file') out.orphanFiles = meta.orphanCandidates || [];
+                if (!kind || kind === 'export') out.deadExports = (meta.deadExportCandidates || []).slice(0, 40);
+                if (!kind || kind === 'interface') out.deadInterfaces = (byType.interface || []).filter((x) => x.deadCandidate).slice(0, 40).map((x) => ({ name: x.name, reason: x.deadReason, file: x.filePath }));
+                if (!kind || kind === 'method') out.deadMethods = (byType.method || []).filter((x) => x.deadCandidate).slice(0, 40).map((x) => ({ name: x.name, file: x.filePath }));
+                if (!Object.keys(out).length) return { success: false, error: `未知 kind "${kind}"` };
+                return { success: true, data: out, summary: `死代码候选: ${(meta.orphanCandidates || []).length} 孤儿文件` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getProjectContext',
+            description: '返回当前页面正在查看的蓝图上下文（如正在查看哪个视图/功能域），帮助结合界面回答',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const s = currentViewContext();
+                return { success: true, data: s, summary: s ? '已获取页面上下文' : '无特殊上下文' };
+            },
+        });
+    }
+
+    function getNodeByQuery(q) {
+        if (!DataSource.ctx) return null;
+        const { byId, byType } = DataSource.ctx;
+        if (byId.has(q)) return byId.get(q);
+        const [pt, ...rest] = q.split(':');
+        if (rest.length && DATA_TYPES.includes(pt.toLowerCase())) {
+            const name = rest.join(':');
+            return (byType[pt.toLowerCase()] || []).find((x) => x.name === name);
+        }
+        return (byType.sourcefile || []).find((x) => x.path === q);
+    }
+
+    function currentViewContext() {
+        const activeTab = $d('.bp-tab-btn.is-active, .tab-btn.is-active, nav .active, [aria-selected="true"]');
+        const activeText = activeTab ? activeTab.textContent.trim() : '';
+        const hash = location.hash || '';
+        const title = document.title || '';
+        return { title: title.slice(0, 60), activeTab: activeText, hash };
+    }
+
+    // ============================================================
+    //  Agent 引擎（多模型 + ReAct 工具循环 + 流式）
+    // ============================================================
+    let abortFlag = false;
+
+    function buildSystemInstruction(agentCtx) {
+        const s = getSettings();
+        return `你是「nice-aos 蓝图 AI 代码分析助手」，运行在项目代码本体蓝图页上。你可以调用代码分析工具查询项目结构（模块/组件/Hook/Store/Service/路由/接口/类/依赖/功能域/死代码等）。
+分析代码问题时：
+- 优先调用工具获取真实数据，禁止凭记忆编造项目不存在的信息；
+- 工具返回的结构化数据，用清晰的中文 Markdown 汇总，保持简洁；
+- 涉及"引用/依赖/调用关系"时用 listLinks，涉及整体规模时用 getStats，涉及具体对象详情时用 getNodeDetails；
+- 工具返回 success:false 或找不到数据时，如实告知并建议其它查询方式。
+注意：你讨论的是"代码本体蓝图快照"数据（来自 aos 扫描生成 snapshot.json），字段含义：archLayer=架构分层，domain=功能域，fileId/filePath=源文件，orphanCandidates/死代码候选=未被引用的可疑代码。
+当前数据源：${DataSource.ctx?.sourceLabel || '未加载'}。`;
+    }
+
+    function buildReActPrompt(userMessage, history, toolsDesc, currentIter, maxIter) {
+        const historyText = history.map((m) => {
+            const label = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : '系统';
+            return `${label}: ${m.role === 'assistant' ? cleanToolCallMarkers(m.content) : m.content}`;
+        }).join('\n');
+
+        const toolHistory = history
+            .filter((m) => m.role === 'system' && m.content.includes('tool_result'))
+            .map((m) => m.content).join('\n');
+
+        const ctx = currentViewContext();
+        const ctxNote = ctx?.title ? `\n页面当前标题: ${ctx.title}${ctx.activeTab ? `；当前视图: ${ctx.activeTab}` : ''}` : '';
+
+        return `（提示：你的角色设定已在系统指令中给出。）
+
+## 可用工具
+${toolsDesc}
+
+## 对话历史
+${historyText || '（无历史记录）'}
+
+${toolHistory ? '## 工具调用结果\n' + toolHistory + '\n' : ''}
+## 页面上下文
+${ctxNote || '（无）'}
+
+## 当前任务
+用户消息: ${userMessage}
+
+## 执行指令
+你正在执行第 ${currentIter}/${maxIter} 次迭代。
+在回答之前，请先思考是否需要使用工具：
+- 如需要调用工具，必须严格使用以下格式（一段完整合法的 JSON，必须以 </tool_calls> 闭合）：
+<tool_calls>{"name":"工具名称","arguments":{"参数名":"值"}}</tool_calls>
+- 若不需要工具，直接回答用户问题。
+
+工具调用格式要求：
+1. JSON 必须合法：键与字符串值一律用双引号，无注释、无尾逗号，不要用 markdown 代码围栏包裹
+2. 参数对象键名固定为 "arguments"
+3. 每次迭代最多调用一个工具；决定调用时只输出一段 <tool_calls>...</tool_calls>，不要附加其它文本
+4. 工具调用完成后，系统会把结果加入对话历史，你再继续下一轮
+5. 只有获得所有必要信息后才给出最终回答
+6. 若收到 formatError 的工具结果，说明上次格式有误，请严格重新输出一次
+7. 最终回答使用中文，使用 Markdown 格式`;
+    }
+
+    function parseToolCalls(text) {
+        const calls = [];
+        const re = /<tool_calls>([\s\S]*?)<\/tool_calls>/g;
+        let m;
+        while ((m = re.exec(text)) !== null) {
+            try {
+                const obj = JSON.parse(m[1].trim());
+                if (obj && obj.name) calls.push({ name: obj.name, arguments: obj.arguments || {} });
+            } catch { /* 忽略解码失败 */ }
+        }
+        return calls;
+    }
+    function cleanToolCallMarkers(text) {
+        return String(text || '').replace(/<tool_calls>[\s\S]*?<\/tool_calls>/g, '').trim();
+    }
+
+    function callAiApi(prompt, { systemInstruction }, useStream, onChunk) {
+        const s = getSettings();
+        const apiUrl = s.apiUrl || CONFIG.AI_DEFAULT_URL;
+        const apiKey = (s.apiKey || '').trim();
+        if (!apiKey) return Promise.reject(new Error('未配置 API Key，请在设置面板填写（支持多供应商）'));
+        const payload = {
+            model: s.model || CONFIG.AI_DEFAULT_MODEL,
+            messages: [
+                { role: 'system', content: systemInstruction },
+                { role: 'user', content: prompt },
+            ],
+            temperature: 0.7,
+            stream: !!useStream,
+        };
+        if (useStream) return fetchStream(apiUrl, apiKey, payload, onChunk);
+        return gmJsonFetch(apiUrl, apiKey, payload);
+    }
+
+    function gmJsonFetch(url, apiKey, payload) {
+        return new Promise((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('AI 请求超时')), CONFIG.AI_TIMEOUT);
+            GM_xmlhttpRequest({
+                method: 'POST', url, timeout: CONFIG.AI_TIMEOUT,
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+                data: JSON.stringify(payload),
+                onload: (r) => {
+                    clearTimeout(t);
+                    try {
+                        const j = JSON.parse(r.responseText);
+                        if (j.error) reject(new Error(j.error.message || 'AI 返回错误'));
+                        const text = j.choices?.[0]?.message?.content ?? '';
+                        resolve(text);
+                    } catch { reject(new Error('AI 响应解析失败')); }
+                },
+                onerror: (e) => { clearTimeout(t); reject(new Error(e.error || '网络错误')); },
+                ontimeout: () => { clearTimeout(t); reject(new Error('AI 请求超时')); },
+            });
+        });
+    }
+
+    async function fetchStream(url, apiKey, payload, onChunk) {
+        try {
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+                body: JSON.stringify(payload),
+            });
+            if (!resp.ok) {
+                const detail = await resp.text().catch(() => '');
+                throw new Error(`HTTP ${resp.status} ${detail.slice(0, 120)}`);
+            }
+            if (!resp.body) throw new Error('当前环境不支持流式读取');
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buf = '';
+            let full = '';
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+                const lines = buf.split('\n');
+                buf = lines.pop();
+                for (const line of lines) {
+                    const t = line.trim();
+                    if (!t || !t.startsWith('data:')) continue;
+                    const data = t.slice(5).trim();
+                    if (data === '[DONE]') continue;
+                    try {
+                        const j = JSON.parse(data);
+                        const delta = j.choices?.[0]?.delta?.content ?? '';
+                        if (delta) { full += delta; if (onChunk) onChunk(delta); }
+                    } catch { /* 忽略不完整块 */ }
+                }
+            }
+            return full;
+        } catch (e) {
+            throw e;
+        }
+    }
+
+    async function runAgentLoop(userMessage, history, agentName, onChunk, onToolCall) {
+        const toolsDesc = ToolRegistry.toolsDescription();
+        const systemInstruction = buildSystemInstruction(agentName);
+        const s = getSettings();
+        const maxIter = Math.min(Number(s.maxIterations) || CONFIG.MAX_ITERATIONS, 8);
+        let currentHistory = [...history];
+        const toolCallLog = [];
+
+        for (let i = 0; i < maxIter; i++) {
+            if (abortFlag) return { response: '', completed: false, aborted: true, toolCalls: toolCallLog, iterations: i };
+            const prompt = buildReActPrompt(userMessage, currentHistory, toolsDesc, i + 1, maxIter);
+
+            let aiResponse;
+            try {
+                if (i === 0 && onChunk) {
+                    aiResponse = await callAiApi(prompt, { systemInstruction }, true, onChunk);
+                } else {
+                    aiResponse = await callAiApi(prompt, { systemInstruction }, false);
+                    if (onChunk) onChunk(aiResponse);
+                }
+            } catch (e) {
+                if (abortFlag) return { response: '', completed: false, aborted: true, toolCalls: toolCallLog, iterations: i + 1 };
+                return { response: `AI 调用失败: ${e.message}`, completed: false, iterations: i + 1, error: e.message };
+            }
+            if (abortFlag) return { response: cleanToolCallMarkers(aiResponse || ''), completed: false, aborted: true, iterations: i + 1, toolCalls: toolCallLog };
+
+            currentHistory.push({ role: 'assistant', content: aiResponse });
+
+            const toolCalls = parseToolCalls(aiResponse);
+            if (toolCalls.length === 0) {
+                const cleanResponse = cleanToolCallMarkers(aiResponse);
+                const attempted = /<tool_call/i.test(aiResponse) || (/^\s*\{/.test(aiResponse) && /"(?:name|tool|function)"\s*:/.test(aiResponse));
+                if (attempted && i + 1 < maxIter && !abortFlag) {
+                    currentHistory.push({ role: 'system', content: `<tool_result>${JSON.stringify({ success: false, formatError: true, error: '上一次输出包含工具调用标签但格式不合法，请重新输出一段合法调用：仅输出 <tool_calls>{"name":"工具名称","arguments":{"参数名":"值"}}</tool_calls>' })}</tool_result>` });
+                    continue;
+                }
+                return { response: cleanResponse || '（本轮未能生成有效回复，请重试或换个问法）', completed: true, iterations: i + 1, toolCalls: toolCallLog };
+            }
+
+            const toolCall = toolCalls[0];
+            if (onToolCall) onToolCall(toolCall.name, toolCall.arguments, 'start');
+            if (onChunk) onChunk(''); // 结束已输出的流式文本，进入工具阶段
+
+            const result = await ToolRegistry.execute(toolCall.name, toolCall.arguments, DataSource.ctx);
+            toolCallLog.push({ name: toolCall.name, args: toolCall.arguments, ok: result.success });
+            if (onToolCall) onToolCall(toolCall.name, toolCall.arguments, result.success ? 'done' : 'error', result);
+
+            currentHistory.push({ role: 'system', content: `<tool_result>${JSON.stringify(result)}</tool_result>` });
+        }
+        return { response: '（已达到最大迭代次数，未得到最终回答，请缩小问题范围重试）', completed: false, iterations: maxIter, toolCalls: toolCallLog };
+    }
+
+    // ============================================================
+    //  会话管理
+    // ============================================================
+    const ChatManager = {
+        all() {
+            const chats = parseStored(Store.get(CONFIG.SK.CHATS, null), {});
+            return chats;
+        },
+        list() {
+            const chats = this.all();
+            return Object.values(chats).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        },
+        get(id) { return this.all()[id] || null; },
+        active() { const id = Store.get(CONFIG.SK.ACTIVE); return id ? this.get(id) : null; },
+        setActive(id) { Store.set(CONFIG.SK.ACTIVE, id); },
+        save(conv) { const chats = this.all(); chats[conv.id] = conv; Store.set(CONFIG.SK.CHATS, JSON.stringify(chats)); },
+        remove(id) { const chats = this.all(); delete chats[id]; Store.set(CONFIG.SK.CHATS, JSON.stringify(chats)); if (Store.get(CONFIG.SK.ACTIVE) === id) Store.del(CONFIG.SK.ACTIVE); },
+        newConv(title = '新会话') {
+            const c = { id: uid(), title, createdAt: Date.now(), updatedAt: Date.now(), messages: [] };
+            this.save(c); this.setActive(c.id); return c;
+        },
+        ensureActive() {
+            let c = this.active();
+            if (!c) c = this.newConv();
+            return c;
+        },
+        isRunning(c) { return c?.meta?.running; },
+        markRunning(c, running, meta = {}) {
+            c.meta = c.meta || {};
+            c.meta.running = running;
+            if (!running) { c.meta.lastError = meta.lastError || undefined; c.updatedAt = Date.now(); }
+            this.save(c);
+        },
+    };
+
+    // ============================================================
+    //  UI
+    // ============================================================
+    let panel = null;
+    let panelOpen = false;
+    const ui = { renderConvList: null, renderMessages: null, renderHeader: null, activeConv: null };
+
+    function ensureStyles() {
+        const css = `
+.ba-toast{position:fixed;right:20px;bottom:80px;z-index:2147483647;background:#334155;color:#fff;padding:10px 16px;border-radius:10px;font:13px/1.4 system-ui;box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none;max-width:340px}
+.ba-toast-show{opacity:1;transform:none}
+.ba-toast-error{background:#b91c1c}
+.ba-toast-success{background:#15803d}
+.ba-fab{position:fixed;right:26px;bottom:26px;z-index:2147483600;width:52px;height:52px;border-radius:16px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;box-shadow:0 8px 24px rgba(99,102,241,.45);transition:.25s}
+.ba-fab:hover{transform:translateY(-2px) scale(1.05)}
+.ba-fab-pulse::after{content:'';position:absolute;inset:0;border-radius:16px;border:2px solid rgba(139,92,246,.6);animation:baPulse 2s infinite}
+@keyframes baPulse{0%{transform:scale(1);opacity:.8}70%{transform:scale(1.6);opacity:0}100%{opacity:0}}
+.ba-panel{position:fixed;right:18px;bottom:18px;top:18px;width:420px;max-width:94vw;z-index:2147483610;background:#0f172a;border:1px solid rgba(148,163,184,.18);border-radius:18px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 64px rgba(2,6,23,.55);color:#e2e8f0;font:14px/1.5 system-ui;transition:transform .28s,opacity .28s;transform:translateX(120%);opacity:0;pointer-events:none}
+.ba-panel-open{transform:none;opacity:1;pointer-events:auto}
+.ba-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid rgba(148,163,184,.14);background:#111c33}
+.ba-head-title{font-weight:600;font-size:14px;color:#f1f5f9;display:flex;align-items:center;gap:7px;flex:1;min-width:0}
+.ba-head-title b{color:#a5b4fc}
+.ba-sess-title{font-size:12px;color:#94a3b8;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px}
+.ba-icon-btn{background:transparent;border:none;color:#94a3b8;cursor:pointer;width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0}
+.ba-icon-btn:hover{background:rgba(148,163,184,.12);color:#e2e8f0}
+.ba-icon-btn.is-danger:hover{background:rgba(220,38,38,.2);color:#fca5a5}
+.ba-model-chip{display:flex;align-items:center;gap:6px;font-size:12px;color:#a5b4fc;padding:4px 9px;border:1px solid rgba(165,180,252,.3);border-radius:20px;cursor:pointer;max-width:170px}
+.ba-model-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ba-body{flex:1;overflow:hidden;display:flex}
+.ba-side{width:120px;border-right:1px solid rgba(148,163,184,.14);background:#0b1425;display:flex;flex-direction:column}
+.ba-side-item{padding:8px 10px;font-size:12px;color:#94a3b8;cursor:pointer;display:flex;gap:7px;align-items:center;border-left:2px solid transparent;user-select:none}
+.ba-side-item:hover{background:rgba(148,163,184,.07)}
+.ba-side-item.active{background:#1e293b;color:#e2e8f0;border-left-color:#6366f1}
+.ba-side-item .ba-t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ba-side-new{width:100%;margin:8px;width:calc(100% - 16px)}
+.ba-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;border-radius:8px;cursor:pointer;font:13px/1 system-ui;padding:7px 12px;transition:.15s}
+.ba-btn-primary{background:#6366f1;color:#fff}
+.ba-btn-primary:hover{background:#4f46e5}
+.ba-btn-secondary{background:rgba(148,163,184,.14);color:#e2e8f0}
+.ba-btn-secondary:hover{background:rgba(148,163,184,.24)}
+.ba-chat{flex:1;display:flex;flex-direction:column;min-width:0}
+.ba-msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+.ba-msg{max-width:100%;display:flex;flex-direction:column}
+.ba-msg-row{display:flex;gap:8px;align-items:flex-start}
+.ba-msg-avatar{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px}
+.ba-msg-user .ba-msg-avatar{background:#6366f1}
+.ba-msg-ai .ba-msg-avatar{background:linear-gradient(135deg,#8b5cf6,#6366f1)}
+.ba-msg.bubble{border-radius:12px;padding:9px 11px;font-size:13px;line-height:1.6;word-break:break-word}
+.ba-msg-user{margin-left:auto;background:#6366f1;color:#fff;border-top-right-radius:3px;max-width:86%}
+.ba-msg-ai{background:#1e293b;border-top-left-radius:3px;max-width:100%}
+.ba-msg-ai .md-body{margin:0}
+.ba-msg-ai .md-body p{margin:.35em 0}
+.ba-msg-ai .md-body pre{background:#0f172a;border:1px solid rgba(148,163,184,.15);border-radius:8px;padding:8px 10px;overflow-x:auto;font-size:12px}
+.ba-msg-ai .md-body code{font-family:ui-monospace,Consolas,monospace}
+.ba-msg-ai .md-body table{border-collapse:collapse;font-size:12px;margin:.5em 0}
+.ba-msg-ai .md-body th,.md-body td{border:1px solid rgba(148,163,184,.25);padding:4px 8px}
+.ba-msg-ai .md-body th{background:#111c33}
+.ba-msg-ai .md-body ul,.ba-msg-ai .md-body ol{padding-left:18px;margin:.35em 0}
+.ba-msg-ai .md-body h1,.md-body h2,.md-body h3{margin:.5em 0 .3em;font-size:1.05em}
+.ba-typing{display:inline-flex;gap:4px;padding:6px 2px}
+.ba-typing i{width:6px;height:6px;border-radius:50%;background:#a5b4fc;animation:baBlink 1s infinite}
+.ba-typing i:nth-child(2){animation-delay:.15s}
+.ba-typing i:nth-child(3){animation-delay:.3s}
+@keyframes baBlink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+.ba-tool{border:1px solid rgba(99,102,241,.35);background:rgba(99,102,241,.08);border-radius:10px;padding:8px 10px;margin-top:8px;font-size:12px}
+.ba-tool-name{display:flex;gap:7px;align-items:center;color:#c7d2fe;font-weight:600}
+.ba-tool-args{color:#94a3b8;margin-top:3px;white-space:pre-wrap;word-break:break-word;font-size:11px}
+.ba-tool-err{color:#fca5a5;margin-top:3px}
+.ba-tool span.spin{display:inline-block;animation:baSpin 1s linear infinite}
+@keyframes baSpin{to{transform:rotate(360deg)}}
+.ba-input{display:flex;gap:8px;padding:10px 12px;border-top:1px solid rgba(148,163,184,.14);background:#0b1425}
+.ba-input textarea{flex:1;resize:none;border:1px solid rgba(148,163,184,.2);background:#0f172a;color:#e2e8f0;border-radius:10px;padding:9px 11px;font:13px/1.5 system-ui;outline:none;max-height:120px}
+.ba-input textarea:focus{border-color:#6366f1}
+.ba-send{width:38px;height:38px;border:none;border-radius:10px;background:#6366f1;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.ba-send:hover{background:#4f46e5}
+.ba-send.stop{background:#dc2626}
+.ba-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#64748b;gap:10px;text-align:center;padding:20px}
+.ba-empty .ba-e-icon{opacity:.5}
+.ba-empty h4{color:#94a3b8;font-weight:600;margin:0}
+.ba-sugg{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-width:280px}
+.ba-sugg button{font-size:11px;color:#a5b4fc;background:rgba(99,102,241,.1);border:1px solid rgba(99,102,241,.25);border-radius:14px;padding:4px 9px;cursor:pointer}
+.ba-sugg button:hover{background:rgba(99,102,241,.22)}
+.ba-set-pane{position:absolute;inset:0;background:#0f172a;z-index:5;display:flex;flex-direction:column}
+.ba-set-pane .ba-set-body{flex:1;overflow-y:auto;padding:16px}
+.ba-field{margin-bottom:14px}
+.ba-field label{display:block;font-size:12px;color:#94a3b8;margin-bottom:5px}
+.ba-field input,.ba-field select,.ba-field textarea{width:100%;background:#0b1425;border:1px solid rgba(148,163,184,.2);color:#e2e8f0;border-radius:8px;padding:8px 10px;font:13px system-ui;box-sizing:border-box}
+.ba-field select{width:100%}
+.ba-field .hint{font-size:11px;color:#64748b;margin-top:4px}
+.ba-set-foot{padding:12px 16px;border-top:1px solid rgba(148,163,184,.14);display:flex;justify-content:flex-end;gap:8px;background:#0b1425}
+.ba-opts{position:fixed;top:0;right:calc(100% - 8px);z-index:6;background:#1e293b;border:1px solid rgba(148,163,184,.2);border-radius:10px;padding:5px;display:flex;flex-direction:column;gap:2px;box-shadow:0 10px 30px rgba(0,0,0,.4)}
+.ba-opts button{display:flex;gap:8px;align-items:center;font-size:12px;color:#e2e8f0;background:transparent;border:none;padding:7px 10px;border-radius:6px;cursor:pointer;text-align:left}
+.ba-opts button:hover{background:rgba(148,163,184,.12)}
+.ba-model-menu{position:absolute;top:46px;right:12px;z-index:7;background:#1e293b;border:1px solid rgba(148,163,184,.2);border-radius:10px;padding:8px;min-width:210px;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.ba-model-menu .mm-group{font-size:11px;color:#64748b;margin:6px 4px 3px}
+.ba-model-menu .mm-item{font-size:12px;padding:7px 9px;border-radius:6px;cursor:pointer;display:flex;gap:8px;align-items:center;color:#e2e8f0}
+.ba-model-menu .mm-item:hover{background:rgba(148,163,184,.12)}
+.ba-model-menu .mm-item.cur{color:#a5b4fc;font-weight:600}
+.ba-confirm{position:fixed;inset:0;background:rgba(2,6,23,.6);z-index:20;display:flex;align-items:center;justify-content:center}
+.ba-confirm-box{background:#1e293b;border-radius:14px;padding:20px;width:300px;text-align:center}
+.ba-confirm-box p{margin:0 0 16px;color:#e2e8f0}
+@media (max-width:640px){.ba-side{width:104px}}
+`;
+        GM_addStyle(css);
+    }
+
+    function mdToHtml(md) {
+        if (!md) return '';
+        let h = String(md);
+        h = esc(h);
+        h = h.replace(/^#### (.*)$/gm, '<h4>$1</h4>');
+        h = h.replace(/^### (.*)$/gm, '<h3>$1</h3>');
+        h = h.replace(/^## (.*)$/gm, '<h2>$1</h2>');
+        h = h.replace(/^# (.*)$/gm, '<h3>$1</h3>');
+        h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+        h = h.replace(/(^|\s)\*([^*\n]+)\*(?=\s|$)/g, '$1<i>$2</i>');
+        h = h.replace(/~~~([\s\S]*?)~~~/g, '<pre><code>$1</code></pre>');
+        h = h.replace(/`{1,2}(.+?)`{1,2}/g, '<code>$1</code>');
+        h = h.replace(/\n/g, '\n');
+        h = h.split('\n').map((ln) => ln.trim() ? ln : '<br>').join('\n');
+        // 列表
+        h = h.replace(/((^|\n)(?:•|•)[^\n]+)+/g, (m) => '<ul>' + m.split('\n').map((l) => `<li>${l.replace(/^\s*[-•]\s*/, '')}</li>`).join('') + '</ul>');
+        // 表格简化
+        h = h.replace(/((?:^|\n)\|[^\n]+)+\n?/g, (m) => {
+            const rows = m.trim().split('\n').filter((l) => l.startsWith('|')).map((l) => `<tr>${l.split('|').filter((x) => x.trim() !== '').map((c) => `<td>${c.trim()}</td>`).join('')}</tr>`);
+            return rows.length ? `<table>${rows.join('')}</table>` : '';
+        });
+        // 段落
+        h = h.split('\n').map((ln) => ln.replace(/<br>$/, '')).map((ln) => ln.trim() ? ln : '\n').join('\n');
+        h = h.replace(/(?:^|\n)(?!<h|<ul|<table|<pre|<br)([^<\n][^\n]*)/g, (m) => `<p>${m.replace(/^[ \t]*/,'')}</p>`);
+        return h;
+    }
+
+    // ---- 渲染函数 ----
+    function renderModelChip() {
+        const s = getSettings();
+        const prov = MODEL_PROVIDERS[s.provider];
+        const chip = $d('#ba-model-chip');
+        if (chip) chip.innerHTML = `${getIcon('lightbulb', 14)} <span>${prov?.name || '自定义'} · ${s.model || '未选模型'}</span>`;
+    }
+
+    function appendMessage(conv, msg) {
+        if (!conv) return;
+        if (!conv.messages) conv.messages = [];
+        conv.messages.push(msg);
+        ChatManager.save(conv);
+    }
+
+    function renderMessages() {
+        const conv = ui.activeConv;
+        const box = $d('#ba-msgs');
+        if (!box) return;
+        box.innerHTML = '';
+        const s = getSettings();
+        if (!conv) {
+            const empty = el('div', 'ba-empty');
+            empty.innerHTML = `${getIcon('robot', 44)}
+                <h4>AOS 蓝图 AI 分析助手</h4>
+                <p style="margin:0;font-size:12px">针对当前项目代码本体进行问答分析</p>
+                <div class="ba-sugg">
+                    <button data-s="项目整体结构如何？有多少源文件和组件">项目整体结构？</button>
+                    <button data-s="有哪些 Service 和 Store？">有哪些 Service？</button>
+                    <button data-s="列出所有死代码候选">死代码候选</button>
+                    <button data-s="架构分层是怎样的？">架构分层</button>
+                    <button data-s="存在循环依赖吗？">循环依赖</button>
+                    <button data-s="依赖治理情况：未使用的依赖">依赖治理</button>
+                </div>`;
+            $all('.ba-sugg button', empty).forEach((b) => b.addEventListener('click', () => sendMessage(b.dataset.s)));
+            box.appendChild(empty);
+            return;
+        }
+        if (!conv.messages.length) {
+            const empty = el('div', 'ba-empty');
+            empty.innerHTML = `<h4 style="margin:0">${esc(conv.title)}</h4>
+                <p style="margin:0;font-size:12px;">发送消息开始对话<br>${DataSource.ctx?.sourceLabel || '数据未加载，请在「设置」刷新数据源'}</p>
+                <div class="ba-sugg">
+                    <button data-s="这个项目的功能域组成？">功能域组成？</button>
+                    <button data-s="Query 相关组件有哪些">查询组件</button>
+                    <button data-s="哪个服务被引用最多？">高扇入服务</button>
+                </div>`;
+            $all('.ba-sugg button', empty).forEach((b) => b.addEventListener('click', () => sendMessage(b.dataset.s)));
+            box.appendChild(empty);
+            box.scrollTop = 0;
+            return;
+        }
+        for (const m of conv.messages) {
+            if (m.type === 'tool') { box.appendChild(toolNode(m)); continue; }
+            box.appendChild(messageNode(m));
+        }
+        box.scrollTop = box.scrollHeight;
+    }
+
+    function messageNode(m) {
+        if (m.type === 'user') {
+            const n = el('div', 'ba-msg ba-msg-row ba-msg-user ba-msg bubble');
+            n.innerHTML = esc(m.content || '').replace(/\n/g, '<br>');
+            return n;
+        }
+        const wrap = el('div', 'ba-msg ba-msg-row ba-msg-ai');
+        const av = el('div', 'ba-msg-avatar');
+        av.innerHTML = getIcon('robot', 14);
+        const body = el('div', 'ba-msg md-body');
+        if (m.loading) {
+            body.innerHTML = `<span class="ba-typing"><i></i><i></i><i></i></span>`;
+        } else if (m.error) {
+            body.innerHTML = `<div class="ba-tool-err">${esc(m.error)}</div>`;
+        } else {
+            body.innerHTML = mdToHtml(m.content || '');
+        }
+        wrap.appendChild(av); wrap.appendChild(body);
+        return wrap;
+    }
+
+    function toolNode(m) {
+        const n = el('div', 'ba-msg ba-msg-ai');
+        const ok = m.tool?.ok !== false;
+        const spin = m.state === 'running' ? '<span class="spin">●</span>' : '';
+        n.innerHTML = `<div class="ba-tool">
+            <div class="ba-tool-name">${spin} ${getIcon(ok ? 'code' : 'stop', 13)} ${esc(m.tool?.name || '工具')}</div>
+            <div class="ba-tool-args">${esc(JSON.stringify(m.tool?.args ?? {}))}</div>
+            ${m.state === 'error' ? `<div class="ba-tool-err">${esc(m.tool?.error || '执行失败')}</div>` : ''}
+            ${m.state === 'done' ? `<div style="color:#86efac;margin-top:3px;font-size:11px;display:flex;gap:5px;align-items:center">${getIcon('check', 12)} 完成</div>` : ''}
+            ${m.state === 'running' ? `<div style="color:#a5b4fc;margin-top:3px;font-size:11px">执行中…</div>` : ''}
+        </div>`;
+        return n;
+    }
+
+    function renderConvList() {
+        const box = $d('#ba-sess-list');
+        if (!box) return;
+        box.innerHTML = '';
+        const list = ChatManager.list();
+        const activeId = ui.activeConv?.id;
+        if (!list.length) {
+            box.innerHTML = '<div style="padding:10px;font-size:11px;color:#64748b">暂无历史会话</div>';
+            return;
+        }
+        for (const c of list) {
+            const item = el('div', 'ba-side-item' + (c.id === activeId ? ' active' : ''));
+            const title = (c.title || '会话').slice(0, 12);
+            const running = c.meta?.running;
+            item.innerHTML = `${getIcon(running ? 'bot' : 'history', 13)} <span class="ba-t">${esc(title)}</span>`;
+            item.title = c.title;
+            item.addEventListener('click', () => { openConv(c.id); });
+            box.appendChild(item);
+        }
+    }
+
+    // ---- 面板构建 ----
+    function openPanel() {
+        if (!panelOpen) {
+            panel.classList.add('ba-panel-open');
+            panelOpen = true;
+            document.querySelector('.ba-fab').style.display = 'none';
+        }
+        const c = ChatManager.ensureActive();
+        openConv(c.id);
+    }
+    function closePanel() {
+        panel.classList.remove('ba-panel-open');
+        panelOpen = false;
+        const fab = document.querySelector('.ba-fab');
+        if (fab) fab.style.display = 'flex';
+    }
+    function openConv(id) {
+        const conv = ChatManager.get(id);
+        if (!conv) return;
+        ui.activeConv = conv;
+        ChatManager.setActive(id);
+        const st = $d('#ba-sess-title');
+        if (st) st.textContent = conv.title;
+        renderConvList();
+        renderMessages();
+        renderModelChip();
+    }
+    function newConversation() {
+        const c = ChatManager.newConv();
+        c.title = '新会话';
+        ChatManager.save(c);
+        openConv(c.id);
+        $d('#ba-inp')?.focus();
+    }
+
+    function buildPanel() {
+        panel = el('div', 'ba-panel');
+        panel.innerHTML = `
+            <div class="ba-head">
+                <div class="ba-head-title">${getIcon('robot', 18)} AOS 蓝图 <b>AI 分析</b></div>
+                <span id="ba-sess-title" class="ba-sess-title">新会话</span>
+                <button class="ba-icon-btn" id="ba-model-btn" title="切换模型">${getIcon('lightbulb', 16)}</button>
+                <button class="ba-icon-btn" id="ba-menu-btn" title="更多">${getIcon('gear', 16)}</button>
+                <button class="ba-icon-btn" id="ba-close-btn" title="收起">${getIcon('close', 16)}</button>
+                <div class="ba-model-menu" id="ba-model-menu" style="display:none"></div>
+                <div class="ba-opts" id="ba-opts" style="display:none"></div>
+            </div>
+            <div class="ba-body">
+                <div class="ba-side">
+                    <button class="ba-btn ba-btn-primary ba-side-new" id="ba-new-btn">${getIcon('plus', 13)} 新建</button>
+                    <div id="ba-sess-list" style="overflow-y:auto;flex:1"></div>
+                </div>
+                <div class="ba-chat">
+                    <div class="ba-msgs" id="ba-msgs"></div>
+                    <div class="ba-input">
+                        <textarea id="ba-inp" placeholder="询问项目代码结构，如：这个项目的 Service 有哪些？发送 Enter，换行 Shift+Enter"/></textarea>
+                        <button class="ba-send" id="ba-send-btn" title="发送">${getIcon('send', 17)}</button>
+                    </div>
+                </div>
+            </div>
+            <div class="ba-set-pane" id="ba-set-pane" style="display:none"></div>`;
+        document.body.appendChild(panel);
+
+        $d('#ba-close-btn').addEventListener('click', closePanel);
+        $d('#ba-new-btn').addEventListener('click', newConversation);
+        $d('#ba-menu-btn').addEventListener('click', (e) => toggleMenu(e, buildOptsMenu));
+        $d('#ba-model-btn').addEventListener('click', (e) => toggleModelMenu(e));
+        const sendBtn = $d('#ba-send-btn');
+        sendBtn.addEventListener('click', () => sendMessage());
+        const inp = $d('#ba-inp');
+        inp.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+        });
+        document.addEventListener('click', (e) => {
+            if (!panel.contains(e.target)) {
+                const mo = $d('#ba-model-menu'); if (mo) mo.style.display = 'none';
+                const op = $d('#ba-opts'); if (op) op.style.display = 'none';
+            }
+        });
+    }
+
+    function toggleMenu(e, buildFn) {
+        e.stopPropagation();
+        const menu = $d('#ba-opts');
+        const mm = $d('#ba-model-menu');
+        mm.style.display = 'none';
+        const visible = menu.style.display === 'block';
+        menu.style.display = visible ? 'none' : 'block';
+        if (!visible) menu.innerHTML = buildFn();
+    }
+    function buildOptsMenu() {
+        const s = getSettings();
+        const chips = [];
+        const running = ui.activeConv?.meta?.running;
+        if (running) chips.push(`<button data-a="stop">${getIcon('stop', 14)} 停止生成</button>`);
+        chips.push(`<button data-a="new">${getIcon('plus', 14)} 新建会话</button>`);
+        chips.push(`<button data-a="rename" ${ui.activeConv ? '' : 'disabled'}>${getIcon('edit', 14)} 重命名会话</button>`);
+        chips.push(`<button data-a="export-json" ${ui.activeConv ? '' : 'disabled'}>${getIcon('download', 14)} 导出 JSON</button>`);
+        chips.push(`<button data-a="export-md" ${ui.activeConv ? '' : 'disabled'}>${getIcon('download', 14)} 导出 Markdown</button>`);
+        chips.push(`<button data-a="del">${getIcon('trash', 14)} 删除会话</button>`);
+        chips.push(`<button data-a="clear">${getIcon('trash', 14)} 清空全部会话</button>`);
+        chips.push(`<div style="height:1px;background:rgba(148,163,184,.15);margin:4px 0"></div>`);
+        chips.push(`<button data-a="settings">${getIcon('gear', 14)} 设置</button>`);
+        chips.push(`<button data-a="refresh" ${DataSource.ctx ? '' : 'disabled'}>${getIcon('database', 14)} 刷新数据源</button>`);
+        return chips.join('');
+    }
+    function attachMenuActions() {
+        $d('#ba-opts').addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-a]'); if (!btn) return;
+            const a = btn.dataset.a;
+            closeMenu('#ba-opts');
+            handleMenuAction(a);
+        });
+    }
+    function closeMenu(sel) { const m = $d(sel); if (m) m.style.display = 'none'; }
+    function handleMenuAction(a) {
+        const conv = ui.activeConv;
+        switch (a) {
+            case 'stop': stopGeneration(); break;
+            case 'new': newConversation(); break;
+            case 'rename': promptRename(); break;
+            case 'export-json': if (conv) exportConversation(conv, 'json'); break;
+            case 'export-md': if (conv) exportConversation(conv, 'md'); break;
+            case 'del': confirmAction(`删除会话「${conv?.title || ''}」？`, () => { if (conv) { ChatManager.remove(conv.id); if (ui.activeConv?.id === conv.id) { ui.activeConv = null; ChatManager.setActive(''); } } renderMessages(); renderConvList(); }); break;
+            case 'clear': confirmAction('清空全部会话历史？', () => { Store.set(CONFIG.SK.CHATS, '{}'); Store.del(CONFIG.SK.ACTIVE); ui.activeConv = null; renderMessages(); renderConvList(); }); break;
+            case 'settings': openSettings(); break;
+            case 'refresh': refreshData(); break;
+        }
+    }
+    function promptRename() {
+        if (!ui.activeConv) return;
+        const title = prompt('会话名称：', ui.activeConv.title);
+        if (title && title.trim()) { ui.activeConv.title = title.trim(); ChatManager.save(ui.activeConv); renderConvList(); $d('#ba-sess-title').textContent = title.trim(); }
+    }
+    function confirmAction(msg, fn) {
+        const b = el('div', 'ba-confirm');
+        b.innerHTML = `<div class="ba-confirm-box"><p>${esc(msg)}</p>
+            <div style="display:flex;gap:8px;justify-content:center"><button class="ba-btn ba-btn-secondary" data-c="no">取消</button><button class="ba-btn ba-btn-primary" data-c="yes">确定</button></div></div>`;
+        b.addEventListener('click', (e) => {
+            const v = e.target.closest('[data-c]');
+            if (v) { b.remove(); if (v.dataset.c === 'yes') fn(); }
+        });
+        document.body.appendChild(b);
+    }
+
+    function toggleModelMenu(e) {
+        e.stopPropagation();
+        const mm = $d('#ba-model-menu');
+        const op = $d('#ba-opts'); op.style.display = 'none';
+        const visible = mm.style.display === 'block';
+        mm.style.display = visible ? 'none' : 'block';
+        if (visible) return;
+        const s = getSettings();
+        let html2 = '';
+        for (const [key, p] of Object.entries(MODEL_PROVIDERS)) {
+            html2 += `<div class="mm-group">${p.name}</div>`;
+            for (const m of p.models || []) {
+                html2 += `<div class="mm-item${s.provider === key && s.model === m.value ? ' cur' : ''}" data-p="${key}" data-m="${m.value}">${getIcon('lightbulb', 13)} ${m.label}${s.provider === key && s.model === m.value ? ' ✓' : ''}</div>`;
+            }
+        }
+        mm.innerHTML = html2;
+        $all('.mm-item', mm).forEach((it) => it.addEventListener('click', () => {
+            saveSettings({ provider: it.dataset.p, model: it.dataset.m, apiUrl: MODEL_PROVIDERS[it.dataset.p]?.apiUrl || '' });
+            mm.style.display = 'none';
+            renderModelChip(); toast(`已切换至 ${MODEL_PROVIDERS[it.dataset.p]?.name} · ${it.dataset.m || ''}`, 'success');
+        }));
+    }
+
+    function openSettings() {
+        const pane = $d('#ba-set-pane');
+        const s = getSettings();
+        pane.style.display = 'flex';
+        let provOpts = Object.entries(MODEL_PROVIDERS).map(([k, p]) => `<option value="${k}" ${s.provider === k ? 'selected' : ''}>${p.name}</option>`).join('');
+        pane.innerHTML = `
+            <div style="padding:12px 16px;border-bottom:1px solid rgba(148,163,184,.14);background:#111c33;font-weight:600;display:flex;align-items:center;gap:8px">${getIcon('gear', 16)} 设置</div>
+            <div class="ba-set-body">
+                <div class="ba-field">
+                    <label>模型供应商</label>
+                    <select id="st-provider">${provOpts}</select>
+                </div>
+                <div class="ba-field">
+                    <label>API 地址 (OpenAI 兼容)</label>
+                    <input id="st-url" value="${esc(s.apiUrl || '')}" placeholder="https://api.deepseek.com/v1/chat/completions"/>
+                </div>
+                <div class="ba-field">
+                    <label>模型 ID</label>
+                    <input id="st-model" value="${esc(s.model || '')}" placeholder="deepseek-chat"/>
+                </div>
+                <div class="ba-field">
+                    <label>API Key <span data-copy style="cursor:pointer;color:#818cf8;font-size:11px">粘贴</span></label>
+                    <input id="st-key" value="${esc(s.apiKey || '')}" placeholder="sk-…" style="width:calc(100%);"/>
+                </div>
+                <div class="ba-field">
+                    <label>最大工具迭代次数</label>
+                    <input id="st-maxiter" type="number" value="${s.maxIterations || CONFIG.MAX_ITERATIONS}" min="1" max="8"/>
+                    <div class="hint">ReAct 工具循环步数上限。回答一次复杂问题时 agent 可多次调用工具。</div>
+                </div>
+                <div class="ba-field">
+                    <label>本地快照地址 (snapshot.json，可选)</label>
+                    <input id="st-snap" value="${esc(s.snapshotUrl || '')}" placeholder="http://127.0.0.1:8420/snapshot.json（nice-aos serve）"/>
+                    <div class="hint">当蓝图页未内嵌 viewer-data 时，从此地址拉取快照。可用 <code>nice-aos serve</code> 一行启动本地数据源（默认 127.0.0.1:8420，CORS 就绪）。</div>
+                </div>
+                <div class="ba-field">
+                    <label>当前数据源</label>
+                    <div style="font-size:12px;color:#a5b4fc">${DataSource.status === 'ready' ? DataSource.ctx?.sourceLabel : DataSource.status === 'error' ? '<span style="color:#fca5a5">' + esc(DataSource.error) + '</span>' : (DataSource.status === 'loading' ? '加载中…' : '未加载')}</div>
+                </div>
+                <div class="ba-field" style="display:flex;gap:6px">
+                    <button class="ba-btn ba-btn-primary ba-set-reload" style="flex:1">保存并刷新数据源</button>
+                    <button class="ba-btn ba-btn-secondary ba-set-viewdrv">重读页面数据</button>
+                </div>
+            </div>
+            <div class="ba-set-foot">
+                <button class="ba-btn ba-btn-secondary" id="st-cancel">取消</button>
+                <button class="ba-btn ba-btn-primary" id="st-save">保存</button>
+            </div>`;
+        const sel = $d('#st-provider');
+        sel.addEventListener('change', () => {
+            const p = MODEL_PROVIDERS[sel.value];
+            $d('#st-url').value = p?.apiUrl || '';
+            $d('#st-model').value = p?.defaultModel || '';
+        });
+        $d('#st-save').addEventListener('click', () => {
+            saveSettings({
+                provider: sel.value,
+                apiUrl: $d('#st-url').value.trim(),
+                model: $d('#st-model').value.trim(),
+                apiKey: $d('#st-key').value.trim(),
+                maxIterations: Math.min(Number($d('#st-maxiter').value) || CONFIG.MAX_ITERATIONS, 8),
+                snapshotUrl: $d('#st-snap').value.trim(),
+            });
+            pane.style.display = 'none';
+            renderModelChip();
+            toast('设置已保存', 'success');
+        });
+        $d('#st-cancel').addEventListener('click', () => { pane.style.display = 'none'; });
+        $all('.ba-set-reload', pane).forEach((b) => b.addEventListener('click', async () => {
+            saveSettings({
+                provider: sel.value, apiUrl: $d('#st-url').value.trim(), model: $d('#st-model').value.trim(),
+                apiKey: $d('#st-key').value.trim(), maxIterations: Number($d('#st-maxiter').value) || CONFIG.MAX_ITERATIONS, snapshotUrl: $d('#st-snap').value.trim(),
+            });
+            await refreshData(true);
+        }));
+        $all('.ba-set-viewdrv', pane).forEach((b) => b.addEventListener('click', async () => {
+            const idx = DataSource.readInjected();
+            if (idx) { DataSource.ctx = idx; DataSource.status = 'ready'; toast('已重读页面内嵌数据', 'success'); }
+            else toast('页面未发现内嵌 viewer-data', 'error');
+        }));
+    }
+
+    async function refreshData(silent) {
+        if (!silent) toast('加载数据源…');
+        await DataSource.load();
+        renderMessages();
+        if (DataSource.status === 'error' && !silent) toast(DataSource.error, 'error');
+        if (DataSource.status === 'ready' && !silent) toast(`数据源就绪：${DataSource.ctx.sourceLabel}`, 'success');
+    }
+
+    // ---- 对话发送与流式 ----
+    async function sendMessage(text) {
+        const inp = $d('#ba-inp');
+        const message = (text ?? inp.value).trim();
+        if (!message) return;
+        let conv = ui.activeConv || ChatManager.ensureActive();
+        if (conv.meta?.running) { toast('请先停止当前生成', 'error'); return; }
+        if (DataSource.status !== 'ready') {
+            const ok2 = await ensureData();
+            if (!ok2) { openSettings(); toast('请先配置并加载数据源', 'error'); return; }
+        }
+        const s = getSettings();
+        if (!(s.apiKey || '').trim()) {
+            openSettings(); toast('请先配置 API Key（支持多模型供应商）', 'error'); return;
+        }
+
+        inp.value = '';
+        conv.title = conv.title === '新会话' ? message.slice(0, 20) : conv.title;
+        appendMessage(conv, { type: 'user', content: message });
+        const aiMsg = { type: 'ai', role: 'assistant', content: '', loading: true };
+        conv.messages.push(aiMsg);
+        ChatManager.markRunning(conv, true);
+        ui.activeConv = conv;
+        renderConvList();
+        renderMessages();
+
+        const box = $d('#ba-msgs');
+        const aiBody = box.lastElementChild?.querySelector('.md-body');
+        if (aiBody) aiBody.innerHTML = `<span class="ba-typing"><i></i><i></i><i></i></span>`;
+        sendBtnState(true);
+
+        abortFlag = false;
+        const history = conv.messages
+            .filter((m) => m.type === 'ai' || m.type === 'user')
+            .slice(0, -1)
+            .map((m) => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+
+        let toolRunningEl = null;
+        const onToolCall = (name, args, state, result) => {
+            if (state === 'start') {
+                const tMsg = { type: 'tool', tool: { name, args }, state: 'running' };
+                conv.messages.push(tMsg);
+                ChatManager.save(conv);
+                renderMessages();
+                toolRunningEl = $d('#ba-msgs').lastElementChild?.querySelector('.ba-tool');
+            } else if (toolRunningEl) {
+                const tMsg = conv.messages[conv.messages.length - 1];
+                if (tMsg?.type === 'tool') { tMsg.state = state === 'done' ? 'done' : 'error'; if (state === 'error') tMsg.tool.error = result?.error || '执行失败'; }
+                else { conv.messages.push({ type: 'tool', tool: { name, args, error: result?.error }, state: state === 'done' ? 'done' : 'error' }); }
+                ChatManager.save(conv);
+                renderMessages();
+            }
+        };
+        const onChunk = (delta) => {
+            aiMsg.content += delta;
+            aiMsg.loading = false;
+            ChatManager.save(conv);
+            const box2 = $d('#ba-msgs');
+            const body = box2.lastElementChild?.querySelector('.md-body');
+            if (body && body !== aiBody) body.innerHTML = mdToHtml(aiMsg.content || '');
+            else if (aiBody) aiBody.innerHTML = mdToHtml(aiMsg.content || '') || (aiMsg.content ? '' : '<span class="ba-typing"><i></i><i></i><i></i></span>');
+            box2.scrollTop = box2.scrollHeight;
+        };
+
+        try {
+            const res = await runAgentLoop(message, history, conv.title, onChunk, onToolCall);
+            aiMsg.content = res.response;
+            aiMsg.loading = false;
+            if (res.error) aiMsg.error = res.error;
+            ChatManager.markRunning(conv, false);
+            renderMessages();
+        } catch (e) {
+            aiMsg.content = '';
+            aiMsg.error = e.message || String(e);
+            aiMsg.loading = false;
+            ChatManager.markRunning(conv, false);
+            renderMessages();
+        } finally {
+            sendBtnState(false);
+        }
+    }
+
+    function sendBtnState(running) {
+        const btn = $d('#ba-send-btn');
+        if (!btn) return;
+        btn.classList.toggle('stop', running);
+        btn.innerHTML = running ? getIcon('stop', 17) : getIcon('send', 17);
+    }
+    function stopGeneration() { abortFlag = true; toast('正在停止…'); }
+
+    async function ensureData() {
+        if (DataSource.status === 'ready') return true;
+        await DataSource.load();
+        return DataSource.status === 'ready';
+    }
+
+    function exportConversation(conv, format) {
+        if (!conv?.messages?.length) { toast('无内容可导出', 'error'); return; }
+        const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+        const fname = `aos-chat-${conv.title}_${ts}.${format === 'json' ? 'json' : 'md'}`;
+        if (format === 'json') {
+            const data = { provider: getSettings().provider, model: getSettings().model, dataSource: DataSource.ctx?.sourceLabel || '', exportedAt: new Date().toISOString(), conversation: conv.messages };
+            downloadFile(JSON.stringify(data, null, 2), fname, 'application/json');
+        } else {
+            const lines = [];
+            lines.push(`# 会话：${conv.title}`);
+            lines.push(`- 数据源: ${DataSource.ctx?.sourceLabel || ''}`);
+            lines.push(`- 模型: ${getSettings().provider} / ${getSettings().model}`);
+            lines.push(`- 导出时间: ${new Date().toISOString()}`);
+            lines.push('');
+            for (const m of conv.messages) {
+                if (m.type === 'user') lines.push(`## 用户\n${m.content}\n`);
+                else if (m.type === 'ai') lines.push(`## AI\n${m.content || (m.error ? `（错误：${m.error}）` : '')}\n`);
+                else if (m.type === 'tool') lines.push(`> 工具 ${m.tool?.name}: ${JSON.stringify(m.tool?.args)} ${m.tool?.error ? `（${m.tool.error}）` : ''}`);
+            }
+            downloadFile(lines.join('\n'), fname, 'text/markdown');
+        }
+        toast(`已导出 ${format.toUpperCase()}`);
+    }
+
+    // ---- 浮窗按钮 ----
+    function createFab() {
+        const fab = el('button', 'ba-fab ba-fab-pulse');
+        fab.id = 'ba-fab';
+        fab.title = 'AOS 蓝图 AI 分析';
+        fab.innerHTML = getIcon('chat', 24);
+        fab.addEventListener('click', openPanel);
+        document.body.appendChild(fab);
+    }
+
+    // ============================================================
+    //  初始化
+    // ============================================================
+    function init() {
+        ensureStyles();
+        registerAnalysisTools();
+        buildPanel();
+        attachMenuActions();
+        createFab();
+        // 异步加载数据源（页面内嵌优先，随后尝试配置的本地快照）
+        DataSource.load().then(() => {
+            renderMessages();
+            settingsCache = null; // 确保 provider 默认值
+            readSettings();
+        });
+        // 会话数据变化时回到当前视图
+        PanelRefreshHook();
+        console.log('%c[BA-Agent] AOS 蓝图 AI 分析助手已启动', 'color:#8b5cf6;font-weight:bold');
+    }
+
+    // 在面板构建后监听洞
+    function PanelRefreshHook() {
+        // 空钩子：渲染函数直接使用 ui.activeConv
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+    else init();
+
+})();

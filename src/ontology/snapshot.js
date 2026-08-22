@@ -11,6 +11,11 @@ export function setSnapshotDir(dir) {
   snapshotDirOverride = dir;
 }
 
+// 是否存在显式覆盖（--snapshot-dir 参数经 preAction 钩子写入；不含环境变量与回退链）
+export function getSnapshotDirOverride() {
+  return snapshotDirOverride;
+}
+
 export function getSnapshotDir() {
   if (snapshotDirOverride) return snapshotDirOverride;
   if (process.env[ENV_VAR]) return process.env[ENV_VAR];

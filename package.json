@@ -1,6 +1,6 @@
 {
   "name": "nice-aos",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "nice-aos —— 通用前端代码本体分析 CLI（React / Vue 3 / Flutter / 油猴脚本）：扫描 React/TypeScript、Vue 3 SFC、Flutter/Dart 与 Tampermonkey UserScript 源码生成结构化本体快照（模块/文件/组件/Hook/Composable/Zustand/Pinia/Riverpod Store/Service/路由/依赖 + import/render/导航/方法调用链关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数调用图），供 AI agent 与开发者毫秒级查询",
   "type": "module",
   "bin": {

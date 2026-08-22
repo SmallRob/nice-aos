@@ -25,6 +25,7 @@
 | 不知道某目录的职责 | `query Module --where "archLayer=state"` 看职责画像 |
 | 想按功能域浏览代码 | `link belongsTo --src dom:health` 列出该域全部成员 |
 | 想要一张可交互的项目蓝图给人看 | `export --format html --output blueprint.html`（浏览器直接打开，无需服务） |
+| 想给 AI agent / 油猴脚本一个 HTTP 数据源 | `nice-aos serve`（一行启动，CORS 就绪，暴露快照与蓝图） |
 
 ## 安装
 
@@ -63,6 +64,9 @@ nice-aos action analyzeFile --params '{"file":"Steam-License-Classifier.js"}' | 
 
 # 7. 升级到最新版（全局安装时一键升级；--check 仅检测）
 nice-aos update
+
+# 8. 启动本地数据源服务（供 AI agent / 油猴脚本跨源拉取快照与蓝图）
+nice-aos serve
 ```
 
 > **快照目录解析优先级**：`--snapshot-dir` 参数 > `NICE_AOS_SNAPSHOT_DIR` 环境变量 > `cwd/.nice-aos/data` > `~/.nice-aos/data`。
@@ -248,6 +252,27 @@ nice-aos update           # 一键升级：全局安装时自动 npm install -g 
 
 **Agent 前置校验约定**（三个 skill 的前置条件均要求）：npm 包方式（全局/npx）首次调用前先 `update --check` 确认最新版——分析能力随版本演进，旧版会缺失新对象类型/字段/命令；`update` 命令不存在说明版本 < 0.10.0，先执行一次 `npm install -g nice-aos@latest`；网络不可达时返回 `ok:false`（带 current 版本号），跳过升级不阻塞主流程。仓库内源码方式版本跟随 git，无需检测。
 
+### serve — 本地数据源服务
+
+```bash
+nice-aos serve                          # 默认 http://127.0.0.1:8420，服务 <root>/.nice-aos/data 与 <root>/blueprint.html
+nice-aos serve --port 39481             # 指定端口（传 0 自动分配可用端口）
+nice-aos serve --dir path/to/data       # 显式指定快照目录（等价全局 --snapshot-dir / NICE_AOS_SNAPSHOT_DIR）
+nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅本机 127.0.0.1）
+```
+
+为 AI agent / 油猴脚本 / 网页提供跨源 HTTP 数据源（全端点 CORS `*`）：
+
+| 端点 | 内容 |
+|------|------|
+| `GET /snapshot.json` | 完整本体快照 JSON（`refreshRepo` 产物） |
+| `GET /blueprint.html` | 蓝图页面（可直接浏览器打开） |
+| `GET /api/status` | 服务状态：目录解析结果、快照/蓝图就绪状态、端点清单 |
+| `GET /api/stats` | 快照统计摘要：项目名/框架/对象计数/循环依赖/死代码候选 |
+| `GET /` | 状态首页（HTML） |
+
+就绪状态**每次请求实时探测**——"先起服务、后 `refreshRepo` / `export`"的工作流无需重启；快照缺失返回 404（附生成指引）、JSON 损坏返回 500。目录解析链：`--dir` → 全局 `--snapshot-dir` → `NICE_AOS_SNAPSHOT_DIR` → `<root>/.nice-aos/data`。典型配套用法见 [contrib/blueprint-ai-agent](./contrib/blueprint-ai-agent)。
+
 ### 本体查看器（blueprint HTML / viewmodel）
 
 `src/ontology/viewer.js` 是本体体系的使用者视图层，数据流为：快照 DataMap → `buildViewerModel()`（数据聚合）→ `renderViewerHtml()`（视图渲染）。视图模型（JSON）独立于渲染，可被 AI agent 与其他前端直接消费：
@@ -350,6 +375,14 @@ CLI 保持原子普适（只提供对象/链接/字段/动作级通用能力）�
 | `nice-aos-deadcode`（死代码清理） | 四级死代码（文件/导出/类型/函数）检测 → 分级复核 → 清理 → 验证工作流；单文件死函数查询 | "哪些文件没人用" / "哪些函数没人调用" / "这个文件能删吗" |
 
 三者共享同一份 CLI 与快照（`<REPO_ROOT>/.nice-aos/data`），无独立安装步骤。
+
+## Contrib（按需集成）
+
+不进入 npm 包分发的可选周边，按需取用：
+
+| 目录 | 说明 |
+|------|------|
+| [`contrib/blueprint-ai-agent`](./contrib/blueprint-ai-agent) | **蓝图页 AI 代码分析助手**（油猴脚本，Tampermonkey 安装）：在 `blueprint.html` 右下角注入浮窗按钮展开对话侧边栏，对项目本体（模块/组件/Store/Service/路由/接口/方法/功能域/死代码）自然语言问答。双数据源（页面内嵌 viewer-data 零依赖，或 `nice-aos serve` 的 `/snapshot.json`），ReAct 文本协议工具循环驱动 9 个代码分析工具，支持多模型接入（DeepSeek/GLM/千问/Kimi/豆包/OpenAI/自定义）、新建会话、会话历史与 JSON/Markdown 导出 |
 
 ## 开发
 

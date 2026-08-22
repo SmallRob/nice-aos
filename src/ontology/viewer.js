@@ -894,14 +894,14 @@ svg .col-label { fill: var(--fg-faint); font-size: 11px; font-family: -apple-sys
 /* ---- 实体类图：UML 类框 + 关系边 ---- */
 .uml-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); padding: 12px; }
 .uml-wrap svg { display: block; max-width: 100%; height: auto; }
-svg .uml rect.box { fill: var(--panel); stroke-width: 1.5; transition: opacity .12s; }
-svg .uml rect.hdr { stroke: none; }
-svg .uml text.uname { font-size: 12px; font-weight: 700; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg); }
-svg .uml text.uname.it { font-style: italic; }
-svg .uml text.ustereo { font-size: 10px; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg-faint); }
-svg .uml text.umember { font-size: 10px; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg-dim); }
-svg .uml text.umore { font-size: 10px; fill: var(--fg-faint); }
-svg .uml line.usep { stroke: var(--border); }
+svg.uml rect.box { fill: var(--panel); stroke-width: 1.5; transition: opacity .12s; }
+svg.uml rect.hdr { stroke: none; }
+svg.uml text.uname { font-size: 12px; font-weight: 700; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg); }
+svg.uml text.uname.it { font-style: italic; }
+svg.uml text.ustereo { font-size: 10px; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg-faint); }
+svg.uml text.umember { font-size: 10px; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg-dim); }
+svg.uml text.umore { font-size: 10px; fill: var(--fg-faint); }
+svg.uml line.usep { stroke: var(--border); }
 svg .ge.impl { stroke: rgba(57,197,207,.65); stroke-dasharray: 6 4; }
 svg .ge.ext { stroke: rgba(188,140,255,.7); }
 .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
@@ -937,6 +937,12 @@ svg .ge.ext { stroke: rgba(188,140,255,.7); }
 const M = JSON.parse(document.getElementById('viewer-data').textContent);
 const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const fmt = (n) => (n ?? 0).toLocaleString('zh-CN');
+const fmtLocalTime = (iso) => {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d.getTime())) return String(iso || '').replace('T', ' ').slice(0, 19);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+};
 
 // ---------- Tab 切换 ----------
 document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => {
@@ -1963,7 +1969,7 @@ document.getElementById('v-sub').textContent =
   (M.project.frameworkLabel || M.project.framework || 'unknown') + ' · ' + fmt(M.project.fileCount) + ' 源文件 · '
   + M.domainCount + ' 功能域 · ' + (M.project.commitHash ? ('commit ' + M.project.commitHash.slice(0, 7) + ' · ') : '')
   + (M.scriptBlueprint ? M.scriptBlueprint.scriptCount + ' 油猴脚本 · ' : '')
-  + '生成于 ' + (M.generatedAt || '').replace('T', ' ').slice(0, 19);
+  + '生成于 ' + fmtLocalTime(M.generatedAt);
 if (!M.scriptBlueprint) hideTab('scripts');
 if (!M.domains.length && !M.scriptDomains) hideTab('blueprint');
 if (!M.dataMap.stores.length && !M.scriptDataMap) hideTab('data');

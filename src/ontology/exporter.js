@@ -12,6 +12,13 @@ export function exportToMarkdown(dataMap) {
   const proj = dataMap.Project?.[0] ?? {};
   const userScripts = dataMap.UserScript ?? [];
   const out = [];
+  // 快照存 UTC ISO（无歧义），报告展示转为本机时区
+  const fmtLocalTime = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return iso ?? '-';
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  };
   let sectionNo = 0;
   const heading = (title) => {
     sectionNo += 1;
@@ -21,7 +28,7 @@ export function exportToMarkdown(dataMap) {
 
   out.push(`# ${proj.name} 代码本体快照`);
   out.push('');
-  out.push(`> 生成时间: ${meta.generatedAt ?? '-'} | 分支: ${proj.branch ?? '-'} | commit: ${(proj.commitHash ?? '-').slice(0, 8)} | 分析耗时: ${meta.durationMs ?? '-'}ms`);
+  out.push(`> 生成时间: ${fmtLocalTime(meta.generatedAt)} | 分支: ${proj.branch ?? '-'} | commit: ${(proj.commitHash ?? '-').slice(0, 8)} | 分析耗时: ${meta.durationMs ?? '-'}ms`);
   out.push('');
 
   heading('项目概览');

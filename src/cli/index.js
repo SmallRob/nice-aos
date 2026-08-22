@@ -8,6 +8,7 @@ import { queryCommand } from './commands/query.js';
 import { linkCommand } from './commands/link.js';
 import { actionCommand } from './commands/action.js';
 import { exportCommand } from './commands/export.js';
+import { serveCommand } from './commands/serve.js';
 import { updateCommand } from './commands/update.js';
 
 // 版本号取自 package.json，避免与发布版本脱节
@@ -29,6 +30,7 @@ program.addCommand(queryCommand);
 program.addCommand(linkCommand);
 program.addCommand(actionCommand);
 program.addCommand(exportCommand);
+program.addCommand(serveCommand);
 program.addCommand(updateCommand);
 
 program.parseAsync().catch((err) => {

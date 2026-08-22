@@ -2,6 +2,32 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.12.0] - 2026-08-22
+
+### 新增
+
+- **`serve` 命令（本地数据源 HTTP 服务）**：把本体快照与蓝图暴露为 CORS 就绪的 HTTP 端点，供 AI agent / 油猴脚本 / 网页跨源拉取——解决油猴脚本在 `file://` 协议下无法读取 `snapshot.json`、以及 AI agent 消费快照需要自起服务的问题
+  - 端点：`GET /snapshot.json`（完整快照）、`GET /blueprint.html`（蓝图页面）、`GET /api/status`（目录解析结果 + 快照/蓝图就绪状态 + 端点清单）、`GET /api/stats`（项目名/框架/对象计数/循环依赖/死代码候选）、`GET /`（状态首页 HTML）；全端点 CORS `*`，`OPTIONS` 预检放行
+  - 目录解析链：`--dir` → 全局 `--snapshot-dir` → `NICE_AOS_SNAPSHOT_DIR` → `<root>/.nice-aos/data`；`--root` 定位 blueprint.html（默认当前目录）；默认监听 `127.0.0.1:8420`（仅本机，`--host 0.0.0.0` 开放局域网），`--port 0` 自动分配可用端口
+  - 就绪状态**每次请求实时探测**：支持"先起服务、后 `refreshRepo` / `export`"工作流（文件随后生成即可读，无需重启服务）；快照缺失返回 404（附生成指引）、JSON 损坏返回 500
+  - `snapshot.js` 新增 `getSnapshotDirOverride()`：serve 经其读取全局 `--snapshot-dir`（preAction 钩子写入的覆盖值）对齐约定——不在 serve 上重复定义同名选项（Commander 中子命令选项与全局选项重名时值会被父命令吞掉）
+- **`contrib/blueprint-ai-agent`（蓝图页 AI 代码分析助手，油猴脚本，按需集成）**：在 `blueprint.html` 右下角注入浮窗按钮，点击展开对话侧边栏，对项目本体（模块/组件/Store/Service/路由/接口/类/方法/功能域/死代码）自然语言问答；不进入 npm 包分发
+  - 架构借鉴 steam-ai-agent：**ToolRegistry + ReAct 文本协议**（`<tool_calls>` 纯文本约定，规避各厂商 function-calling 差异），低成本支持多模型接入：内置 DeepSeek / 智谱GLM / 通义千问 / Kimi / 豆包 / OpenAI 预设 + 自定义（任意 OpenAI 兼容地址）
+  - **9 个代码分析工具**：getStats（统计总览）/ queryObjects（按类型查询）/ getNodeDetails（对象详情）/ listLinks（关系与反向引用）/ getDomainDetail（功能域构成）/ analyzeFile（单文件分析）/ getArchLayers（架构分层分布）/ findDeadCode（四级死代码候选）/ getProjectContext（当前页面视图上下文）
+  - **双数据源**：优先页面内嵌 `viewer-data`（`export --format html` 自带，零依赖离线可用）；「设置」可配本地快照 HTTP 地址（`GM_xmlhttpRequest` 拉取，推荐 `nice-aos serve` 一行启动）
+  - 新建会话 / 会话历史（重命名/删除/清空）、会话导出 JSON（可恢复）/ Markdown、流式打字输出、工具调用可视化、可中断生成；仅在内嵌 viewer-data 或存在 `#viewer` 容器的蓝图页自激活，其它页面无副作用
+
+### 修复
+
+- **蓝图查看器实体类图文字不可读（黑字融深色背景）**：UML 类框样式选择器误写为后代形式 `svg .uml ...`，但 `.uml` 类名挂在 `<svg>` 根元素自身上，选择器永远失配 → 类名/构造型/字段/方法文字回退 SVG 默认**黑色填充**，与深色背景融合不可读（类框边框颜色走内联 `stroke` 属性"看似正常"，列标签走 `svg .col-label` 也正常，问题更隐蔽）。改为复合选择器 `svg.uml ...` 后，文字填充（`--fg`/`--fg-dim`/`--fg-faint`）、类框体填充与分隔线描边全部正确生效
+- **蓝图页头「生成于」显示 UTC 标准时间**：快照 `_meta.generatedAt` 存 UTC ISO 串，页头原样 `.replace('T',' ').slice(0,19)` 展示，东八区下与实际生成时间差 8 小时。查看器内嵌脚本新增 `fmtLocalTime`，在浏览器查看时转换为本机时区；Markdown 导出报告的「生成时间」行同步修复（快照数据仍存 UTC ISO 不变，展示层转换，无歧义）
+
+### 验证
+
+- 新增 `test/serve.test.mjs`（3 个用例）：端点契约（默认目录解析 + CORS + 各端点响应 + OPTIONS 预检 + 404 JSON 错误体）、快照后生成实时可见回归（启动无快照 404 → 运行中生成即 200 → 损坏 500 → 蓝图后生成即读）、`--dir` / `--snapshot-dir` 别名显式指定目录
+- 新增 `test/viewer.test.mjs` 2 个回归用例：实体类图 CSS 选择器（禁止失配的 `svg .uml ` 后代形式 + 文字填充断言）、页头生成时间本机时区显示（mock DOM 执行内嵌脚本，断言 v-sub 文本含本地时间且不含 UTC 原文，时区无关写法）
+- 总计 115 个测试全部通过；默认端口 8420 人工冒烟：全端点响应、CORS 头、启动横幅正常（Windows 系统保留端口段会导致 EACCES 启动失败，撞上时用 `--port` 换端口即可，报错信息已给出指引）；steam-game-library 真实项目重新生成蓝图验证两处修复（旧页头显示 UTC `03:42:11` → 新显示本机时区 `11:42:11` 与系统时间一致，CSS 选择器修复后文字填充生效）
+
 ## [0.11.0] - 2026-08-21
 
 ### 新增

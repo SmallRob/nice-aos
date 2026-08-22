@@ -293,6 +293,67 @@ test('实体类图 Tab：跨语言 UML 类框 + 关系边渲染（内嵌脚本�
   }
 });
 
+test('实体类图 CSS 选择器回归：svg.uml 复合选择器（修复黑字融深色背景）', async () => {
+  const dir = buildEntityFixture();
+  try {
+    const dataMap = await buildOntologyData(dir);
+    const html = renderViewerHtml(buildViewerModel(dataMap));
+    // .uml 类名挂在 <svg> 根元素上：svg .uml（后代选择器）永远失配，
+    // 曾导致类框文字回退 SVG 默认黑色填充，与深色背景融合不可读
+    assert.doesNotMatch(html, /svg \.uml /, '不得使用失配的后代选择器 svg .uml');
+    assert.match(html, /svg\.uml text\.uname\s*\{[^}]*fill:\s*var\(--fg\)/, '类名文字应显式填充 var(--fg)');
+    assert.match(html, /svg\.uml text\.umember\s*\{[^}]*fill:\s*var\(--fg-dim\)/, '字段/方法文字应显式填充 var(--fg-dim)');
+    assert.match(html, /svg\.uml text\.ustereo\s*\{[^}]*fill:\s*var\(--fg-faint\)/, '构造型文字应显式填充 var(--fg-faint)');
+    assert.match(html, /svg\.uml line\.usep\s*\{[^}]*stroke:\s*var\(--border\)/, '分隔线应显式描边');
+    assert.match(html, /svg\.uml rect\.box\s*\{[^}]*fill:\s*var\(--panel\)/, '类框体应显式填充 var(--panel)');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('蓝图页头生成时间显示本机时区（不显示 UTC 标准时间）', async () => {
+  const dir = buildEntityFixture();
+  try {
+    const dataMap = await buildOntologyData(dir);
+    const model = buildViewerModel(dataMap);
+    const iso = model.generatedAt;
+    const d = new Date(iso);
+    const p = (n) => String(n).padStart(2, '0');
+    const local = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    const utc = iso.replace('T', ' ').slice(0, 19);
+
+    const html = renderViewerHtml(model);
+    const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const elements = new Map();
+    const makeEl = (id) => {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          innerHTML: '', textContent: id === 'viewer-data' ? dataJson : '',
+          dataset: {}, style: {}, value: '', addEventListener() {},
+          classList: { add() {}, remove() {} },
+          querySelectorAll: () => [], querySelector: () => null,
+        });
+      }
+      return elements.get(id);
+    };
+    const prevDocument = globalThis.document;
+    globalThis.document = {
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+    };
+    try {
+      new Function(script)();
+    } finally {
+      globalThis.document = prevDocument;
+    }
+    const sub = makeEl('v-sub').textContent;
+    assert.ok(sub.includes('生成于 ' + local), `页头应显示本机时区时间 ${local}，实际: ${sub}`);
+    if (local !== utc) assert.ok(!sub.includes(utc), `页头不得显示 UTC 原文 ${utc}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('viewmodel 对空数据仓库的降级（无 Store / 无路由）', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-viewer-empty-'));
   try {
