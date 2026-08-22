@@ -360,6 +360,7 @@ export function analyzeFile(filePath, content, projectRoot) {
   // useRouter() 声明的变量名（含解构 { push }），用于归属 vue-router 导航调用
   const routerVarDecls = [];
   const pendingNavCalls = [];
+  let sawNavLinkDynamic = false; // <NavLink to={x.path}> 动态引用（数据驱动侧边栏）
   // props 传递链采集：JSX 属性原文（visit 后统一分类，此时文件级 state/store/fn 索引已齐）
   const pendingPropAttrs = [];
   const hookVarNames = []; // { hook, names, pos }（useState 解构首元素 / useXxxStore 变量）
@@ -584,6 +585,22 @@ export function analyzeFile(filePath, content, projectRoot) {
         }
         if (target) facts.overlayOpens.push({ target, pos: node.getStart(sourceFile) });
       }
+      // <NavLink to="/path">（react-router 导航链接）：字符串或 { pathname: '/x' } 对象形式
+      if (tag.text === 'NavLink' && /react-router/.test(facts.importMap.get('NavLink') ?? '')) {
+        const attrs = node.attributes?.properties ?? [];
+        const toAttr = attrs.find((p) => ts.isJsxAttribute(p) && p.name?.getText(sourceFile) === 'to');
+        let expr = toAttr?.initializer ?? null;
+        if (expr && ts.isJsxExpression(expr)) expr = expr.expression;
+        let target = null;
+        if (expr && ts.isStringLiteralLike(expr)) target = expr.text;
+        else if (expr && ts.isObjectLiteralExpression(expr)) {
+          const pn = expr.properties.find((p) => ts.isPropertyAssignment(p) && p.name?.getText(sourceFile) === 'pathname');
+          if (pn && ts.isStringLiteralLike(pn.initializer)) target = pn.initializer.text;
+        }
+        if (target) facts.overlayOpens.push({ target, pos: node.getStart(sourceFile) });
+        // 动态引用（to={item.path}）：数据驱动侧边栏，visit 后从同文件常量表兜底提取
+        else if (expr) sawNavLinkDynamic = true;
+      }
     } else if (ts.isInterfaceDeclaration(node) && node.name) {
       const exported = hasExportModifier(ts, node);
       const extendsNames = [];
@@ -704,6 +721,14 @@ export function analyzeFile(filePath, content, projectRoot) {
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
+
+  // 数据驱动侧边栏兜底：<NavLink to={item.path}> 动态引用时，
+  // 同文件常量表（如 NAV_ITEMS 数组）中的 { path: '/xxx' } 字符串值计为导航目标
+  if (sawNavLinkDynamic) {
+    for (const m of content.matchAll(/\bpath\s*:\s*(['"`])(\/[^'"`]*)\1/g)) {
+      facts.overlayOpens.push({ target: m[2], pos: m.index });
+    }
+  }
 
   // 模块级函数：顶层函数声明 + 顶层 const/let 箭头函数/函数表达式（Method 实体的 module 归属来源）
   for (const stmt of sourceFile.statements) {

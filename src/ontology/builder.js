@@ -6,7 +6,7 @@ import { analyzeFileFromDisk } from '../analyzers/tsAnalyzer.js';
 import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
 import { analyzeUserScriptFromDisk, isUserScriptCandidate } from '../analyzers/userScriptAnalyzer.js';
 import { analyzeRustFileFromDisk, analyzeRustFile, resolveRustUse } from '../analyzers/rustAnalyzer.js';
-import { analyzeOverlayRoutes, analyzeJsxRoutes } from '../analyzers/overlayAnalyzer.js';
+import { analyzeOverlayRoutes, analyzeJsxRoutes, analyzeDataRouterRoutes } from '../analyzers/overlayAnalyzer.js';
 import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { analyzeDartFile, analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
 import { analyzeGoFile, analyzeGoFileFromDisk } from '../analyzers/goAnalyzer.js';
@@ -1433,6 +1433,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const rawRoutes = [
     ...analyzeOverlayRoutes(projectRoot, resolver, getFacts, scan.files),
     ...analyzeJsxRoutes(projectRoot, resolver, getFacts, scan.files),
+    ...analyzeDataRouterRoutes(projectRoot, resolver, getFacts, scan.files),
   ];
   const knownRouteIds = new Set(rawRoutes.map((r) => r.overlayId));
   const routeIdsUsed = new Set();
@@ -1450,6 +1451,19 @@ export async function buildOntologyData(projectRoot, options = {}) {
     let navigatesTo = [...route.factoryNavigatesTo];
     if (componentFile && factsMap.has(componentFile)) {
       navigatesTo.push(...factsMap.get(componentFile).overlayOpens.map((o) => o.target));
+    }
+    // 布局外壳导航（数据路由）：布局 componentFile 及其直接 import 的内部文件（如 Sidebar）
+    // 的 overlayOpens 并入子路由——侧边栏导航对所有子页面可达
+    for (const lf of route.layoutFiles ?? []) {
+      if (lf === componentFile) continue;
+      if (factsMap.has(lf)) navigatesTo.push(...factsMap.get(lf).overlayOpens.map((o) => o.target));
+      const layoutFileObj = fileObjectByPath.get(lf);
+      for (const impId of layoutFileObj?.importIds ?? []) {
+        if (!impId.startsWith('file:')) continue;
+        const impFile = impId.slice('file:'.length);
+        if (impFile === componentFile || !factsMap.has(impFile)) continue;
+        navigatesTo.push(...factsMap.get(impFile).overlayOpens.map((o) => o.target));
+      }
     }
     navigatesTo = [...new Set(navigatesTo)].filter((id) => knownRouteIds.has(id));
     const compId = componentFile

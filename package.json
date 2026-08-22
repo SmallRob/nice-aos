@@ -1,6 +1,6 @@
 {
   "name": "nice-aos",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "description": "nice-aos —— 通用前端代码本体分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本）：扫描 React/TypeScript、Vue 2 Options API / Vue 3 SFC、Flutter/Dart、Go（cobra CLI 命令树 / Gin HTTP 路由 / 包级调用链 / 前后端融合仓库映射）与 Tampermonkey UserScript 源码生成结构化本体快照（模块/文件/组件/Hook/Composable/Zustand/Pinia/Vuex/Riverpod Store/Service/路由/依赖 + import/render/props 传递链/导航/方法调用链关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数调用图），供 AI agent 与开发者毫秒级查询",
   "type": "module",
   "bin": {

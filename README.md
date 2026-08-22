@@ -342,6 +342,14 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 - 组件解析链：`element={<Guard><Page /></Guard>}` 取最内层组件；`element={layoutElement}`（`createElement` 布局变量）穿透到实际布局组件
 - 跳转边：`<Navigate to="/x" />` 字面量重定向，相对 `to` 基于所属路由归一为绝对路径（`to="_overview/summary"` → `/:scopeUid/_overview/summary`）
 
+### React Router 数据路由（6.4+ createBrowserRouter，自动探测）
+
+项目若使用 `createBrowserRouter` / `createHashRouter` / `createMemoryRouter` 数据路由（如 steam-game-library 的 `router/index.tsx`），对象树 `[{ path, element, index, children }]` 自动提取：
+
+- 路由条目：`index: true` 以父路径产出；子级相对 path 与父路径拼接（`'/'` 布局 + `'games/:id'` → `/games/:id`）；有 `children` 的布局对象自身不产出（与 JSX 无 path 布局同语义）
+- 组件解析三级：import 引用 → `lazy(() => import('../pages/X'))` / `React.lazy` 包装变量（含 `.then((m) => ...)` 命名导出链）→ 本地包装函数（return JSX 最深组件递归展开）；`element: (<Suspense>...</Suspense>)` 括号包裹多行 JSX 正常解析
+- 跳转边：`<NavLink to="/x">`（字符串或 `{ pathname }` 对象）字面量；数据驱动侧边栏 `to={item.path}` 动态引用时提取同文件常量表（NAV_ITEMS 数组）中全部 `path` 值；**布局外壳导航闭包**——布局 componentFile 及其直接 import 的内部文件（如 Sidebar.tsx）的导航调用并入全部子路由（侧边栏对所有子页面可达）
+
 ### Next.js App Router 路由（文件约定式，自动探测）
 
 `framework=next` 且存在含约定文件（`page/route/layout`）的 `app/` 或 `src/app/` 目录（后者优先）时自动提取：

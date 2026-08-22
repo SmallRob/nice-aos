@@ -147,6 +147,55 @@ test('tsAnalyzer：<Navigate to> 字面量计入 overlayOpens，动态表达式�
   assert.deepEqual(targets, ['/signin']); // 模板/表达式 to 不提取
 });
 
+test('tsAnalyzer：<NavLink to> 字面量计入 overlayOpens；动态引用触发常量表兜底', () => {
+  // 字符串字面量 / { pathname } 对象形态
+  const literal = [
+    'import { NavLink } from "react-router-dom"',
+    '',
+    'export function Nav() {',
+    '  return (',
+    '    <nav>',
+    '      <NavLink to="/library">Library</NavLink>',
+    "      <NavLink to={{ pathname: '/settings' }}>Settings</NavLink>",
+    '    </nav>',
+    '  );',
+    '}',
+  ].join('\n');
+  const facts1 = analyzeFile('src/components/Nav.tsx', literal, ROOT);
+  assert.deepEqual(facts1.overlayOpens.map((o) => o.target).sort(), ['/library', '/settings']);
+
+  // 数据驱动侧边栏：to={item.path} 动态引用 → 同文件常量表 { path: '/xxx' } 兜底
+  const dataDriven = [
+    'import { NavLink } from "react-router-dom"',
+    '',
+    'const NAV_ITEMS = [',
+    '  { path: "/", label: "library" },',
+    '  { path: "/dashboard", label: "dashboard" },',
+    '  { path: "/spending", label: "spending" },',
+    '];',
+    '',
+    'export function Sidebar() {',
+    '  return (',
+    '    <nav>',
+    '      {NAV_ITEMS.map((item) => (',
+    '        <NavLink key={item.label} to={item.path}>{item.label}</NavLink>',
+    '      ))}',
+    '    </nav>',
+    '  );',
+    '}',
+  ].join('\n');
+  const facts2 = analyzeFile('src/components/Sidebar.tsx', dataDriven, ROOT);
+  assert.deepEqual(facts2.overlayOpens.map((o) => o.target).sort(), ['/', '/dashboard', '/spending']);
+
+  // 非 react-router 的 NavLink（如自研组件）不提取
+  const foreign = [
+    'import { NavLink } from "@radix-ui/nav"',
+    'export function Nav() { return <NavLink to="/x">x</NavLink> }',
+  ].join('\n');
+  const facts3 = analyzeFile('src/components/ForeignNav.tsx', foreign, ROOT);
+  assert.equal(facts3.overlayOpens.length, 0);
+});
+
 test('react JSX 路由：无路由声明的普通项目返回空', async () => {
   const dir = makeProject({
     'package.json': JSON.stringify({ name: 'plain-react', dependencies: { react: '^19.0.0' } }),
@@ -154,5 +203,131 @@ test('react JSX 路由：无路由声明的普通项目返回空', async () => {
   });
   const data = await buildOntologyData(dir);
   assert.equal(data.Route.length, 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---- React Router 6.4+ 数据路由：createBrowserRouter([{ path, element, index, children }]) ----
+// 样例模式取自 steam-game-library 的 src/router/index.tsx：
+// lazy 包装变量（含 .then 命名导出链）、本地 wrapper 函数展开、布局对象跳过、index 路由
+function buildDataRouterProject() {
+  return makeProject({
+    'package.json': JSON.stringify({
+      name: 'react-data-router',
+      dependencies: { react: '^18.0.0', 'react-router-dom': '^6.4.0' },
+    }),
+    'src/router/index.tsx': [
+      'import { lazy, Suspense, createBrowserRouter } from "react-router-dom";',
+      'import AppLayout from "../components/AppLayout";',
+      'import { PageSkeleton } from "../components/PageSkeleton";',
+      '',
+      'const LibraryPage = lazy(() => import("../pages/LibraryPage"));',
+      'const PublisherPage = lazy(() => import("../pages/PublisherPage").then((m) => ({ default: m.PublisherPage })));',
+      'const SettingsPage = lazy(() => import("../pages/SettingsPage"));',
+      'const GameDetailPage = lazy(() => import("../pages/GameDetailPage"));',
+      '',
+      'function PublisherPageWrapper() {',
+      '  return (',
+      '    <Suspense fallback={<PageSkeleton />}>',
+      '      <PublisherPage />',
+      '    </Suspense>',
+      '  );',
+      '}',
+      '',
+      'export const router = createBrowserRouter([',
+      '  {',
+      '    path: "/",',
+      '    element: <AppLayout />,',
+      '    children: [',
+      '      { index: true, element: (',
+      '        <Suspense fallback={<PageSkeleton />}>',
+      '          <LibraryPage />',
+      '        </Suspense>',
+      '      ) },',
+      '      { path: "publishers", element: <PublisherPageWrapper /> },',
+      '      { path: "games/:id", element: <GameDetailPage /> },',
+      '      { path: "settings", element: <SettingsPage /> },',
+      '    ],',
+      '  },',
+      '  { path: "/standalone", element: <AppLayout /> },',
+      ']);',
+    ].join('\n'),
+    'src/components/AppLayout.tsx': [
+      'import { Outlet } from "react-router-dom";',
+      'import Sidebar from "./Sidebar";',
+      'export default function AppLayout() {',
+      '  return (<div><Sidebar /><Outlet /></div>);',
+      '}',
+    ].join('\n'),
+    'src/components/Sidebar.tsx': [
+      'import { NavLink } from "react-router-dom";',
+      '',
+      'const NAV_ITEMS = [',
+      '  { path: "/publishers", label: "publishers" },',
+      '  { path: "/settings", label: "settings" },',
+      '];',
+      '',
+      'export default function Sidebar() {',
+      '  return (<nav>{NAV_ITEMS.map((item) => (',
+      '    <NavLink key={item.label} to={item.path}>{item.label}</NavLink>',
+      '  ))}</nav>);',
+      '}',
+    ].join('\n'),
+    'src/components/PageSkeleton.tsx': 'export function PageSkeleton() { return <div /> }',
+    'src/pages/LibraryPage.tsx': 'export default function LibraryPage() { return <div /> }',
+    'src/pages/PublisherPage.tsx': 'export function PublisherPage() { return <div /> }',
+    'src/pages/SettingsPage.tsx': 'export default function SettingsPage() { return <div /> }',
+    'src/pages/GameDetailPage.tsx': 'export default function GameDetailPage() { return <div /> }',
+    // 测试文件中的 mock 数据路由不参与
+    'src/router/__tests__/router.test.tsx': [
+      'import { createHashRouter } from "react-router-dom";',
+      'export const mock = createHashRouter([{ path: "/mock", element: <div /> }]);',
+    ].join('\n'),
+  });
+}
+
+test('react 数据路由：lazy 包装/then 链/本地 wrapper/布局跳过/index/测试文件排除', async () => {
+  const dir = buildDataRouterProject();
+  const data = await buildOntologyData(dir);
+  const routes = data.Route;
+  const byOverlay = new Map(routes.map((r) => [r.overlayId, r]));
+
+  // 布局对象（path="/" + children）自身不产出，index: true 产出 '/'
+  assert.equal(routes.filter((r) => r.overlayId === '/').length, 1);
+  assert.equal(byOverlay.get('/').componentFileId, 'file:src/pages/LibraryPage.tsx');
+  assert.equal(byOverlay.get('/').routeType, 'react');
+
+  // lazy 包装变量 → import path 解析（element 为 <Suspense><X /></Suspense> 时取最内组件）
+  assert.equal(byOverlay.get('/settings').componentFileId, 'file:src/pages/SettingsPage.tsx');
+  // lazy + .then() 命名导出链 → 仍取到 import path
+  assert.ok(byOverlay.has('/publishers'));
+  assert.equal(byOverlay.get('/publishers').componentFileId, 'file:src/pages/PublisherPage.tsx');
+  // element 直接 <GameDetailPage />（lazy 变量）
+  assert.equal(byOverlay.get('/games/:id').componentFileId, 'file:src/pages/GameDetailPage.tsx');
+  // 相对 path 拼接：'games/:id' + parent '/' → '/games/:id'；domain 取首段
+  assert.equal(byOverlay.get('/games/:id').domain, 'games');
+
+  // 无 children 的顶层路由正常产出
+  assert.equal(byOverlay.get('/standalone').componentFileId, 'file:src/components/AppLayout.tsx');
+
+  // 测试文件中的 mock 数据路由排除
+  assert.ok(!byOverlay.has('/mock'));
+
+  // 页面组件 kind 升级（pages/ 目录 + 路由直接引用）
+  const publisher = data.Component.find((c) => c.name === 'PublisherPage');
+  assert.equal(publisher.kind, 'page');
+
+  // 布局外壳导航闭包：Sidebar（AppLayout 直接 import）的 NavLink 常量表目标
+  // 并入所有子路由的导航边（侧边栏对子页面全局可达）
+  const settings = byOverlay.get('/settings');
+  assert.ok(settings.navigatesToIds.includes('route:/publishers'), JSON.stringify(settings.navigatesToIds));
+  const games = byOverlay.get('/games/:id');
+  assert.ok(games.navigatesToIds.includes('route:/settings'));
+  assert.ok(games.navigatesToIds.includes('route:/publishers'));
+  // /standalone 直接用 AppLayout（无 children）→ 无 Sidebar 导航边（非子路由）
+  assert.deepEqual(byOverlay.get('/standalone').navigatesToIds, []);
+
+  // 总数：index '/' + publishers + games/:id + settings + standalone = 5
+  assert.equal(routes.length, 5, JSON.stringify(routes.map((r) => r.overlayId)));
+
   fs.rmSync(dir, { recursive: true, force: true });
 });

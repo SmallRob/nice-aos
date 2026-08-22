@@ -2,6 +2,23 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.18.1] - 2026-08-22
+
+### 新增
+
+- **React Router 6.4+ 数据路由解析**（`createBrowserRouter` / `createHashRouter` / `createMemoryRouter`）：`[{ path, element, index, children }]` 对象树 → Route 实体，与既有 `<Routes>/<Route>` JSX 形态平级共存；`index: true` 以父路径产出，子级相对 path 与父路径拼接，有 `children` 的布局对象自身不产出（与 JSX 无 path 布局同语义）；`element` 解析支持 JSX / 括号包裹多行 JSX / 裸标识符，组件引用三级解析——import 引用 → `lazy(() => import('../pages/X'))` / `React.lazy` 包装变量（含 `.then((m) => ...)` 命名导出链，`import()` 经 ImportKeyword 识别）→ 本地包装函数（return JSX 最深组件递归展开）
+- **`<NavLink to>` 导航边提取**（react-router）：字符串字面量与 `{ pathname: '/x' }` 对象形态计入 overlayOpens；**数据驱动侧边栏兜底**——`to={item.path}` 动态引用时提取同文件常量表（NAV_ITEMS 数组）中全部 `{ path: '/xxx' }` 字符串值为导航目标
+- **布局外壳导航闭包**：数据路由布局对象的 componentFile 及其直接 import 的内部文件（如 Sidebar.tsx）的导航调用并入全部子路由的导航边——侧边栏导航对所有子页面可达
+
+### 修复
+
+- **数据路由 element 括号包裹**：`element: (\n <Suspense>...</Suspense>\n )` 多行 JSX 为 ParenthesizedExpression 包裹，此前组件解析返回 null——逐层剥离括号后解析
+
+### 验证
+
+- 新增 `test/jsxRoutes.test.mjs` 用例（数据路由端到端 + NavLink 字面量/动态兜底/非 react-router 排除），总计 172 测试全过
+- steam-game-library 冒烟：Route 0 → 28（全部关联组件文件，`/` → LibraryPage.tsx 等 28 个页面全部建立路由地图条目与导航边，每页 27 个侧边栏可达目标）；既有 JSX 路由项目回归无变化
+
 ## [0.18.0] - 2026-08-22
 
 ### 新增

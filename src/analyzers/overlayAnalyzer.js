@@ -420,3 +420,223 @@ export function analyzeJsxRoutes(projectRoot, resolver, getFacts, allFiles = [])
   }
   return routes;
 }
+
+// React Router 6.4+ 数据路由文件探测：createBrowserRouter / createHashRouter 调用
+// （与 <Routes>/<Route> JSX 形态互斥；测试文件中的 mock 路由不参与）
+function detectDataRouterFiles(allFiles, projectRoot) {
+  const candidates = [];
+  for (const f of allFiles) {
+    if (!/\.(tsx|jsx)$/.test(f) || f.endsWith('.d.ts')) continue;
+    if (/\.(test|spec)\.|__tests__\//.test(f)) continue;
+    let content;
+    try {
+      content = fs.readFileSync(path.join(projectRoot, f), 'utf-8');
+    } catch {
+      continue;
+    }
+    if (/create(Browser|Hash|Memory)Router\s*\(/.test(content)) candidates.push(f);
+  }
+  return candidates;
+}
+
+// lazy(() => import('...')) / React.lazy(() => import('...').then(m => ...)) 包装变量：
+// 提取变量名与 import 路径（import() 可能在 .then() 回调链内，递归找第一个）
+function extractLazyImportPath(tsMod, call) {
+  const arg = call.arguments[0];
+  if (!arg) return null;
+  let found = null;
+  (function walk(node) {
+    if (found) return;
+    if (tsMod.isCallExpression(node) && node.expression.kind === tsMod.SyntaxKind.ImportKeyword) {
+      const p = node.arguments[0];
+      if (p && tsMod.isStringLiteralLike(p)) found = p.text;
+      return;
+    }
+    node.forEachChild(walk);
+  })(arg);
+  return found;
+}
+
+// React Router 6.4+ 数据路由：createBrowserRouter([{ path, element, index, children }]) 对象树。
+// 组件解析三级：import 引用 → lazy 包装变量（lazy(() => import('../pages/X'))）→ 本地包装函数
+// （return JSX 最深组件递归展开）；有 children 的布局对象自身不产出（与 JSX 形态无 path 布局一致），
+// index: true 以 parentPath 为路径
+export function analyzeDataRouterRoutes(projectRoot, resolver, getFacts, allFiles = []) {
+  const tsMod = getTs(projectRoot);
+  const routeFiles = detectDataRouterFiles(allFiles, projectRoot);
+  if (routeFiles.length === 0) return [];
+
+  const fileCache = new Map();
+  function parseFile(file) {
+    if (fileCache.has(file)) return fileCache.get(file);
+    const content = fs.readFileSync(path.join(projectRoot, file), 'utf-8').replace(/^\uFEFF/, '');
+    const sourceFile = tsMod.createSourceFile(file, content, tsMod.ScriptTarget.Latest, true, tsMod.ScriptKind.TSX);
+    const importMap = new Map();
+    const localFns = new Map(); // 名 -> { start, end, returnJsx }
+    const lazyDecls = new Map(); // 名 -> importPath（lazy 包装变量）
+    (function scan(node) {
+      if (tsMod.isImportDeclaration(node) && node.importClause && tsMod.isStringLiteralLike(node.moduleSpecifier)) {
+        const clause = node.importClause;
+        if (clause.name) importMap.set(clause.name.text, node.moduleSpecifier.text);
+        const bindings = clause.namedBindings;
+        if (bindings && tsMod.isNamedImports(bindings)) {
+          for (const el of bindings.elements) importMap.set(el.name.text, node.moduleSpecifier.text);
+        }
+      } else if (tsMod.isFunctionDeclaration(node) && node.name) {
+        localFns.set(node.name.text, {
+          start: node.getStart(sourceFile), end: node.end, returnJsx: findReturnJsx(node.body),
+        });
+      } else if (tsMod.isVariableStatement(node)) {
+        for (const decl of node.declarationList.declarations) {
+          if (!tsMod.isIdentifier(decl.name) || !decl.initializer) continue;
+          if (tsMod.isArrowFunction(decl.initializer)) {
+            localFns.set(decl.name.text, {
+              start: decl.getStart(sourceFile), end: decl.end, returnJsx: findReturnJsx(decl.initializer.body),
+            });
+          } else if (tsMod.isCallExpression(decl.initializer)) {
+            // lazy(() => import('...')) / React.lazy(() => import('...').then(...))
+            const callee = decl.initializer.expression;
+            const isLazy = (tsMod.isIdentifier(callee) && callee.text === 'lazy')
+              || (tsMod.isPropertyAccessExpression(callee) && callee.name.text === 'lazy');
+            if (isLazy) {
+              const p = extractLazyImportPath(tsMod, decl.initializer);
+              if (p) lazyDecls.set(decl.name.text, p);
+            }
+          }
+        }
+      }
+      tsMod.forEachChild(node, scan);
+    })(sourceFile);
+    const info = { sourceFile, content, importMap, localFns, lazyDecls };
+    fileCache.set(file, info);
+    return info;
+  }
+
+  // 名称 → componentFile：import → lazy 包装变量 → 本地包装函数（return JSX 最深组件递归）
+  function resolveByName(name, fromFile, importMap, depth = 0) {
+    const spec = importMap.get(name);
+    if (spec) {
+      const r = resolver.resolve(fromFile, spec);
+      if (r.kind === 'internal') return { componentFile: r.file };
+    }
+    const info = parseFile(fromFile);
+    const lazyPath = info.lazyDecls.get(name);
+    if (lazyPath) {
+      const r = resolver.resolve(fromFile, lazyPath);
+      if (r.kind === 'internal') return { componentFile: r.file };
+    }
+    if (depth < 4) {
+      const fn = info.localFns.get(name);
+      if (fn?.returnJsx) {
+        const dc = deepestComponentJsx(fn.returnJsx);
+        if (dc && dc.name !== name) {
+          const inner = resolveByName(dc.name, fromFile, info.importMap, depth + 1);
+          if (inner.componentFile) return inner;
+        }
+      }
+    }
+    return { componentFile: null };
+  }
+
+  function resolveElement(initializer, fromFile, importMap) {
+    let expr = initializer;
+    if (!expr) return { componentFile: null };
+    if (tsMod.isJsxExpression(expr)) expr = expr.expression;
+    if (!expr) return { componentFile: null };
+    // 多行 JSX 常以括号包裹（element: (\n <Suspense>...</Suspense>\n)）
+    while (tsMod.isParenthesizedExpression(expr)) expr = expr.expression;
+    if (!expr) return { componentFile: null };
+    if (tsMod.isJsxElement(expr) || tsMod.isJsxSelfClosingElement(expr) || tsMod.isJsxFragment(expr)) {
+      const dc = deepestComponentJsx(expr);
+      if (!dc) return { componentFile: null };
+      return resolveByName(dc.name, fromFile, importMap);
+    }
+    if (tsMod.isIdentifier(expr)) return resolveByName(expr.text, fromFile, importMap);
+    return { componentFile: null };
+  }
+
+  const routes = [];
+  for (const routeFile of routeFiles) {
+    const info = parseFile(routeFile);
+    const sourceFile = info.sourceFile;
+
+    // 找到 createBrowserRouter/createHashRouter 的数组实参，递归对象树
+    let routerArg = null;
+    (function findCall(node) {
+      if (routerArg) return;
+      if (tsMod.isCallExpression(node)) {
+        const callee = node.expression;
+        const name = tsMod.isIdentifier(callee) ? callee.text
+          : tsMod.isPropertyAccessExpression(callee) ? callee.name.text : null;
+        if ((name === 'createBrowserRouter' || name === 'createHashRouter' || name === 'createMemoryRouter')
+          && node.arguments[0] && tsMod.isArrayLiteralExpression(node.arguments[0])) {
+          routerArg = node.arguments[0];
+          return;
+        }
+      }
+      tsMod.forEachChild(node, findCall);
+    })(sourceFile);
+    if (!routerArg) continue;
+
+    const propOf = (obj, name) => obj.properties.find(
+      (p) => tsMod.isPropertyAssignment(p) && p.name?.getText(sourceFile) === name,
+    );
+
+    function walkObjects(node, parentPath, ancestorLayoutFiles) {
+      if (tsMod.isArrayLiteralExpression(node)) {
+        for (const el of node.elements) walkObjects(el, parentPath, ancestorLayoutFiles);
+        return;
+      }
+      if (!tsMod.isObjectLiteralExpression(node)) return;
+      const pathProp = propOf(node, 'path');
+      const indexProp = node.properties.find(
+        (p) => tsMod.isPropertyAssignment(p) && p.name?.getText(sourceFile) === 'index',
+      );
+      const childrenProp = propOf(node, 'children');
+      const elementProp = propOf(node, 'element');
+
+      const rawPath = pathProp && tsMod.isStringLiteralLike(pathProp.initializer)
+        ? pathProp.initializer.text
+        : null;
+      const isIndex = indexProp !== undefined;
+
+      let overlayId = null;
+      if (rawPath !== null) {
+        overlayId = rawPath.startsWith('/') ? rawPath
+          : (parentPath ? normalizeNavTarget(rawPath, parentPath) : `/${rawPath}`);
+      } else if (isIndex && parentPath) {
+        overlayId = parentPath;
+      }
+
+      // 布局对象（有 children）：自身不产出，children 继承 path 上下文（与 JSX 无 path 布局同语义）
+      const hasChildren = childrenProp && tsMod.isArrayLiteralExpression(childrenProp.initializer);
+      if (overlayId && !hasChildren) {
+        const elem = resolveElement(elementProp?.initializer, routeFile, info.importMap);
+        routes.push({
+          overlayId,
+          routePath: overlayId,
+          backTarget: null,
+          hidesNav: false,
+          domain: overlayId === '/' ? 'root' : overlayId.split('/').filter(Boolean)[0] ?? 'root',
+          group: routeFile,
+          componentRef: elementProp ? elementProp.initializer?.getText(sourceFile) ?? null : null,
+          componentFile: elem.componentFile,
+          layoutFiles: [...ancestorLayoutFiles],
+          factoryNavigatesTo: [],
+          hasPropsFactory: false,
+          factoryProps: [],
+          routeType: 'react',
+        });
+      }
+      if (hasChildren) {
+        // 布局的 componentFile 随 children 传递（供 builder 并入布局级导航边）
+        const layoutElem = resolveElement(elementProp?.initializer, routeFile, info.importMap);
+        const nextLayouts = new Set(ancestorLayoutFiles);
+        if (layoutElem.componentFile) nextLayouts.add(layoutElem.componentFile);
+        walkObjects(childrenProp.initializer, overlayId ?? parentPath, nextLayouts);
+      }
+    }
+    walkObjects(routerArg, null, new Set());
+  }
+  return routes;
+}
