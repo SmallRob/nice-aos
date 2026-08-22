@@ -2,6 +2,20 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.18.2] - 2026-08-22
+
+### 新增
+
+- **数据路由 element 包装函数调用解析**：`element: withSuspense(X)` / `element: withPlatformGuard(X, 'platform')` / `createElement(Fn)` 等 HOC 包装形态——取第一个组件参数（Identifier 或 JSX）递归解析（steam-game-hub-2.0 惯例，43 条路由中 37 条使用）
+- **数据路由 `<Navigate to>` 重定向提取**：element 内直接 `<Navigate to="/x" replace />`（index 兜底 / catch-all `*`）→ 路由导航边；`*` 相对 path 与父路径拼接为 `/*`
+- **NavLink 常量成员引用解析**：数据驱动侧边栏 `{ path: ROUTES.DASHBOARD }` 形态——同文件 `const X = { KEY: '/value' }` 对象表解析 + named import 跨文件轻量解析（读模块文件 const 对象表，支持 .ts/.tsx/.js/.jsx/index.* 扩展探测）
+
+### 验证
+
+- 新增 `test/jsxRoutes.test.mjs` 用例（包装函数调用 / Navigate 重定向 / catch-all / 跨文件常量引用），总计 172 测试全过
+- steam-game-hub-2.0（pnpm monorepo，Tauri + React）冒烟：494 文件 / 43 路由全部关联组件（41 组件 + 2 Navigate 重定向）/ 每路由 36 条侧边栏导航边（Steam + PS 导航组全集）；packages/* 6 个子包全部纳入；`../steam-client` workspace 根外条目正确不越界
+- steam-game-library 回归：28/28/28（路由/关联/导航边）与基线一致
+
 ## [0.18.1] - 2026-08-22
 
 ### 新增

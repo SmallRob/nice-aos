@@ -552,7 +552,52 @@ export function analyzeDataRouterRoutes(projectRoot, resolver, getFacts, allFile
       return resolveByName(dc.name, fromFile, importMap);
     }
     if (tsMod.isIdentifier(expr)) return resolveByName(expr.text, fromFile, importMap);
+    // 包装函数调用：withSuspense(X) / withPlatformGuard(X, 'platform') / createElement(Fn)——
+    // 取第一个组件参数（Identifier 或 JSX）递归解析
+    if (tsMod.isCallExpression(expr)) {
+      for (const arg of expr.arguments) {
+        let a = arg;
+        while (a && tsMod.isParenthesizedExpression(a)) a = a.expression;
+        if (!a) continue;
+        if (tsMod.isIdentifier(a)) {
+          const r = resolveByName(a.text, fromFile, importMap);
+          if (r.componentFile) return r;
+        } else if (tsMod.isJsxElement(a) || tsMod.isJsxSelfClosingElement(a) || tsMod.isJsxFragment(a)) {
+          const dc = deepestComponentJsx(a);
+          if (dc) {
+            const r = resolveByName(dc.name, fromFile, importMap);
+            if (r.componentFile) return r;
+          }
+        }
+      }
+    }
     return { componentFile: null };
+  }
+
+  // element 表达式内的 <Navigate to="..." /> 重定向目标（index / catch-all 兜底惯例）
+  function extractNavigateTo(initializer, sourceFile) {
+    let expr = initializer;
+    if (!expr) return null;
+    if (tsMod.isJsxExpression(expr)) expr = expr.expression;
+    if (!expr) return null;
+    while (expr && tsMod.isParenthesizedExpression(expr)) expr = expr.expression;
+    if (!expr) return null;
+    let found = null;
+    (function walk(node) {
+      if (found) return;
+      if (tsMod.isJsxSelfClosingElement(node) || tsMod.isJsxOpeningElement(node)) {
+        const tag = node.tagName;
+        if (tsMod.isIdentifier(tag) && tag.text === 'Navigate') {
+          const toAttr = (node.attributes?.properties ?? [])
+            .find((p) => tsMod.isJsxAttribute(p) && p.name?.getText(sourceFile) === 'to');
+          let e = toAttr?.initializer;
+          if (e && tsMod.isJsxExpression(e)) e = e.expression;
+          if (e && tsMod.isStringLiteralLike(e)) found = e.text;
+        }
+      }
+      node.forEachChild(walk);
+    })(expr);
+    return found;
   }
 
   const routes = [];
@@ -612,6 +657,9 @@ export function analyzeDataRouterRoutes(projectRoot, resolver, getFacts, allFile
       const hasChildren = childrenProp && tsMod.isArrayLiteralExpression(childrenProp.initializer);
       if (overlayId && !hasChildren) {
         const elem = resolveElement(elementProp?.initializer, routeFile, info.importMap);
+        // element 内直接 <Navigate to="...">：重定向路由（index 兜底 / catch-all）的导航边
+        const navTo = extractNavigateTo(elementProp?.initializer, sourceFile);
+        const navs = navTo ? [normalizeNavTarget(navTo, overlayId)].filter(Boolean) : [];
         routes.push({
           overlayId,
           routePath: overlayId,
@@ -622,7 +670,7 @@ export function analyzeDataRouterRoutes(projectRoot, resolver, getFacts, allFile
           componentRef: elementProp ? elementProp.initializer?.getText(sourceFile) ?? null : null,
           componentFile: elem.componentFile,
           layoutFiles: [...ancestorLayoutFiles],
-          factoryNavigatesTo: [],
+          factoryNavigatesTo: navs,
           hasPropsFactory: false,
           factoryProps: [],
           routeType: 'react',

@@ -725,8 +725,55 @@ export function analyzeFile(filePath, content, projectRoot) {
   // 数据驱动侧边栏兜底：<NavLink to={item.path}> 动态引用时，
   // 同文件常量表（如 NAV_ITEMS 数组）中的 { path: '/xxx' } 字符串值计为导航目标
   if (sawNavLinkDynamic) {
+    // 形态 1：字面量 { path: '/xxx' }
     for (const m of content.matchAll(/\bpath\s*:\s*(['"`])(\/[^'"`]*)\1/g)) {
       facts.overlayOpens.push({ target: m[2], pos: m.index });
+    }
+    // 形态 2：常量成员引用 { path: ROUTES.DASHBOARD }——从 const 对象表解析
+    // （同文件 const X = { KEY: '/value' }，或 named import 的模块文件内定义）
+    const memberRefs = [...content.matchAll(/\bpath\s*:\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)];
+    if (memberRefs.length > 0) {
+      // 同文件 const 对象表（浅层 KEY: '字面量'）
+      const localTable = new Map();
+      for (const m of content.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*\{([\s\S]*?)\}/g)) {
+        const members = new Map();
+        for (const p of m[2].matchAll(/([A-Za-z_$][\w$]*)\s*:\s*(['"`])([^'"`]+)\2/g)) {
+          if (p[3].startsWith('/')) members.set(p[1], p[3]);
+        }
+        if (members.size > 0) localTable.set(m[1], members);
+      }
+      // 跨文件：import { X } from './module' → 模块文件的 const 对象表（含 export const）
+      const importedTable = new Map();
+      for (const ref of memberRefs) {
+        const objName = ref[1];
+        if (localTable.has(objName) || importedTable.has(objName)) continue;
+        const spec = facts.importMap.get(objName);
+        if (!spec || !spec.startsWith('.')) continue;
+        const base = path.posix.normalize(path.posix.join(path.posix.dirname(filePath), spec));
+        for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.mjs', '/index.ts', '/index.tsx', '/index.js']) {
+          const cand = base + ext;
+          let modContent;
+          try {
+            modContent = fs.readFileSync(path.join(projectRoot, cand), 'utf-8');
+          } catch {
+            continue;
+          }
+          const members = new Map();
+          for (const m of modContent.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*\{([\s\S]*?)\}/g)) {
+            if (m[1] !== objName) continue;
+            for (const p of m[2].matchAll(/([A-Za-z_$][\w$]*)\s*:\s*(['"`])([^'"`]+)\2/g)) {
+              if (p[3].startsWith('/')) members.set(p[1], p[3]);
+            }
+          }
+          importedTable.set(objName, members);
+          break;
+        }
+      }
+      for (const ref of memberRefs) {
+        const table = localTable.get(ref[1]) ?? importedTable.get(ref[1]);
+        const target = table?.get(ref[2]);
+        if (target) facts.overlayOpens.push({ target, pos: ref.index });
+      }
     }
   }
 

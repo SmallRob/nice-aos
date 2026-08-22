@@ -347,8 +347,9 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 项目若使用 `createBrowserRouter` / `createHashRouter` / `createMemoryRouter` 数据路由（如 steam-game-library 的 `router/index.tsx`），对象树 `[{ path, element, index, children }]` 自动提取：
 
 - 路由条目：`index: true` 以父路径产出；子级相对 path 与父路径拼接（`'/'` 布局 + `'games/:id'` → `/games/:id`）；有 `children` 的布局对象自身不产出（与 JSX 无 path 布局同语义）
-- 组件解析三级：import 引用 → `lazy(() => import('../pages/X'))` / `React.lazy` 包装变量（含 `.then((m) => ...)` 命名导出链）→ 本地包装函数（return JSX 最深组件递归展开）；`element: (<Suspense>...</Suspense>)` 括号包裹多行 JSX 正常解析
-- 跳转边：`<NavLink to="/x">`（字符串或 `{ pathname }` 对象）字面量；数据驱动侧边栏 `to={item.path}` 动态引用时提取同文件常量表（NAV_ITEMS 数组）中全部 `path` 值；**布局外壳导航闭包**——布局 componentFile 及其直接 import 的内部文件（如 Sidebar.tsx）的导航调用并入全部子路由（侧边栏对所有子页面可达）
+- 组件解析三级：import 引用 → `lazy(() => import('../pages/X'))` / `React.lazy` 包装变量（含 `.then((m) => ...)` 命名导出链）→ 本地包装函数（return JSX 最深组件递归展开）；`element: (<Suspense>...</Suspense>)` 括号包裹多行 JSX 正常解析；**包装函数调用** `element: withSuspense(X)` / `withPlatformGuard(X, 'platform')` 取第一个组件参数递归解析（steam-game-hub-2.0 惯例）
+- 重定向路由：element 内直接 `<Navigate to="/x" replace />`（index 兜底 / catch-all `*` → `/*`）产出导航边，无组件关联
+- 跳转边：`<NavLink to="/x">`（字符串或 `{ pathname }` 对象）字面量；数据驱动侧边栏 `to={item.path}` 动态引用时提取同文件常量表（NAV_ITEMS 数组）中全部 `path` 值；**常量成员引用** `{ path: ROUTES.DASHBOARD }`——同文件 `const X = { KEY: '/value' }` 对象表 + named import 跨文件轻量解析；**布局外壳导航闭包**——布局 componentFile 及其直接 import 的内部文件（如 Sidebar.tsx）的导航调用并入全部子路由（侧边栏对所有子页面可达）
 
 ### Next.js App Router 路由（文件约定式，自动探测）
 

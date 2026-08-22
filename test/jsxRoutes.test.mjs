@@ -187,6 +187,42 @@ test('tsAnalyzer：<NavLink to> 字面量计入 overlayOpens；动态引用触�
   const facts2 = analyzeFile('src/components/Sidebar.tsx', dataDriven, ROOT);
   assert.deepEqual(facts2.overlayOpens.map((o) => o.target).sort(), ['/', '/dashboard', '/spending']);
 
+  // 常量成员引用 { path: ROUTES.DASHBOARD }：ROUTES 从 router 文件导入（跨文件 const 对象表）
+  const hubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-navref-'));
+  fs.mkdirSync(path.join(hubDir, 'src/components/layout'), { recursive: true });
+  fs.mkdirSync(path.join(hubDir, 'src/router'), { recursive: true });
+  fs.writeFileSync(path.join(hubDir, 'src/router/index.tsx'), [
+    'export const ROUTES = {',
+    '  DASHBOARD: "/dashboard",',
+    '  LIBRARY: "/library",',
+    '  GAME_DETAIL: "/game/:appid",',
+    '};',
+  ].join('\n'));
+  fs.writeFileSync(path.join(hubDir, 'src/components/layout/Sidebar.tsx'), [
+    'import { NavLink } from "react-router-dom";',
+    'import { ROUTES } from "../../router";',
+    '',
+    'const STEAM_NAV = [',
+    '  { path: ROUTES.DASHBOARD, label: "dashboard" },',
+    '  { path: ROUTES.LIBRARY, label: "library" },',
+    '  { path: ROUTES.GAME_DETAIL, label: "game" },',
+    '  { path: item.path, label: "unresolved" },',
+    '];',
+    '',
+    'export function Sidebar() {',
+    '  return (<nav>{STEAM_NAV.map((item) => (',
+    '    <NavLink key={item.label} to={item.path}>{item.label}</NavLink>',
+    '  ))}</nav>);',
+    '}',
+  ].join('\n'));
+  const factsHub = analyzeFile('src/components/layout/Sidebar.tsx',
+    fs.readFileSync(path.join(hubDir, 'src/components/layout/Sidebar.tsx'), 'utf8'), hubDir);
+  assert.deepEqual(
+    factsHub.overlayOpens.map((o) => o.target).sort(),
+    ['/dashboard', '/game/:appid', '/library'],
+  );
+  fs.rmSync(hubDir, { recursive: true, force: true });
+
   // 非 react-router 的 NavLink（如自研组件）不提取
   const foreign = [
     'import { NavLink } from "@radix-ui/nav"',
@@ -216,7 +252,7 @@ function buildDataRouterProject() {
       dependencies: { react: '^18.0.0', 'react-router-dom': '^6.4.0' },
     }),
     'src/router/index.tsx': [
-      'import { lazy, Suspense, createBrowserRouter } from "react-router-dom";',
+      'import { lazy, Suspense, createBrowserRouter, Navigate } from "react-router-dom";',
       'import AppLayout from "../components/AppLayout";',
       'import { PageSkeleton } from "../components/PageSkeleton";',
       '',
@@ -233,19 +269,31 @@ function buildDataRouterProject() {
       '  );',
       '}',
       '',
+      '// 包装函数（steam-game-hub-2.0 惯例）',
+      'const withSuspense = (Component) => (',
+      '  <Suspense fallback={<PageSkeleton />}>',
+      '    <Component />',
+      '  </Suspense>',
+      ');',
+      '',
+      'const withPlatformGuard = (Component, platform) => (',
+      '  <Suspense fallback={<PageSkeleton />}>',
+      '    <Component />',
+      '  </Suspense>',
+      ');',
+      '',
       'export const router = createBrowserRouter([',
       '  {',
       '    path: "/",',
-      '    element: <AppLayout />,',
+      '    element: withSuspense(AppLayout),',
       '    children: [',
-      '      { index: true, element: (',
-      '        <Suspense fallback={<PageSkeleton />}>',
-      '          <LibraryPage />',
-      '        </Suspense>',
-      '      ) },',
+      '      { index: true, element: <Navigate to="/library" replace /> },',
+      '      { path: "library", element: withSuspense(LibraryPage) },',
       '      { path: "publishers", element: <PublisherPageWrapper /> },',
       '      { path: "games/:id", element: <GameDetailPage /> },',
-      '      { path: "settings", element: <SettingsPage /> },',
+      '      { path: "settings", element: withSuspense(SettingsPage) },',
+      '      { path: "report/ps", element: withPlatformGuard(SettingsPage, "playstation") },',
+      '      { path: "*", element: <Navigate to="/library" replace /> },',
       '    ],',
       '  },',
       '  { path: "/standalone", element: <AppLayout /> },',
@@ -291,20 +339,29 @@ test('react 数据路由：lazy 包装/then 链/本地 wrapper/布局跳过/inde
   const routes = data.Route;
   const byOverlay = new Map(routes.map((r) => [r.overlayId, r]));
 
-  // 布局对象（path="/" + children）自身不产出，index: true 产出 '/'
+  // 布局对象（path="/" + children，withSuspense 包装）自身不产出，index: true 产出 '/'
   assert.equal(routes.filter((r) => r.overlayId === '/').length, 1);
-  assert.equal(byOverlay.get('/').componentFileId, 'file:src/pages/LibraryPage.tsx');
+  // index 重定向路由：element 为 <Navigate to="/library"> → 无组件关联，但有导航边
+  assert.equal(byOverlay.get('/').componentFileId, null);
+  assert.ok(byOverlay.get('/').navigatesToIds.includes('route:/library'));
   assert.equal(byOverlay.get('/').routeType, 'react');
 
-  // lazy 包装变量 → import path 解析（element 为 <Suspense><X /></Suspense> 时取最内组件）
+  // 包装函数调用 withSuspense(X)：第一个组件参数（lazy 变量）解析
   assert.equal(byOverlay.get('/settings').componentFileId, 'file:src/pages/SettingsPage.tsx');
-  // lazy + .then() 命名导出链 → 仍取到 import path
+  // 包装函数调用 withPlatformGuard(X, 'playstation')：多参数取首个组件参数
+  assert.equal(byOverlay.get('/report/ps').componentFileId, 'file:src/pages/SettingsPage.tsx');
+  // lazy + .then() 命名导出链 → 本地 wrapper 函数 return JSX 展开
   assert.ok(byOverlay.has('/publishers'));
   assert.equal(byOverlay.get('/publishers').componentFileId, 'file:src/pages/PublisherPage.tsx');
   // element 直接 <GameDetailPage />（lazy 变量）
   assert.equal(byOverlay.get('/games/:id').componentFileId, 'file:src/pages/GameDetailPage.tsx');
   // 相对 path 拼接：'games/:id' + parent '/' → '/games/:id'；domain 取首段
   assert.equal(byOverlay.get('/games/:id').domain, 'games');
+
+  // catch-all '*'：相对 path + parent '/' → '/*'，Navigate 重定向
+  assert.ok(byOverlay.has('/*'));
+  assert.equal(byOverlay.get('/*').componentFileId, null);
+  assert.ok(byOverlay.get('/*').navigatesToIds.includes('route:/library'));
 
   // 无 children 的顶层路由正常产出
   assert.equal(byOverlay.get('/standalone').componentFileId, 'file:src/components/AppLayout.tsx');
@@ -326,8 +383,8 @@ test('react 数据路由：lazy 包装/then 链/本地 wrapper/布局跳过/inde
   // /standalone 直接用 AppLayout（无 children）→ 无 Sidebar 导航边（非子路由）
   assert.deepEqual(byOverlay.get('/standalone').navigatesToIds, []);
 
-  // 总数：index '/' + publishers + games/:id + settings + standalone = 5
-  assert.equal(routes.length, 5, JSON.stringify(routes.map((r) => r.overlayId)));
+  // 总数：index '/' + library + publishers + games/:id + settings + report/ps + * + standalone = 8
+  assert.equal(routes.length, 8, JSON.stringify(routes.map((r) => r.overlayId)));
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
