@@ -1,4 +1,4 @@
-# nice-aos — 通用前端代码本体分析与数据库脚本分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本 / MySQL 迁移脚本）
+# nice-aos — 通用前端代码本体 / 数据库脚本 / 部署配置分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本 / MySQL 迁移脚本 / Docker+K8s+nginx 部署配置）
 
 > 把任意 React、Vue 2 / Vue 3、Flutter（Dart）前端仓库、Go（CLI / agent 代理 / Gin 后端）仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia/Vuex/Riverpod Store/Service/**接口/类/方法**/路由/依赖 + import/render/**props 传递链**/导航/**implements/extends/renders/overrides/方法调用链** 关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图；Go 项目额外产出 **CLI 命令树 / HTTP 路由 / 前后端调用映射**），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
 > 参考 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 代码本体分析）的架构，针对前端生态重新建模：React（React 19 + TypeScript + Vite + Zustand + overlay 路由 / react-router）、Vue 2（Options API + Vuex + element-ui，RuoYi 类中后台）/ Vue 3（SFC + vue-router + Pinia）、Flutter（Dart Widget + GoRouter + Riverpod，轻量语法级解析）、Go（cobra CLI 命令树 + Gin/标准库 HTTP 路由 + 包级调用链 + 前后端融合仓库映射，轻量语法级解析）与油猴脚本（UserScript 元数据 + GM API + 注入/请求审计）。
@@ -129,6 +129,42 @@ nice-aos db scan --dir /path/to/migrations --incremental
 数据库模型对象：表（Table）/列（Column）/外键（ForeignKey）/索引（Index）/迁移（Migration）/领域（DbDomain）/视图（View）/触发器（Trigger）/存储过程（Procedure），自动检测模式特征（软删除/审计字段/多租户/自引用/UUID主键）和领域分组。
 
 数据蓝图 HTML 内嵌 `<script id="db-viewer-data">` JSON 数据，蓝图 AI 助手（Tampermonkey 脚本）自动检测并切换至数据库分析模式。
+
+### 部署配置目录分析
+
+扫描项目部署目录（如 `./deploy`），解析 docker-compose / K8s manifest / Dockerfile / nginx.conf / .env / 部署脚本，产出独立的部署架构模型和部署蓝图：
+
+```bash
+# 1. 扫描部署配置目录（产出 deploy-snapshot.json，与代码/数据库快照分离）
+nice-aos deploy scan --dir /path/to/deploy
+
+# 2. 查询部署架构
+nice-aos deploy query services                              # 所有服务
+nice-aos deploy query services --where "type=gateway"       # 按类型过滤
+nice-aos deploy query routes                                # nginx 路由
+nice-aos deploy query upstreams                             # nginx upstream
+nice-aos deploy query dependencies                          # 服务依赖关系
+nice-aos deploy query middleware                            # 中间件（MySQL/Redis/...）
+nice-aos deploy query environments                          # 环境配置文件
+nice-aos deploy query layers                                # 部署分层
+
+# 3. 部署架构审计（5 大场景）
+nice-aos deploy audit health          # 综合健康评分（安全/高可用/一致性/依赖 加权）
+nice-aos deploy audit security        # 安全：latest 镜像/明文敏感值/端口暴露
+nice-aos deploy audit resilience      # 高可用：健康检查/探针/副本/资源限额
+nice-aos deploy audit consistency     # 配置一致性：环境漂移
+nice-aos deploy audit dependency      # 依赖：断链/循环依赖
+
+# 4. 生成部署蓝图 HTML（自包含，8 Tab，分层拓扑 + SVG 依赖图）
+nice-aos deploy export --format html --output deploy-overview.html
+
+# 5. 增量扫描（无文件变化时直接复用快照）
+nice-aos deploy scan --dir /path/to/deploy --incremental
+```
+
+部署模型对象：服务（Service，12 类：网关/前端/后端/适配器/任务/数据库/缓存/对象存储/搜索引擎/注册中心/可观测/CI-CD/工具）/路由（Route，nginx location → proxy_pass）/上游（Upstream）/依赖（Dependency，depends_on + 环境引用 + 路由推导）/中间件（Middleware，含版本与消费方）/环境（Environment，敏感值自动脱敏）/分层（Layer，9 层部署拓扑）。跨文件同名服务自动归一化合并，`${VAR:-default}` 镜像插值解引用。
+
+部署蓝图 HTML 内嵌 `<script id="deploy-viewer-data">` JSON 数据，蓝图 AI 助手（Tampermonkey 脚本）自动检测并切换至「部署蓝图」智能体（12 个专属工具）。
 
 ## 本体模型
 
@@ -481,15 +517,17 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 
 ## Skills（AI agent 场景工作流）
 
-CLI 保持原子普适（只提供对象/链接/字段/动作级通用能力），场景工作流下沉到 Skill。npm 包携带三个 SKILL.md（`skills/**`），随包分发：
+CLI 保持原子普适（只提供对象/链接/字段/动作级通用能力），场景工作流下沉到 Skill。npm 包携带五个 SKILL.md（`skills/**`），随包分发：
 
 | Skill | 职责 | 典型场景 |
 |-------|------|---------|
 | `nice-aos`（核心查询） | 快照构建、通用本体查询、变更影响分析、接口/类/方法导航、蓝图导出 | "项目架构是什么样" / "IStorage 被谁实现" / "修改这个 service 影响谁" |
 | `nice-aos-userscript`（油猴审计） | GM API 越权 / @connect 白名单 / XSS 面 / 风险分级五步审计 + 修复模板；单文件与仓库双模式 | "这个油猴脚本安全吗" / "@connect 齐不齐" / "哪里有 XSS 面" |
 | `nice-aos-deadcode`（死代码清理） | 四级死代码（文件/导出/类型/函数）检测 → 分级复核 → 清理 → 验证工作流；单文件死函数查询 | "哪些文件没人用" / "哪些函数没人调用" / "这个文件能删吗" |
+| `nice-aos-database`（数据库分析） | MySQL 迁移脚本扫描 → 表/列/外键/索引/迁移/领域/模式特征查询 + 7 大审计（健康度/影响/领域耦合/索引优化/演进/外键链路/命名）+ dataoverview 蓝图 | "数据库有哪些表" / "外键关系" / "索引优化建议" / "哪个版本变化最大" |
+| `nice-aos-deployment`（部署分析） | 部署配置目录扫描（compose/K8s/Dockerfile/nginx/.env）→ 服务/路由/依赖/中间件/环境/分层查询 + 5 大审计（安全/高可用/一致性/依赖/健康度）+ deployoverview 蓝图 | "部署架构是什么样" / "nginx 路由怎么配的" / "哪些服务缺健康检查" / "用了哪些中间件" |
 
-三者共享同一份 CLI 与快照（`<REPO_ROOT>/.nice-aos/data`），无独立安装步骤。
+五者共享同一份 CLI 与快照根目录（`<REPO_ROOT>/.nice-aos/data`：`snapshot.json` / `db-snapshot.json` / `deploy-snapshot.json`），无独立安装步骤。
 
 ## Contrib（按需集成）
 
@@ -497,7 +535,7 @@ CLI 保持原子普适（只提供对象/链接/字段/动作级通用能力）�
 
 | 目录 | 说明 |
 |------|------|
-| [`contrib/blueprint-ai-agent`](./contrib/blueprint-ai-agent) | **蓝图页 AI 代码分析助手**（油猴脚本，Tampermonkey 安装）：在 `blueprint.html` 右下角注入浮窗按钮展开对话侧边栏，对项目本体（模块/组件/Store/Service/路由/接口/方法/功能域/死代码）自然语言问答。双数据源（页面内嵌 viewer-data 零依赖，或 `nice-aos serve` 的 `/snapshot.json`），ReAct 文本协议工具循环驱动 9 个代码分析工具，支持多模型接入（DeepSeek/GLM/千问/Kimi/豆包/OpenAI/自定义）、新建会话、会话历史与 JSON/Markdown 导出 |
+| [`contrib/blueprint-ai-agent`](./contrib/blueprint-ai-agent) | **蓝图页 AI 分析助手**（油猴脚本，Tampermonkey 安装）：在蓝图 HTML 右下角注入浮窗按钮展开对话侧边栏，按页面类型自动切换智能体——代码蓝图（模块/组件/Store/Service/路由/接口/方法/功能域/死代码，9 工具）、数据库蓝图（表/外键/索引/迁移/领域/模式特征 + 7 审计，双智能体）、部署蓝图（服务/镜像/路由/依赖/中间件/环境/分层 + 5 审计，12 工具）。双数据源（页面内嵌 viewer-data / db-viewer-data / deploy-viewer-data 零依赖，或 `nice-aos serve` 本地快照地址），ReAct 文本协议工具循环驱动，支持多模型接入（DeepSeek/GLM/千问/Kimi/豆包/OpenAI/自定义）、新建会话、会话历史与 JSON/Markdown 导出 |
 
 ## 开发
 

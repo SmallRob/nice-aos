@@ -3,8 +3,8 @@
 // @name:zh-CN   AOS 蓝图 AI 代码分析助手
 // @name:en      AOS Blueprint AI Code Analysis Assistant
 // @namespace    https://github.com/nice-aos
-// @version      1.0.2
-// @description  nice-aos 蓝图页 AI 对话侧边栏。在 blueprint.html 右下角插入浮窗按钮，展开即可对项目代码本体（模块/组件/Hook/Store/Service/路由/接口/死代码/依赖/功能域等）进行自然语言问答分析。同时支持数据库蓝图页（dataoverview），自动检测页面类型并切换至数据库分析模式（表/列/外键/索引/迁移/领域/模式特征）。双数据源：优先读取页面内嵌 viewer-data 或 db-viewer-data，可配置本地快照地址。支持多模型供应商(DeepSeek/GLM/Qwen/Kimi/Doubao/OpenAI/自定义)、新建会话、会话历史、导出 JSON/Markdown。参考 steam-ai-agent 的 ToolRegistry + ReAct 工具循环架构。
+// @version      1.1.0
+// @description  nice-aos 蓝图页 AI 对话侧边栏。在 blueprint.html 右下角插入浮窗按钮，展开即可对项目代码本体（模块/组件/Hook/Store/Service/路由/接口/死代码/依赖/功能域等）进行自然语言问答分析。同时支持数据库蓝图页（dataoverview：表/列/外键/索引/迁移/领域/模式特征）与部署蓝图页（deployoverview：服务/镜像/网关路由/依赖/中间件/环境/分层/审计），自动检测页面类型并切换对应分析模式。双数据源：优先读取页面内嵌 viewer-data / db-viewer-data / deploy-viewer-data，可配置本地快照地址。支持多模型供应商(DeepSeek/GLM/Qwen/Kimi/Doubao/OpenAI/自定义)、新建会话、会话历史、导出 JSON/Markdown。参考 steam-ai-agent 的 ToolRegistry + ReAct 工具循环架构。
 // @description:en nice-aos blueprint AI chat sidebar. Floating button in blueprint.html. Natural language Q&A over code ontology (modules/components/hooks/stores/services/routes/interfaces/deadcode/deps/domains). Also supports database blueprint pages (dataoverview) with auto-detection and database-specific tools (tables/columns/fks/indexes/migrations/domains/patterns). Dual data source. Multi-provider, sessions, history, export.
 // @icon         data:image/svg+xml,%3Csvg%20viewBox='0%200%2024%2024'%20fill='none'%20xmlns='http://www.w3.org/2000/svg'%3E%3Crect%20width='24'%20height='24'%20rx='6'%20fill='%236366f1'/%3E%3Cpath%20d='M7%205.5h10a1.5%201.5%200%200%201%201.5%201.5v7a1.5%201.5%200%200%201-1.5%201.5h-4.5l-4%203.2V15.5H7a1.5%201.5%200%200%201-1.5-1.5V7A1.5%201.5%200%200%201%207%205.5z'%20fill='white'/%3E%3Cpath%20d='M12%207.5l1%202.8a2%202%200%200%200%201.1%201.1L17%2012.5l-2.9%201.1a2%202%200%200%200-1.1%201.1L12%2017.5l-1-2.8a2%202%200%200%200-1.1-1.1L7%2012.5l2.9-1.1a2%202%200%200%200%201.1-1.1L12%207.5z'%20fill='%236366f1'/%3E%3C/svg%3E
 // @author       nice-aos
@@ -36,8 +36,9 @@
 (function () {
     'use strict';
 
-    // 页面类型检测：数据库蓝图页 (db-viewer-data) 或代码蓝图页 (viewer-data / #viewer)
+    // 页面类型检测：部署蓝图页 (deploy-viewer-data) / 数据库蓝图页 (db-viewer-data) / 代码蓝图页 (viewer-data / #viewer)
     function detectPageType() {
+        if (document.getElementById('deploy-viewer-data')) return 'deploy';
         if (document.getElementById('db-viewer-data')) return 'database';
         if (document.getElementById('viewer-data') || document.querySelector('#viewer')) return 'code';
         return null;
@@ -201,6 +202,7 @@
         code: `<path d="M16 18l6-6-6-6M8 6l-6 6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
         edit: `<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>`,
         file: `<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 2v6h6" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>`,
+        server: `<rect x="3" y="3" width="18" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="14" width="18" height="7" rx="2" stroke="currentColor" stroke-width="1.6"/><circle cx="7" cy="6.5" r="1" fill="currentColor"/><circle cx="7" cy="17.5" r="1" fill="currentColor"/><path d="M12 6.5h5M12 17.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>`,
     };
 
     // ============================================================
@@ -243,6 +245,19 @@
         getDbNamingAudit:     { label: '命名规范',     icon: 'edit' },
         getDbImpact:          { label: '迁移影响',     icon: 'history' },
         getDbFkChain:         { label: '外键链路',     icon: 'sitemap' },
+        // 部署分析工具
+        getDeployStats:        { label: '部署概览',     icon: 'chart' },
+        queryDeployServices:   { label: '服务查询',     icon: 'sitemap' },
+        getServiceDeployDetails: { label: '服务详情',   icon: 'file' },
+        queryDeployRoutes:     { label: '路由查询',     icon: 'sitemap' },
+        queryDeployUpstreams:  { label: '上游查询',     icon: 'sitemap' },
+        queryDeployDeps:       { label: '依赖查询',     icon: 'sitemap' },
+        queryMiddleware:       { label: '中间件查询',   icon: 'database' },
+        queryDeployEnvs:       { label: '环境查询',     icon: 'file' },
+        queryDeployFiles:      { label: '文件查询',     icon: 'file' },
+        queryDeployLayers:     { label: '分层查询',     icon: 'sitemap' },
+        getDeployHealth:       { label: '健康度评估',   icon: 'chart' },
+        getDeployAudit:        { label: '审计明细',     icon: 'lightbulb' },
     };
 
     function getToolDisplay(name) {
@@ -323,6 +338,16 @@
         },
 
         readInjected() {
+            if (PAGE_TYPE === 'deploy') {
+                const el = document.getElementById('deploy-viewer-data');
+                if (!el) return null;
+                try {
+                    const parsed = JSON.parse(el.textContent);
+                    const idx = this._buildDeployIndex(parsed);
+                    if (idx) { idx.sourceLabel = '页面内嵌数据 (deploy-viewer-data)'; return idx; }
+                } catch (e) { console.warn('[BA-Agent] deploy-viewer-data 解析失败', e); }
+                return null;
+            }
             if (PAGE_TYPE === 'database') {
                 const el = document.getElementById('db-viewer-data');
                 if (!el) return null;
@@ -342,6 +367,24 @@
                 if (idx) { idx.sourceLabel = '页面内嵌数据 (viewer-data)'; return idx; }
             } catch (e) { console.warn('[BA-Agent] viewer-data 解析失败', e); }
             return null;
+        },
+
+        _buildDeployIndex(raw) {
+            if (!raw || typeof raw !== 'object') return null;
+            const byType = {
+                services: raw.services || [],
+                routes: raw.routes || [],
+                upstreams: raw.upstreams || [],
+                dependencies: raw.dependencies || raw.depGraph?.edges || [],
+                middleware: raw.middleware || [],
+                environments: raw.environments || [],
+                files: raw.files || [],
+                layers: raw.topologyLayers || raw.layers || [],
+            };
+            const byName = new Map();
+            for (const s of byType.services) { if (s.name && !byName.has(s.name)) byName.set(s.name, s); }
+            const meta = raw.meta || raw._meta || {};
+            return { byId: byName, byType, byName, meta, raw };
         },
 
         _buildDbIndex(raw) {
@@ -382,19 +425,23 @@
                 // 模式A：页面内嵌优先（零依赖、即时可用）
                 const injected = this.readInjected();
                 if (injected) { this.ctx = injected; this.status = 'ready'; return injected; }
-                // 模式B：配置的本地 snapshot.json
+                // 模式B：配置的本地快照地址（按页面类型选择索引构建器）
                 if (s.snapshotUrl) {
-                    toast('拉取本地 snapshot.json…');
+                    toast('拉取本地快照…');
                     const raw = await this.fetchSnapshot(s.snapshotUrl);
-                    const idx = this._buildIndex(raw);
-                    if (!idx) throw new Error('snapshot.json 结构无法识别');
+                    const idx = PAGE_TYPE === 'deploy' ? this._buildDeployIndex(raw)
+                        : PAGE_TYPE === 'database' ? this._buildDbIndex(raw)
+                        : this._buildIndex(raw && typeof raw === 'object' && ('dataMap' in raw) ? raw : { dataMap: raw });
+                    if (!idx) throw new Error('快照结构无法识别');
                     idx.sourceLabel = `本地快照 ${s.snapshotUrl}`;
                     this.ctx = idx; this.status = 'ready'; return idx;
                 }
                 this.status = 'error';
                 this.error = PAGE_TYPE === 'database'
                     ? '未找到可用数据：页面未内嵌 db-viewer-data，且未配置本地快照地址。请在设置中填写 db-snapshot.json 地址。'
-                    : '未找到可用数据：页面未内嵌 viewer-data，且未配置本地 snapshot.json。请在设置中填写快照地址。';
+                    : PAGE_TYPE === 'deploy'
+                        ? '未找到可用数据：页面未内嵌 deploy-viewer-data。请使用最新版 nice-aos deploy export --format html 重新生成部署蓝图。'
+                        : '未找到可用数据：页面未内嵌 viewer-data，且未配置本地 snapshot.json。请在设置中填写快照地址。';
                 return null;
             } catch (e) {
                 this.status = 'error'; this.error = String(e.message || e);
@@ -1052,6 +1099,280 @@
         });
     }
 
+    // ============================================================
+    // ============================================================
+    //  部署分析工具（仅在 PAGE_TYPE === 'deploy' 时注册）
+    // ============================================================
+    function registerDeployTools() {
+        const dpNeedsData = () => {
+            if (DataSource.status !== 'ready' || !DataSource.ctx) return '数据尚未加载';
+            return null;
+        };
+        const dpMatch = (o, kw) => {
+            kw = String(kw ?? '').trim().toLowerCase();
+            if (!kw) return true;
+            return [o.name, o.gateway, o.from, o.to, o.path, o.image, o.label, o.kind].filter(Boolean).some((f) => String(f).toLowerCase().includes(kw));
+        };
+
+        ToolRegistry.register({
+            name: 'getDeployStats',
+            description: '获取部署架构整体统计：服务数、路由数、上游数、依赖数、中间件数、环境数、分层数、文件数、服务类型分布。适合回答"部署架构有多大/整体如何"',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                const { byType, meta, raw } = DataSource.ctx;
+                const services = byType.services || [];
+                const typeDist = {};
+                for (const s of services) typeDist[s.typeLabel || s.type] = (typeDist[s.typeLabel || s.type] || 0) + 1;
+                return {
+                    success: true,
+                    data: {
+                        sourceDir: meta.sourceDir,
+                        services: services.length,
+                        routes: (byType.routes || []).length,
+                        upstreams: (byType.upstreams || []).length,
+                        dependencies: (byType.dependencies || []).length,
+                        middleware: (byType.middleware || []).length,
+                        environments: (byType.environments || []).length,
+                        layers: (byType.layers || []).length,
+                        files: (byType.files || []).length,
+                        typeDistribution: typeDist,
+                        parseErrors: meta.parseErrors || 0,
+                        healthScore: raw?.audits?.health?.score,
+                    },
+                    summary: `${services.length} 个服务，${(byType.routes || []).length} 条路由，${(byType.middleware || []).length} 个中间件，${(byType.layers || []).length} 个分层`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryDeployServices',
+            description: '查询部署服务列表，可按名称关键词、类型（gateway/frontend/backend/adapter/job/db/cache/storage/search/registry/observability/cicd/tool/app）、分层过滤。适合"有哪些服务/某类型服务"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '服务名/镜像关键词（模糊匹配）' }, type: { type: 'string', description: '服务类型（如 backend/adapter/gateway）' }, layer: { type: 'string', description: '分层（edge/frontend/backend/data 等）' }, limit: { type: 'number', description: '返回条数上限，默认30' } }, required: [] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                const services = DataSource.ctx.byType.services || [];
+                let hit = services;
+                if (args.type) hit = hit.filter((s) => s.type === args.type);
+                if (args.layer) hit = hit.filter((s) => s.layer === args.layer);
+                if (args.keyword) hit = hit.filter((s) => dpMatch(s, args.keyword));
+                const limit = Math.min(Number(args.limit) || 30, 80);
+                const result = hit.slice(0, limit).map((s) => ({
+                    name: s.name, type: s.typeLabel || s.type, layer: s.layerLabel || s.layer,
+                    image: s.image, version: s.imageVersion, replicas: s.replicas,
+                    ports: (s.containerPorts || []).join(',') || (s.ports || []).map((p) => p.container).join(','),
+                    hasHealthcheck: s.hasHealthcheck, envCount: s.envCount,
+                }));
+                if (!result.length) return { success: false, error: `未找到匹配的服务${args.type ? `(类型 ${args.type})` : ''}` };
+                return { success: true, data: result, summary: `${result.length} 个服务（共 ${services.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getServiceDeployDetails',
+            description: '获取单个服务的部署详情：镜像/版本/registry、端口、探针、副本数、重启策略、资源限额、依赖、环境变量（敏感值已脱敏）、定义文件。适合"某服务怎么部署的"',
+            parameters: { type: 'object', properties: { serviceName: { type: 'string', description: '服务名' } }, required: ['serviceName'] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                const serviceName = String(args.serviceName || '').trim();
+                if (!serviceName) return { success: false, error: '缺少 serviceName 参数' };
+                const services = DataSource.ctx.byType.services || [];
+                const s = services.find((x) => x.name === serviceName) || services.find((x) => x.name.toLowerCase() === serviceName.toLowerCase());
+                if (!s) return { success: false, error: `未找到服务 "${serviceName}"` };
+                const out = {
+                    name: s.name, type: s.typeLabel || s.type, layer: s.layerLabel || s.layer,
+                    image: s.image, registry: s.registry, version: s.imageVersion,
+                    kind: s.kind, namespace: s.namespace, replicas: s.replicas,
+                    ports: s.containerPorts, hostPorts: (s.ports || []).map((p) => p.host + ':' + p.container),
+                    restart: s.restart, hasHealthcheck: s.hasHealthcheck,
+                    readinessProbe: s.readinessProbe, livenessProbe: s.livenessProbe,
+                    resources: s.resources, dependsOn: s.dependsOn,
+                    envVariables: s.env, envCount: s.envCount,
+                    configRefs: s.configRefs, buildFrom: s.buildFrom,
+                    definedIn: (s.sources || []).map((x) => x.file),
+                };
+                return { success: true, data: out, summary: `服务 ${s.name}（${s.typeLabel || s.type}，镜像 ${s.image || '未知'}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryDeployRoutes',
+            description: '查询网关路由（nginx location → proxy_pass），可按网关/路径/目标服务过滤。适合"nginx 路由怎么配的/某路径转发到哪"',
+            parameters: { type: 'object', properties: { gateway: { type: 'string', description: '网关名关键词' }, path: { type: 'string', description: '路径关键词（如 /api）' }, target: { type: 'string', description: '目标服务名关键词' }, limit: { type: 'number', description: '返回条数上限，默认50' } }, required: [] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                const routes = DataSource.ctx.byType.routes || [];
+                let hit = routes;
+                if (args.gateway) hit = hit.filter((r) => String(r.gateway || '').toLowerCase().includes(String(args.gateway).toLowerCase()));
+                if (args.path) hit = hit.filter((r) => String(r.path || '').toLowerCase().includes(String(args.path).toLowerCase()));
+                if (args.target) hit = hit.filter((r) => String(r.resolvedService || r.externalHost || '').toLowerCase().includes(String(args.target).toLowerCase()));
+                const limit = Math.min(Number(args.limit) || 50, 100);
+                const result = hit.slice(0, limit).map((r) => ({
+                    gateway: r.gateway, path: r.path, matchType: r.matchType, proxyPass: r.proxyPass,
+                    targetService: r.resolvedService, externalHost: r.externalHost,
+                    auth: r.authRequest ? true : false, websocket: r.websocket,
+                }));
+                if (!result.length) return { success: false, error: '未找到匹配的路由' };
+                return { success: true, data: result, summary: `${result.length} 条路由（共 ${routes.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryDeployUpstreams',
+            description: '查询 nginx upstream 定义及后端服务器（含服务名解析结果）。适合"upstream 指向哪些后端"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: 'upstream 名/网关名关键词' }, limit: { type: 'number', description: '返回条数上限，默认30' } }, required: [] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                const upstreams = DataSource.ctx.byType.upstreams || [];
+                let hit = upstreams;
+                if (args.keyword) hit = hit.filter((u) => dpMatch(u, args.keyword));
+                const limit = Math.min(Number(args.limit) || 30, 60);
+                const result = hit.slice(0, limit).map((u) => ({
+                    name: u.name, gateway: u.gateway,
+                    servers: (u.servers || []).map((s) => ({ host: s.host, port: s.port, resolvedService: s.resolvedService })),
+                }));
+                if (!result.length) return { success: false, error: '未找到匹配的 upstream' };
+                return { success: true, data: result, summary: `${result.length} 个 upstream（共 ${upstreams.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryDeployDeps',
+            description: '查询服务间依赖关系（depends_on 启动依赖 / env_ref 环境引用 / route 网关路由），可按来源/目标服务过滤。适合"谁依赖 mysql/服务依赖关系"',
+            parameters: { type: 'object', properties: { from: { type: 'string', description: '来源服务名关键词' }, to: { type: 'string', description: '目标服务名关键词' }, type: { type: 'string', description: '依赖类型（depends_on/env_ref/route）' }, limit: { type: 'number', description: '返回条数上限，默认50' } }, required: [] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                let deps = DataSource.ctx.byType.dependencies || [];
+                if (args.from) deps = deps.filter((d) => String(d.from || d.source || '').toLowerCase().includes(String(args.from).toLowerCase()));
+                if (args.to) deps = deps.filter((d) => String(d.to || d.target || '').toLowerCase().includes(String(args.to).toLowerCase()));
+                if (args.type) deps = deps.filter((d) => d.type === args.type);
+                const limit = Math.min(Number(args.limit) || 50, 100);
+                const result = deps.slice(0, limit).map((d) => ({ from: d.from || d.source, to: d.to || d.target, type: d.type }));
+                if (!result.length) return { success: false, error: '未找到匹配的依赖关系' };
+                return { success: true, data: result, summary: `${result.length} 条依赖` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryMiddleware',
+            description: '查询部署中间件（MySQL/Redis/MinIO/ES/Nacos/PostgreSQL 等）及其版本、端口、消费方列表。适合"用了哪些中间件/redis 被谁用"',
+            parameters: { type: 'object', properties: { kind: { type: 'string', description: '中间件类型（mysql/redis/minio/elasticsearch/nacos/postgresql）' }, keyword: { type: 'string', description: '名称关键词' } }, required: [] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                let mws = DataSource.ctx.byType.middleware || [];
+                if (args.kind) mws = mws.filter((m) => m.kind === args.kind);
+                if (args.keyword) mws = mws.filter((m) => dpMatch(m, args.keyword));
+                if (!mws.length) return { success: false, error: `未找到匹配的中间件${args.kind ? `(${args.kind})` : ''}` };
+                const result = mws.map((m) => ({
+                    label: m.label, kind: m.kind, name: m.name, version: m.version,
+                    image: m.image, ports: m.ports, consumers: m.consumers || [],
+                }));
+                return { success: true, data: result, summary: `${result.length} 个中间件` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryDeployEnvs',
+            description: '查询环境配置文件（.env.prod/.env.sit 等）的变量统计与服务引用。适合"有哪些环境/环境差异概览"（变量值已脱敏）',
+            parameters: { type: 'object', properties: { name: { type: 'string', description: '环境名关键词（如 prod/sit）' }, limit: { type: 'number', description: '变量展示上限，默认40' } }, required: [] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                let envs = DataSource.ctx.byType.environments || [];
+                if (args.name) envs = envs.filter((e) => String(e.name || '').toLowerCase().includes(String(args.name).toLowerCase()));
+                if (!envs.length) return { success: false, error: '未找到匹配的环境配置' };
+                const limit = Math.min(Number(args.limit) || 40, 100);
+                const result = envs.map((e) => ({
+                    name: e.name, file: e.file,
+                    variableCount: e.variableCount, secretCount: e.secretCount,
+                    serviceRefs: e.serviceRefs || [],
+                    variables: (e.variables || []).slice(0, limit),
+                }));
+                return { success: true, data: result, summary: `${result.length} 个环境文件` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryDeployFiles',
+            description: '查询部署配置源文件（compose/k8s/nginx/dockerfile/env/shell/ci），可按类型过滤。适合"部署目录有哪些文件"',
+            parameters: { type: 'object', properties: { type: { type: 'string', description: '文件类型（compose/k8s/nginx/dockerfile/env/shell/ci/config）' }, keyword: { type: 'string', description: '文件名关键词' }, limit: { type: 'number', description: '返回条数上限，默认50' } }, required: [] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                let files = DataSource.ctx.byType.files || [];
+                if (args.type) files = files.filter((f) => f.type === args.type);
+                if (args.keyword) files = files.filter((f) => String(f.relativePath || f.fileName || '').toLowerCase().includes(String(args.keyword).toLowerCase()));
+                const limit = Math.min(Number(args.limit) || 50, 120);
+                const result = files.slice(0, limit).map((f) => ({
+                    path: f.relativePath || f.fileName, type: f.type, fileSize: f.fileSize,
+                    serviceCount: f.serviceCount, kinds: f.kinds,
+                    routeCount: f.routeCount, upstreamCount: f.upstreamCount,
+                    baseImage: f.baseImage, variableCount: f.variableCount,
+                }));
+                if (!result.length) return { success: false, error: `未找到匹配的部署文件${args.type ? `(类型 ${args.type})` : ''}` };
+                return { success: true, data: result, summary: `${result.length} 个文件（共 ${files.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryDeployLayers',
+            description: '查询部署架构分层（接入层/前端层/应用服务层/适配器层/任务层/数据层/可观测层/CI-CD层/工具层）及各层服务清单。适合"分层架构如何划分"',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                const layers = DataSource.ctx.byType.layers || [];
+                if (!layers.length) return { success: false, error: '无分层数据' };
+                const result = layers.map((l) => ({
+                    label: l.label, key: l.key,
+                    services: (l.services || l.serviceNames || []).map((s) => (typeof s === 'string' ? s : s.name)),
+                }));
+                return { success: true, data: result, summary: `${result.length} 个分层` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getDeployHealth',
+            description: '获取部署架构健康度总评：综合评分、等级（A-E）、四维得分（安全/高可用/配置一致性/依赖）、Top 问题。适合"部署架构健康吗/有什么风险"',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                const audits = DataSource.ctx.raw?.audits;
+                if (!audits?.health) return { success: false, error: '未找到健康度审计数据，请确保使用最新版 nice-aos deploy export 生成蓝图' };
+                const h = audits.health;
+                return {
+                    success: true,
+                    data: {
+                        score: h.score, grade: h.grade,
+                        errorCount: h.errorCount, warnCount: h.warnCount, infoCount: h.infoCount,
+                        dimensions: (h.dimensions || []).map((d) => ({ label: d.label, score: d.score, weight: d.weight })),
+                        topFindings: (h.topFindings || []).slice(0, 10).map((f) => ({ level: f.level, title: f.title, detail: f.detail })),
+                    },
+                    summary: `健康度 ${h.score} 分（等级 ${h.grade}），${h.errorCount} 错误 / ${h.warnCount} 警告 / ${h.infoCount} 提示`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getDeployAudit',
+            description: '获取部署审计明细：安全（latest镜像/明文敏感值/端口暴露/无鉴权路由）、高可用（健康检查/探针/副本/限额）、一致性（环境漂移）、依赖（断链/循环依赖）。参数 scenario: security/resilience/configConsistency/dependency',
+            parameters: { type: 'object', properties: { scenario: { type: 'string', description: '审计场景（security/resilience/configConsistency/dependency）' } }, required: ['scenario'] },
+            execute(args) {
+                const err = dpNeedsData(); if (err) return { success: false, error: err };
+                const audits = DataSource.ctx.raw?.audits;
+                if (!audits) return { success: false, error: '未找到审计数据，请确保使用最新版 nice-aos deploy export 生成蓝图' };
+                const scenario = String(args.scenario || '').trim();
+                const a = audits[scenario];
+                if (!a) return { success: false, error: `未知审计场景 "${scenario}"（支持 security / resilience / configConsistency / dependency）` };
+                return {
+                    success: true,
+                    data: {
+                        label: a.label, score: a.score, stats: a.stats,
+                        findings: (a.findings || []).slice(0, 20).map((f) => ({ level: f.level, title: f.title, detail: f.detail, location: f.location })),
+                    },
+                    summary: `${a.label}：得分 ${a.score}，${(a.findings || []).length} 项发现`,
+                };
+            },
+        });
+    }
+
     function currentViewContext() {
         const activeTab = $d('.bp-tab-btn.is-active, .tab-btn.is-active, nav .active, [aria-selected="true"]');
         const activeText = activeTab ? activeTab.textContent.trim() : '';
@@ -1091,6 +1412,35 @@
                 '架构分层是怎样的？',
                 '存在循环依赖吗？',
                 '依赖治理情况：未使用的依赖',
+            ],
+        },
+
+        // 部署蓝图页：部署架构智能体
+        deploy_architecture: {
+            key: 'deploy_architecture',
+            label: '部署蓝图',
+            icon: 'server',
+            description: '服务/镜像/路由/依赖/中间件/环境/分层/审计问答',
+            pageType: 'deploy',
+            systemPrompt: `你是「部署架构分析智能体」，运行在部署架构蓝图页（deployoverview）上。你的专长是部署配置层面的问答：服务清单、镜像与版本、网关路由（nginx location → proxy_pass / upstream）、服务依赖（depends_on / 环境引用 / 路由推导）、中间件（MySQL/Redis/MinIO/ES/Nacos 等）及消费方、环境配置、部署分层、以及部署审计（安全/高可用/配置一致性/依赖）。
+分析部署问题时：
+- 优先调用工具获取真实数据，禁止凭记忆编造部署配置不存在的信息；
+- 工具返回的结构化数据，用清晰的中文 Markdown 表格或列表汇总，保持简洁；
+- 涉及"整体规模/有多少服务"时用 getDeployStats，涉及"某服务详情"时用 getServiceDeployDetails（传 serviceName）；
+- 涉及"nginx 路由/某路径转发到哪"时用 queryDeployRoutes，涉及"upstream 后端"时用 queryDeployUpstreams；
+- 涉及"谁依赖谁/依赖 mysql 的服务"时用 queryDeployDeps（from/to/type 过滤），涉及"中间件版本与消费方"时用 queryMiddleware；
+- 涉及"环境差异/有哪些 .env"时用 queryDeployEnvs，涉及"分层架构"时用 queryDeployLayers，涉及"部署文件清单"时用 queryDeployFiles；
+- 涉及"健康度/风险"时用 getDeployHealth，涉及某一审计维度明细（security/resilience/configConsistency/dependency）时用 getDeployAudit（传 scenario）；
+- 工具返回 success:false 或找不到数据时，如实告知并建议其它查询方式。
+注意：数据来自 aos deploy scan 生成的部署架构快照（Dockerfile / docker-compose / K8s manifest / nginx.conf / .env 解析归一化）。字段含义：type=服务类型（gateway/frontend/backend/adapter/job/db/cache/storage/search/registry/observability/cicd/tool），layer=部署分层，imageVersion=镜像版本 tag，envRef=环境变量推导的依赖，configRefs=K8s ConfigMap/Secret 引用。环境变量敏感值（密码/密钥/token）已自动脱敏。
+当前数据源：\${DataSource.ctx?.sourceLabel || '未加载'}。`,
+            suggestedQuestions: [
+                '部署架构整体如何？有多少服务和分层？',
+                'nginx 路由是怎么配置的？',
+                '用了哪些中间件？版本是多少？',
+                '哪些服务依赖 mysql？',
+                '部署架构健康吗？有什么风险？',
+                '有哪些环境配置？',
             ],
         },
 
@@ -1153,7 +1503,7 @@
 
     // 当前智能体状态
     const currentAgent = {
-        key: PAGE_TYPE === 'database' ? 'db_structure' : 'code_ontology',
+        key: PAGE_TYPE === 'database' ? 'db_structure' : PAGE_TYPE === 'deploy' ? 'deploy_architecture' : 'code_ontology',
     };
 
     function getAgentList() {
@@ -1776,14 +2126,17 @@ ${ctxNote || '（无）'}
     function buildPanel() {
         panel = el('div', 'ba-panel');
         const isDb = PAGE_TYPE === 'database';
+        const isDeploy = PAGE_TYPE === 'deploy';
         const agent = getCurrentAgent();
-        const panelTitleIcon = isDb ? 'database' : 'robot';
-        const panelTitleText = isDb ? '数据蓝图 <b>AI 分析</b>' : 'AOS 蓝图 <b>AI 分析</b>';
+        const panelTitleIcon = isDb ? 'database' : isDeploy ? 'server' : 'robot';
+        const panelTitleText = isDb ? '数据蓝图 <b>AI 分析</b>' : isDeploy ? '部署蓝图 <b>AI 分析</b>' : 'AOS 蓝图 <b>AI 分析</b>';
         const inputPlaceholder = isDb
             ? (agent.key === 'db_overview'
                 ? '询问数据库概览/审计，如：健康度？索引优化建议？发送 Enter，换行 Shift+Enter'
                 : '询问数据库结构，如：数据库有哪些表？外键关系？发送 Enter，换行 Shift+Enter')
-            : '询问项目代码结构，如：这个项目的 Service 有哪些？发送 Enter，换行 Shift+Enter';
+            : isDeploy
+                ? '询问部署架构，如：有哪些服务？nginx 路由怎么配的？发送 Enter，换行 Shift+Enter'
+                : '询问项目代码结构，如：这个项目的 Service 有哪些？发送 Enter，换行 Shift+Enter';
         panel.innerHTML = `
             <div class="ba-head">
                 <div class="ba-head-title">${getIcon(panelTitleIcon, 18)} ${panelTitleText}</div>
@@ -2056,9 +2409,9 @@ ${ctxNote || '（无）'}
                     <div class="hint">ReAct 工具循环步数上限。回答一次复杂问题时 agent 可多次调用工具。</div>
                 </div>
                 <div class="ba-field">
-                    <label>${PAGE_TYPE === 'database' ? '本地数据库快照地址 (db-snapshot.json，可选)' : '本地快照地址 (snapshot.json，可选)'}</label>
-                    <input id="st-snap" value="${esc(s.snapshotUrl || '')}" placeholder="${PAGE_TYPE === 'database' ? 'http://127.0.0.1:8420/db-snapshot.json' : 'http://127.0.0.1:8420/snapshot.json（nice-aos serve）'}"/>
-                    <div class="hint">${PAGE_TYPE === 'database' ? '当蓝图页未内嵌 db-viewer-data 时，从此地址拉取数据库快照。' : '当蓝图页未内嵌 viewer-data 时，从此地址拉取快照。可用 <code>nice-aos serve</code> 一行启动本地数据源（默认 127.0.0.1:8420，CORS 就绪）。'}</div>
+                    <label>${PAGE_TYPE === 'database' ? '本地数据库快照地址 (db-snapshot.json，可选)' : PAGE_TYPE === 'deploy' ? '本地部署快照地址 (deploy-snapshot.json，可选)' : '本地快照地址 (snapshot.json，可选)'}</label>
+                    <input id="st-snap" value="${esc(s.snapshotUrl || '')}" placeholder="${PAGE_TYPE === 'database' ? 'http://127.0.0.1:8420/db-snapshot.json' : PAGE_TYPE === 'deploy' ? 'http://127.0.0.1:8420/deploy-snapshot.json' : 'http://127.0.0.1:8420/snapshot.json（nice-aos serve）'}"/>
+                    <div class="hint">${PAGE_TYPE === 'database' ? '当蓝图页未内嵌 db-viewer-data 时，从此地址拉取数据库快照。' : PAGE_TYPE === 'deploy' ? '当蓝图页未内嵌 deploy-viewer-data 时，从此地址拉取部署快照。' : '当蓝图页未内嵌 viewer-data 时，从此地址拉取快照。可用 <code>nice-aos serve</code> 一行启动本地数据源（默认 127.0.0.1:8420，CORS 就绪）。'}</div>
                 </div>
                 <div class="ba-field">
                     <label>当前数据源</label>
@@ -2203,7 +2556,7 @@ ${ctxNote || '（无）'}
         $all('.ba-set-viewdrv', pane).forEach((b) => b.addEventListener('click', async () => {
             const idx = DataSource.readInjected();
             if (idx) { DataSource.ctx = idx; DataSource.status = 'ready'; toast('已重读页面内嵌数据', 'success'); }
-            else toast(PAGE_TYPE === 'database' ? '页面未发现内嵌 db-viewer-data' : '页面未发现内嵌 viewer-data', 'error');
+            else toast(PAGE_TYPE === 'database' ? '页面未发现内嵌 db-viewer-data' : PAGE_TYPE === 'deploy' ? '页面未发现内嵌 deploy-viewer-data' : '页面未发现内嵌 viewer-data', 'error');
         }));
     }
 
@@ -2339,8 +2692,8 @@ ${ctxNote || '（无）'}
     function createFab() {
         const fab = el('button', 'ba-fab ba-fab-pulse');
         fab.id = 'ba-fab';
-        fab.title = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析' : 'AOS 蓝图 AI 分析';
-        fab.innerHTML = getIcon(PAGE_TYPE === 'database' ? 'database' : 'chat', 24);
+        fab.title = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析' : PAGE_TYPE === 'deploy' ? '部署蓝图 AI 分析' : 'AOS 蓝图 AI 分析';
+        fab.innerHTML = getIcon(PAGE_TYPE === 'database' ? 'database' : PAGE_TYPE === 'deploy' ? 'server' : 'chat', 24);
         fab.addEventListener('click', openPanel);
         document.body.appendChild(fab);
     }
@@ -2352,6 +2705,8 @@ ${ctxNote || '（无）'}
         ensureStyles();
         if (PAGE_TYPE === 'database') {
             registerDatabaseTools();
+        } else if (PAGE_TYPE === 'deploy') {
+            registerDeployTools();
         } else {
             registerAnalysisTools();
         }
@@ -2366,7 +2721,9 @@ ${ctxNote || '（无）'}
         });
         // 会话数据变化时回到当前视图
         PanelRefreshHook();
-        const logMsg = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析助手已启动' : 'AOS 蓝图 AI 分析助手已启动';
+        const logMsg = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析助手已启动'
+            : PAGE_TYPE === 'deploy' ? '部署蓝图 AI 分析助手已启动'
+            : 'AOS 蓝图 AI 分析助手已启动';
         console.log('%c[BA-Agent] ' + logMsg, 'color:#8b5cf6;font-weight:bold');
     }
 

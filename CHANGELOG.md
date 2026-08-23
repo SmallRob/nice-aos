@@ -2,6 +2,50 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.21.0] - 2026-08-23
+
+### 新增
+
+- **部署配置目录分析（`nice-aos deploy`）**：扫描项目部署目录（如 `./deploy`），解析五类配置文件——docker-compose（`.yml`/`.yaml`）、K8s manifest（Deployment/Service/Ingress/ConfigMap/Secret/Job/CronJob）、Dockerfile（`Dockerfile*`）、nginx 配置（`nginx.conf`/`*.conf`）、环境文件（`.env`/`*.env`）与部署 shell 脚本，产出独立部署架构模型快照（`deploy-snapshot.json`，SHA-256 manifest 支持增量扫描）
+- **服务归一化与跨文件合并**：compose 多文件（override/分环境）与 K8s manifest 定义的同名服务自动合并（名称归一化：小写 + 下划线转连字符；优先取首个非空值，数组字段取并集）；`${VAR:-default}` 镜像插值解引用取默认值，registry/版本 tag 提取兼容私有仓库长路径
+- **服务类型识别与部署分层**：12 类服务类型（网关/前端/后端/适配器/任务/数据库/缓存/对象存储/搜索引擎/注册中心/可观测/CI-CD/工具，角色型模式优先于技术栈模式，`init`/`fixperms`/`flyway` 归任务层）+ 9 层部署分层（接入/前端/应用服务/适配器/任务/数据/可观测/CI-CD/工具）
+- **nginx 路由与 upstream 解析**：`location → proxy_pass` 路由提取（含 upstream 名与服务名直连两种解析路径）、upstream server 列表解析、`auth_request`/websocket 标记；外部 https 目标识别
+- **依赖推导**：三类依赖边——compose `depends_on`（启动依赖）、环境变量 URL 引用（`env_ref`，如 `SPRING_DATASOURCE_URL` 指向 mysql）、网关路由（`route`）；DFS 循环依赖检测与断链（引用不存在服务）检测
+- **中间件识别**：MySQL/Redis/MinIO/Elasticsearch/Nacos/PostgreSQL 等 6+ 类中间件从镜像名识别（版本 tag 提取），自动推导消费方列表
+- **5 大审计场景（`deploy audit`）**：安全审计（latest 镜像标签/明文敏感值/端口暴露/无鉴权路由）、高可用审计（健康检查缺失/探针/副本数/资源限额）、配置一致性审计（环境漂移——同名变量跨环境值不一致）、依赖审计（断链/循环依赖）→ 综合健康评分（加权四维，A-E 等级）
+- **部署蓝图 deployoverview HTML（`deploy export --format html`）**：自包含 8 Tab——部署拓扑（分层卡片）/ 服务清单（搜索+类型过滤+详情展开：镜像/端口/探针/依赖/环境变量脱敏）/ 路由地图 / 依赖图谱（SVG 可缩放）/ 中间件矩阵（版本+消费方）/ 环境配置（变量统计+漂移对比）/ 文件清单 / 健康审计（评分仪表盘+Top 问题）
+- **CLI**：`deploy scan`（全量/增量/`--exclude` 排除子目录）、`deploy query`（services/routes/upstreams/dependencies/middleware/environments/files/layers 8 类 + `--where` 过滤）、`deploy audit`（health/security/resilience/consistency/dependency/all）、`deploy export`（json/html/viewmodel）；全局 `--deploy-snapshot-dir` 选项
+- **部署分析 Skill**（`skills/nice-aos-deployment-skill/SKILL.md`）与 **油猴 AI 助手部署智能体**：blueprint-ai-agent 自动检测 `#deploy-viewer-data` 页面并启用「部署蓝图」智能体（12 个专属工具：部署统计/服务查询/服务详情/路由/上游/依赖/中间件/环境/文件/分层/健康度/审计明细）
+
+### 验证
+
+- asdm-admin/deploy 冒烟：137 个部署文件 → 51 服务 / 33 路由 / 43 upstream / 52 依赖 / 6 中间件 / 9 分层 / 0 解析错误；健康评分 74（C），检出真实问题（compose 引用不存在服务、K8s latest 镜像标签、明文敏感值）
+- leaniss-system-core/deploy 冒烟：29 个部署文件 → 19 服务 / 15 路由 / 5 中间件（MySQL/Redis/Milvus/Nacos 等）/ 0 解析错误；健康评分 85（B）；增量扫描复用验证通过
+- 油猴智能体工具逻辑对导出 HTML 内嵌 JSON 全链路模拟验证：12 工具全部正确返回
+
+### 增强（0.21.0 验证轮）
+
+- **extra_hosts 外部目标识别**：compose `extra_hosts` 声明的主机名（如 `aise-smartanswer-web:%{{ADDR}}%`）视为网关静态映射的集群外服务，nginx 路由目标命中时标记 `externalHost`（原为未解析 null）
+- **container_name 别名解析**：compose 服务的 `container_name`（容器网络 DNS 主机名，如服务 `jenkins` 的 `asdm-jenkins`）纳入名称解析表，nginx 路由 / upstream / 环境变量 URL 引用均可通过别名解析到所属服务
+- 效果：leaniss 路由 15/15 全部有归属（12 服务 + 3 外部），依赖审计 88→100；asdm-admin `/_jenkins/` 路由与 `asdm-jenkins` upstream 正确解析到 jenkins 服务，未解析路由 2→1（仅剩真实未定义的 `asdm-portal`）
+- **蓝图扫描时间本地化**：部署蓝图与数据库蓝图头部的"扫描于"时间由 ISO UTC 原文（`2026-08-23T00:30:48.328Z`）改为本地时间格式（`2026-08-23 08:30:48`），与代码蓝图的 `fmtLocalTime` 行为对齐
+
+## [0.20.0] - 2026-08-23
+
+### 新增
+
+- **MySQL 迁移脚本目录分析（`nice-aos db`）**：Flyway 标准布局与 Sprint 非标准布局自动检测（`--layout`）、多数据库（`USE` 语句上下文跟踪、连字符库名 `[\w-]+`）、mysqldump 兼容（DROP+CREATE 表对按 DROP 先序处理防误删）、视图/触发器/存储过程解析、幂等 DDL 支持
+- **数据库模型**：表/列/主键/外键/索引/迁移历史/领域分组/模式特征（软删除/审计字段/多租户/自引用/UUID 主键/复合主键/JSON 列），独立快照 `db-snapshot.json` 支持 SHA-256 增量扫描
+- **7 大审计场景（`db audit`）**：健康度 / 迁移影响 / 领域依赖 / 索引优化 / 模型演进 / 外键链路 / 命名规范
+- **数据蓝图 dataoverview HTML（`db export --format html`）**：8 Tab——SVG ER 关系图（领域分组+缩放平移）/ 表清单 / 外键关系 / 迁移时间线 / 建模特征 / 健康总览 / 演进分析 / 索引优化
+- **数据库分析 Skill** 与 **油猴 AI 助手双智能体**（结构分析 + 数据概览，`#db-viewer-data` 页面自动检测）
+- **CLI**：`db scan`（`--incremental` / `--all-files` / `--exclude`）、`db query`、`db audit`、`db export`；全局 `--db-snapshot-dir`
+
+### 验证
+
+- 120 迁移文件 / 82 表 / 33 外键 / 242 索引项目：健康评分 95，7 审计全过，HTML 8 Tab 正常
+- leaniss-system-core/deploy/1.mysql：80 文件 / 106 表 / 6 数据库，非标准布局识别正确
+
 ## [0.18.2] - 2026-08-22
 
 ### 新增

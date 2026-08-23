@@ -18,6 +18,14 @@ function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// ISO UTC 时间 → 浏览器本地时间（YYYY-MM-DD HH:mm:ss），与代码蓝图 fmtLocalTime 对齐
+function fmtLocalTime(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d.getTime())) return String(iso || '').replace('T', ' ').slice(0, 19);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
 export function buildDbViewerModel(dbDataMap) {
   const meta = dbDataMap._meta || {};
   const tables = dbDataMap.tables || [];
@@ -268,7 +276,7 @@ tr:hover td { background: rgba(88,166,255,.04); }
 <body>
 <header>
   <h1>${title} · 数据库蓝图</h1>
-  <div class="sub">${esc(model.meta.sourceDir)} · 扫描于 ${esc(model.meta.scannedAt || 'N/A')}${model.meta.incremental ? ' · 增量' : ' · 全量'}</div>
+  <div class="sub">${esc(model.meta.sourceDir)} · 扫描于 ${esc(fmtLocalTime(model.meta.scannedAt) || 'N/A')}${model.meta.incremental ? ' · 增量' : ' · 全量'}</div>
   <div class="stats" id="stats"></div>
   <div class="tabs">
     <button class="tab-btn active" data-tab="er">ER 关系图</button>
