@@ -29,6 +29,7 @@
 - **container_name 别名解析**：compose 服务的 `container_name`（容器网络 DNS 主机名，如服务 `jenkins` 的 `asdm-jenkins`）纳入名称解析表，nginx 路由 / upstream / 环境变量 URL 引用均可通过别名解析到所属服务
 - 效果：leaniss 路由 15/15 全部有归属（12 服务 + 3 外部），依赖审计 88→100；asdm-admin `/_jenkins/` 路由与 `asdm-jenkins` upstream 正确解析到 jenkins 服务，未解析路由 2→1（仅剩真实未定义的 `asdm-portal`）
 - **蓝图扫描时间本地化**：部署蓝图与数据库蓝图头部的"扫描于"时间由 ISO UTC 原文（`2026-08-23T00:30:48.328Z`）改为本地时间格式（`2026-08-23 08:30:48`），与代码蓝图的 `fmtLocalTime` 行为对齐
+- **顶部统计栏宽屏布局**：部署蓝图与数据库蓝图头部的统计卡片由固定最小宽度左对齐改为 `flex: 1 1 90px` 弹性卡片（panel 背景 + 边框 + 圆角），任意宽度下均匀铺满整行，窄屏自动换行，与健康审计 Tab 的 metric-card 视觉语言统一
 
 ## [0.20.0] - 2026-08-23
 

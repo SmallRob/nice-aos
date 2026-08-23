@@ -160,8 +160,8 @@ header { padding: 20px 24px 0; border-bottom: 1px solid var(--border); }
 header > * { max-width: 1600px; margin-left: auto; margin-right: auto; }
 h1 { font-size: 20px; }
 .sub { color: var(--fg-dim); font-size: 12px; margin-top: 4px; }
-.stats { display: flex; gap: 24px; flex-wrap: wrap; margin: 12px 0; }
-.stats .stat { text-align: center; min-width: 60px; }
+.stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
+.stats .stat { text-align: center; flex: 1 1 90px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .stats .stat .v { font-size: 22px; font-weight: 700; color: var(--blue); }
 .stats .stat .k { font-size: 11px; color: var(--fg-dim); }
 .tabs { display: flex; gap: 4px; margin-top: 14px; }
