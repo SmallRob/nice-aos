@@ -188,17 +188,39 @@ export function createBlueprint(dataMap) {
         const store = getObject(index, srcId);
         if (!store) return [];
         const storeFileId = `file:${store.filePath}`;
-        return files.filter((f) => (f.importIds ?? []).includes(storeFileId));
+        const out = new Map();
+        for (const f of files) {
+          if ((f.importIds ?? []).includes(storeFileId)) out.set(f.id, f);
+        }
+        // 隐式使用：组件体内调用（auto-import 场景无 import 语句）
+        for (const c of components) {
+          if ((c.storeIds ?? []).includes(srcId)) {
+            const f = files.find((x) => x.id === c.fileId);
+            if (f) out.set(f.id, f);
+          }
+        }
+        return [...out.values()];
       }
       if (srcId.startsWith('file:') || srcId.startsWith('comp:')) {
-        const filePath = srcId.startsWith('file:') ? srcId.slice(5) : getObject(index, srcId)?.filePath;
+        const comp = srcId.startsWith('comp:') ? getObject(index, srcId) : null;
+        const filePath = comp ? comp.filePath : srcId.slice(5);
         if (!filePath) return [];
         const fileId = `file:${filePath}`;
-        return (dataMap.Store ?? []).filter((s) => {
-          const sFileId = `file:${s.filePath}`;
-          const importer = files.find((f) => f.id === fileId);
-          return importer && (importer.importIds ?? []).includes(sFileId);
-        });
+        const importer = files.find((f) => f.id === fileId);
+        const out = new Map();
+        for (const s of (dataMap.Store ?? [])) {
+          if (importer && (importer.importIds ?? []).includes(`file:${s.filePath}`)) out.set(s.id, s);
+        }
+        // 隐式使用：本文件组件（或该组件自身）体内的 store 调用
+        for (const c of components) {
+          if (c.filePath !== filePath) continue;
+          if (srcId.startsWith('comp:') && c.id !== srcId) continue;
+          for (const sid of c.storeIds ?? []) {
+            const s = getObject(index, sid);
+            if (s) out.set(s.id, s);
+          }
+        }
+        return [...out.values()];
       }
       return [];
     },

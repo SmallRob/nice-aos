@@ -205,3 +205,19 @@ test('vue SFC：template 内嵌 template 元素不误拆', () => {
   assert.ok(facts.jsxTags.has('Modal'));
   assert.ok(facts.jsxTags.has('Button'));
 });
+
+// ---- storeCalls：auto-import 场景（无 import 语句直接调用 store hook，供 builder 隐式 usesStore）----
+test('storeCalls：捕获 useXxxStore 与 xxxStore 双命名形态（无 import 语句）', () => {
+  const content = [
+    '<script setup lang="ts">',
+    'const user = useUserStore()',
+    'const g = globalStore()',
+    'const { token } = storeToRefs(user)',
+    '</script>',
+    '<template><div>{{ token }}</div></template>',
+  ].join('\n');
+  const facts = analyzeVueFile('src/views/auto.vue', content, ROOT);
+  const calls = facts.components[0].storeCalls;
+  assert.ok(calls.includes('useUserStore'), '应捕获 useUserStore（use 前缀，经 useCalls）');
+  assert.ok(calls.includes('globalStore'), '应捕获 globalStore（非 use 前缀，经 setup storeVars）');
+});

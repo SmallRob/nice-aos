@@ -2,6 +2,25 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.23.0] - 2026-08-23
+
+### 新增
+
+- **代码统计 Tab**（蓝图查看器）：行数 / 文件 / 单元规模画像——KPI 卡片（代码总行数 / 源文件总数 / 一级模块 / 代码单元 / 平均单文件行数 / 测试文件）、模块代码量分布条形图、代码分布占比环形图（纯 SVG `stroke-dasharray`，r=15.9155 周长=100 直用百分比）、语言分布（按行数）、架构层分布、Top 20 代码单元（组件/Hook/Store/服务混合按行数）、最大文件 Top 15 表格
+- **代码图谱 Tab**（蓝图查看器）：模块 / 组件两级依赖网络的**力导向图**（内联力模拟零依赖：库仑斥力 + 弹簧引力 + 向心重力 + 速度阻尼，320 步冷却布局）；模块视图节点 = 二级以内模块（边 = 文件导入聚合权重）、组件视图节点 = 组件/Store（props 传递 / 文件导入 / useStore 三种边）；节点大小 ∝ 代码行数，Top 节点带标签；交互：拖拽节点实时重算、滚轮缩放、空白平移、点击聚焦邻接高亮、模块/组件视图切换、重新布局、重置视图
+- **隐式 usesStore 边**：unplugin-auto-import 场景组件直接调用 `useXxxStore()` 而无 import 语句，静态导入图缺失该边——`vueAnalyzer` 组件 facts 新增 `storeCalls`（`useXxxStore` 经 useCalls + `globalStore` 等非 use 前缀形态经 setup storeVars）；builder post-pass 以**全局 Store 名单**匹配调用名解析为 `Component.storeIds`（零误报：不在名单内的 useXxx 不会误判）；blueprint `usesStore` 链接双向合并 import 与隐式使用；组件图谱 usesStore 边同步补齐
+
+### 变更
+
+- 模块统计粒度自动下钻：顶层分区过少（单 `src/` 根或融合仓库）时下钻一层，让粒度对齐真实代码分区（components/services 等）
+- 代码图谱排除"全部代码聚合"的单一根模块巨型节点（与模块统计下钻逻辑对齐）；`hiddenModuleCount` 不再计入被排除的根
+- 扩展名归一化：各分析器格式不一（ts: `tsx`；dart/rs: `.dart`），统一去点后再聚合语言分布
+
+### 验证
+
+- 189 个单元测试全过（viewer 新增 3 个：stats/codeGraph 模型聚合 + DOM stub 执行内嵌脚本渲染产物 + 隐式 usesStore 全链路；vueAnalyzer 新增 1 个：storeCalls 双命名形态）
+- 四技术栈实测：nice-today-2.0（React+TS，1591 文件/55 万行）、nice-today-web-2.0（React+Tauri）、gameStore_flutter（Flutter+Riverpod，usesStore 11 条）、steam-stat（Vue3+Electron+Pinia，隐式边 0→43 条，31/207 组件解析出 storeIds 与源码 rg 结果一致）；力模拟坐标零越界零 NaN，产物自包含（无外部 CDN）
+
 ## [0.22.0] - 2026-08-23
 
 ### 新增

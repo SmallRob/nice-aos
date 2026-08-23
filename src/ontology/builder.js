@@ -756,6 +756,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const components = [];
   const compIdByName = new Map();
   const compUsedIds = new Set();
+  const compStoreCallsById = new Map();
   const hooks = [];
   const hookUsedIds = new Set();
   const stores = [];
@@ -788,6 +789,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
         notes: null,
       });
       compIdByName.set(comp.name, id);
+      if (comp.storeCalls?.length) compStoreCallsById.set(id, comp.storeCalls);
       if (!componentsByFile.has(relPath)) componentsByFile.set(relPath, []);
       componentsByFile.get(relPath).push({ id, name: comp.name, isPrimary: facts.primaryComponentName === comp.name });
     }
@@ -836,6 +838,24 @@ export async function buildOntologyData(projectRoot, options = {}) {
         lineCount: facts.lineCount,
         reviewed: false, notes: null,
       });
+    }
+  }
+
+  // 5a. 隐式 usesStore：unplugin-auto-import 等场景组件直接调用 useXxxStore()/xxxStore() 而无 import 语句，
+  // 静态导入图缺失该边；以全局 Store 名单匹配组件体内调用名（useCalls / setup storeVars 均不依赖 import）补齐
+  {
+    const storeIdByName = new Map();
+    for (const s of stores) {
+      if (!storeIdByName.has(s.name)) storeIdByName.set(s.name, s.id);
+    }
+    for (const c of components) {
+      const names = new Set([...(c.hooksUsed ?? []), ...(compStoreCallsById.get(c.id) ?? [])]);
+      const ids = new Set();
+      for (const name of names) {
+        const sid = storeIdByName.get(name);
+        if (sid) ids.add(sid);
+      }
+      c.storeIds = [...ids];
     }
   }
 

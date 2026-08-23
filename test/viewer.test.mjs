@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildViewerModel, renderViewerHtml } from '../src/ontology/viewer.js';
 import { buildOntologyData } from '../src/ontology/builder.js';
+import { createBlueprint } from '../src/ontology/blueprint.js';
 
 // ---- fixture：React 分层布局 + 跨域依赖（health 域组件使用 diet 域 Store）----
 function buildFixture() {
@@ -48,6 +49,13 @@ function buildFixture() {
     '}',
   ].join('\n'));
   w('src/components/health/HealthCard.tsx', 'export default function HealthCard() { return <div>card</div>; }');
+  // auto-import 风格组件：直接调用 store，无 import 语句（unplugin-auto-import 场景）
+  w('src/components/health/AutoPanel.tsx', [
+    'export default function AutoPanel() {',
+    '  const items = useDietStore((s) => s.items);',
+    '  return <div>{items.length}</div>;',
+    '}',
+  ].join('\n'));
   // diet 域：Store（状态层）
   w('src/stores/diet/useDietStore.ts', [
     "import { create } from 'zustand';",
@@ -141,6 +149,134 @@ test('renderViewerHtml：自包含 HTML + 嵌入数据可无损解析', async ()
     assert.equal(parsed.domainCount, model.domainCount);
     // 无外部依赖（零 CDN / 零外链脚本）
     assert.ok(!/src=["']https?:/.test(html), 'HTML 应零外部依赖');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- 代码统计 / 代码图谱：模型聚合 + Tab 渲染 ----
+test('代码统计与代码图谱：视图模型聚合（行数 / 模块 / 语言 / 依赖网络）', async () => {
+  const dir = buildFixture();
+  try {
+    fs.rmSync(path.join(dir, 'src/components/health/HealthPage.tsx.bak'));
+    const dataMap = await buildOntologyData(dir);
+    const model = buildViewerModel(dataMap);
+
+    // 代码统计模型
+    const S = model.stats;
+    assert.ok(S, 'stats 视图模型应存在');
+    assert.ok(S.totalLines > 0);
+    assert.equal(S.totalFiles, dataMap.SourceFile.length);
+    assert.ok(S.moduleStats.some((m) => m.name === 'components' && m.lines > 0), '一级模块 components 应有行数统计');
+    assert.ok(S.moduleStats.some((m) => m.name === 'stores' && m.lines > 0), '一级模块 stores 应有行数统计');
+    assert.ok(S.byExt.some((e) => e.ext === 'tsx' && e.lines > 0), '语言分布应含 tsx');
+    const pctSum = S.byExt.reduce((a, e) => a + e.pct, 0);
+    assert.ok(pctSum > 99 && pctSum < 101, `语言占比合计应约等于 100，实际 ${pctSum}`);
+    assert.ok(S.topUnits.some((u) => u.kind === 'store' && u.name === 'useDietStore'), 'Top 单元应含 useDietStore');
+
+    // 代码图谱模型：模块视图
+    const G = model.codeGraph;
+    assert.ok(G, 'codeGraph 视图模型应存在');
+    const mv = G.moduleView;
+    assert.ok(mv && mv.nodes.length >= 3, '模块视图节点应 ≥ 3');
+    assert.ok(mv.edges.length >= 1, '模块视图应有模块间导入边');
+    const moduleNodeIds = new Set(mv.nodes.map((n) => n.id));
+    assert.ok(mv.edges.every((e) => moduleNodeIds.has(e.source) && moduleNodeIds.has(e.target) && e.weight >= 1), '模块视图边端点应存在于节点集');
+
+    // 代码图谱模型：组件视图（HealthPage/DietPage --useStore--> useDietStore）
+    const cv = G.componentView;
+    assert.ok(cv, '组件视图应存在');
+    const storeNode = cv.nodes.find((n) => n.kind === 'store' && n.name === 'useDietStore');
+    assert.ok(storeNode, '组件视图应含 Store 节点 useDietStore');
+    const useEdges = cv.edges.filter((e) => e.kind === 'usesStore' && e.target === storeNode.id);
+    assert.ok(useEdges.length >= 2, `应有 ≥2 个组件 useStore 依赖 useDietStore，实际 ${useEdges.length}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('代码统计 / 代码图谱 Tab：KPI + 环形图 + 力导向图 SVG 渲染（内嵌脚本可执行）', async () => {
+  const dir = buildFixture();
+  try {
+    fs.rmSync(path.join(dir, 'src/components/health/HealthPage.tsx.bak'));
+    const dataMap = await buildOntologyData(dir);
+    const model = buildViewerModel(dataMap);
+    const html = renderViewerHtml(model);
+
+    for (const token of ['data-tab="stats"', 'data-tab="codegraph"', 'id="view-stats"', 'id="view-codegraph"', '代码统计', '代码图谱']) {
+      assert.ok(html.includes(token), `HTML 应含 ${token}`);
+    }
+
+    // 执行内嵌脚本（DOM stub），验证两个新视图的渲染产物
+    const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const elements = new Map();
+    const makeEl = (id) => {
+      if (!elements.has(id)) {
+        elements.set(id, {
+          innerHTML: '', textContent: id === 'viewer-data' ? dataJson : '',
+          dataset: {}, style: {}, addEventListener() {},
+          classList: { add() {}, remove() {} }, querySelectorAll: () => [],
+        });
+      }
+      return elements.get(id);
+    };
+    const prevDocument = globalThis.document;
+    globalThis.document = {
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+    };
+    try {
+      new Function(script)();
+    } finally {
+      globalThis.document = prevDocument;
+    }
+
+    const statsHtml = makeEl('view-stats').innerHTML;
+    for (const token of ['代码总行数', '源文件总数', '模块代码量分布', '代码分布占比', 'stroke-dasharray', 'Top 20 代码单元', '语言分布']) {
+      assert.ok(statsHtml.includes(token), `代码统计视图应含 ${token}`);
+    }
+
+    const cgHtml = makeEl('view-codegraph').innerHTML;
+    for (const token of ['代码图谱（力导向图）', '模块图谱', '组件图谱', '重新布局', '重置视图', '<svg']) {
+      assert.ok(cgHtml.includes(token), `代码图谱视图应含 ${token}`);
+    }
+    const graphSvg = makeEl('cg-transform').innerHTML;
+    assert.ok(graphSvg.includes('<circle'), '力导向图应渲染节点');
+    assert.ok(graphSvg.includes('class="cge'), '力导向图应渲染边');
+    assert.ok(!graphSvg.includes('NaN'), '力导向布局坐标不应出现 NaN');
+    const cxVals = [...graphSvg.matchAll(/cx="(\d+(?:\.\d+)?)"/g)].map((m) => parseFloat(m[1]));
+    assert.ok(cxVals.length >= 3 && cxVals.every((v) => v >= 0 && v <= 1280), '节点坐标应落在画布范围内');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- 隐式 usesStore：auto-import 无 import 语句的组件→Store 边 ----
+test('隐式 usesStore：auto-import 组件无 import 语句也能建组件→Store 关系', async () => {
+  const dir = buildFixture();
+  try {
+    fs.rmSync(path.join(dir, 'src/components/health/HealthPage.tsx.bak'));
+    const dataMap = await buildOntologyData(dir);
+
+    // builder：组件体内调用名对全局 Store 名单解析为 storeIds
+    const comp = dataMap.Component.find((c) => c.name === 'AutoPanel');
+    assert.ok(comp, '应有 AutoPanel 组件');
+    assert.ok((comp.storeIds ?? []).includes('store:useDietStore'), 'AutoPanel.storeIds 应含 useDietStore（隐式调用解析）');
+    const importer = dataMap.Component.find((c) => c.name === 'HealthPage');
+    assert.ok((importer.storeIds ?? []).includes('store:useDietStore'), '显式 import 的组件 storeIds 同样解析');
+
+    // blueprint：usesStore 链接双向可用
+    const bp = createBlueprint(dataMap);
+    const consumers = bp.link('usesStore', 'store:useDietStore');
+    assert.ok(consumers.some((x) => x.id === 'file:src/components/health/AutoPanel.tsx'), 'store 反查应含 AutoPanel 所在文件（隐式）');
+    const storesOfComp = bp.link('usesStore', comp.id);
+    assert.ok(storesOfComp.some((s) => s.id === 'store:useDietStore'), 'comp 正查应含 useDietStore');
+
+    // viewer：组件图谱应有 AutoPanel→useDietStore 的 usesStore 边
+    const model = buildViewerModel(dataMap);
+    const cv = model.codeGraph.componentView;
+    assert.ok(cv.edges.some((e) => e.kind === 'usesStore' && e.source === comp.id && e.target === 'store:useDietStore'),
+      '组件视图应有 AutoPanel→useDietStore 的 usesStore 隐式边');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

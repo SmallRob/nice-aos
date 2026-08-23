@@ -1,12 +1,14 @@
 // 本体查看器（Viewer）——使用者层的"企业级知识中心"（对应参考架构中的 Web UI 消费者）
 // 数据流：snapshot.json（DataMap）→ buildViewerModel()（数据聚合）→ renderViewerHtml()（视图层渲染）
-// 六个视图：
+// 视图：
 //   1. 领域蓝图（Domain Blueprint）：每个功能域的业务层级构成 / 代码组织 / 单元清单
 //   2. 业务数据图（Data Map）：Store 数据枢纽 + 跨域数据依赖
 //   3. 业务逻辑流向（Logic Flow）：架构层间导入流向 + 跨域依赖 + 高扇入业务节点
-//   4. 实体类图（Entity Class Diagram）：Interface/Class 实体 UML 关系图（跨语言 TS/JS/Vue/Rust/Dart）
-//   5. 脚本蓝图（Script Blueprint）：单脚本函数调用图 + DOM 注入锚点 + 网络端点
-//   6. 本体概览（Ontology）：概念分类体系 + 对象/链接类型清单
+//   4. 代码统计（Code Stats）：行数 / 语言 / 架构层 / 模块 / Top 单元规模画像（KPI + 条形图 + 环形图）
+//   5. 代码图谱（Code Graph）：模块 / 组件两级依赖网络的力导向图（内联力模拟，零依赖可离线）
+//   6. 实体类图（Entity Class Diagram）：Interface/Class 实体 UML 关系图（跨语言 TS/JS/Vue/Rust/Dart）
+//   7. 脚本蓝图（Script Blueprint）：单脚本函数调用图 + DOM 注入锚点 + 网络端点
+//   8. 本体概览（Ontology）：概念分类体系 + 对象/链接类型清单
 // 油猴意图适配：无 React/Vue 结构的纯脚本仓库，视图 1/2/3 按函数意图（roles）重建
 //   （意图功能域 / 存储枢纽 / 意图流转矩阵）；意图信号不足时视图置空并隐藏 Tab
 // 原则：视图模型（JSON）独立于渲染，可被 AI agent 直接消费；HTML 自包含零依赖，可离线打开；
@@ -35,6 +37,12 @@ const ENTITY_NODE_CAP = 48;
 const ENTITY_GRAPH_MIN = 24;
 const ENTITY_TABLE_CAP = 120;
 const ENTITY_MEMBER_CAP = 6;
+
+// 代码图谱保护：力导向图节点 / 边上限（大仓库模块/组件可达数百个）
+const MODULE_GRAPH_NODE_CAP = 90;
+const COMPONENT_GRAPH_NODE_CAP = 130;
+const STORE_GRAPH_NODE_CAP = 36;
+const GRAPH_EDGE_CAP = 600;
 
 // 脚本函数业务角色（与解析器 inferRoles 对应）；desc 为意图描述，供脚本意图功能域展示
 const SCRIPT_ROLE_META = {
@@ -950,6 +958,253 @@ export function buildViewerModel(dataMap) {
     };
   })();
 
+  // ---- 模块子树聚合（代码统计 / 代码图谱共用）----
+  const moduleChildren = new Map();
+  for (const m of modules) {
+    const parent = moduleById.has(m.parentId) ? m.parentId : null;
+    if (!moduleChildren.has(parent)) moduleChildren.set(parent, []);
+    moduleChildren.get(parent).push(m);
+  }
+  const moduleDirect = new Map();
+  for (const f of files) {
+    if (!f.moduleId || !moduleById.has(f.moduleId)) continue;
+    const d = moduleDirect.get(f.moduleId) ?? { lines: 0, files: 0 };
+    d.lines += f.lineCount ?? 0;
+    d.files += 1;
+    moduleDirect.set(f.moduleId, d);
+  }
+  const subtreeAgg = (m) => {
+    const d = moduleDirect.get(m.id) ?? { lines: 0, files: 0 };
+    let lines = d.lines;
+    let fileCount = d.files;
+    for (const c of moduleChildren.get(m.id) ?? []) {
+      const s = subtreeAgg(c);
+      lines += s.lines;
+      fileCount += s.files;
+    }
+    return { lines, files: fileCount };
+  };
+
+  // ---- 代码量统计（Code Stats）：行数 / 语言 / 架构层 / 模块 / 单元规模画像 ----
+  const EXT_LABELS = {
+    ts: 'TypeScript', tsx: 'TSX (React)', js: 'JavaScript', jsx: 'JSX',
+    vue: 'Vue SFC', rs: 'Rust', dart: 'Dart', go: 'Go',
+  };
+  const UNIT_KIND_LABELS = { component: '组件', hook: 'Hook', store: 'Store', service: '服务' };
+  const stats = (() => {
+    if (!files.length) return null;
+    const totalLines = files.reduce((a, f) => a + (f.lineCount ?? 0), 0);
+    const testFileCount = files.filter((f) => f.isTest).length;
+    const declarationFileCount = files.filter((f) => f.isDeclaration).length;
+
+    const extMap = new Map();
+    for (const f of files) {
+      // 各分析器扩展名格式不一（ts: 'tsx'；dart/rs: '.dart'），统一去点
+      const key = (f.ext || '(无扩展名)').replace(/^\./, '');
+      const e = extMap.get(key) ?? { ext: key, label: EXT_LABELS[key] ?? key, files: 0, lines: 0 };
+      e.files += 1;
+      e.lines += f.lineCount ?? 0;
+      extMap.set(key, e);
+    }
+    const byExt = [...extMap.values()].sort((a, b) => b.lines - a.lines || b.files - a.files);
+    byExt.forEach((e) => { e.pct = totalLines > 0 ? +((100 * e.lines) / totalLines).toFixed(1) : 0; });
+
+    const layerMap = new Map();
+    for (const f of files) {
+      const key = f.archLayer ?? 'shared';
+      const e = layerMap.get(key) ?? { key, label: layerLabel(key), files: 0, lines: 0 };
+      e.files += 1;
+      e.lines += f.lineCount ?? 0;
+      layerMap.set(key, e);
+    }
+    const byLayer = [...layerMap.values()].sort((a, b) => b.lines - a.lines || b.files - a.files);
+    byLayer.forEach((e) => { e.pct = totalLines > 0 ? +((100 * e.lines) / totalLines).toFixed(1) : 0; });
+
+    // 一级模块统计；顶层分区过少（单 src/ 或融合仓库）时下钻一层，让粒度对齐真实代码分区
+    const fileBearing = (list) => list.filter((k) => subtreeAgg(k).files > 0);
+    let statRoots = fileBearing(moduleChildren.get(null) ?? []);
+    if (statRoots.length > 0 && statRoots.length < 6) {
+      const expanded = [];
+      for (const r of statRoots) {
+        const kids = fileBearing(moduleChildren.get(r.id) ?? []);
+        if (kids.length >= 2) expanded.push(...kids);
+        else expanded.push(r);
+      }
+      if (expanded.length >= 2) statRoots = expanded;
+    }
+    const moduleStats = statRoots
+      .map((m) => ({ name: m.name, path: m.path, layer: m.layer ?? null, ...subtreeAgg(m) }))
+      .filter((m) => m.files > 0)
+      .sort((a, b) => b.lines - a.lines);
+    moduleStats.forEach((m) => { m.pct = totalLines > 0 ? +((100 * m.lines) / totalLines).toFixed(1) : 0; });
+
+    const topUnits = [
+      ...components.map((c) => ({ name: c.name, kind: 'component', kindLabel: UNIT_KIND_LABELS.component, filePath: c.filePath, lineCount: c.lineCount ?? 0 })),
+      ...hooks.map((h) => ({ name: h.name, kind: 'hook', kindLabel: UNIT_KIND_LABELS.hook, filePath: h.filePath, lineCount: h.lineCount ?? 0 })),
+      ...stores.map((s) => ({ name: s.name, kind: 'store', kindLabel: UNIT_KIND_LABELS.store, filePath: s.filePath, lineCount: s.lineCount ?? 0 })),
+      ...services.map((s) => ({ name: s.name, kind: 'service', kindLabel: UNIT_KIND_LABELS.service, filePath: s.filePath, lineCount: s.lineCount ?? 0 })),
+    ].sort((a, b) => b.lineCount - a.lineCount || a.name.localeCompare(b.name)).slice(0, 20);
+
+    const topFiles = files
+      .slice().sort((a, b) => (b.lineCount ?? 0) - (a.lineCount ?? 0))
+      .slice(0, 15)
+      .map((f) => ({ name: f.name, path: f.path, ext: f.ext ?? null, lineCount: f.lineCount ?? 0, isTest: !!f.isTest, archLayer: f.archLayer ?? null }));
+
+    return {
+      totalLines,
+      totalFiles: files.length,
+      testFileCount,
+      declarationFileCount,
+      avgLinesPerFile: files.length ? Math.round(totalLines / files.length) : 0,
+      unitCounts: { components: components.length, hooks: hooks.length, stores: stores.length, services: services.length },
+      byExt,
+      byLayer,
+      moduleStats,
+      topUnits,
+      topFiles,
+    };
+  })();
+
+  // ---- 代码图谱（Code Graph）：模块 / 组件两级依赖网络（供力导向图渲染）----
+  const codeGraph = (() => {
+    if (!files.length) return null;
+
+    const moduleView = (() => {
+      // 与 moduleStats 下钻逻辑对齐：单一顶层根（如 src/）拥有多个文件分区时，排除根模块本身，
+      // 避免图中出现"全部代码聚合"的巨型冗余节点
+      const rootCandidates = modules.filter((m) => {
+        const p = m.parentId;
+        return !p || !moduleById.has(p);
+      });
+      const excludedRoots = new Set();
+      for (const r of rootCandidates) {
+        const kids = (moduleChildren.get(r.id) ?? []).filter((k) => subtreeAgg(k).files > 0);
+        if (kids.length >= 2) excludedRoots.add(r.id);
+      }
+      const candidates = modules.filter((m) => (m.depth ?? 1) <= 2 && !excludedRoots.has(m.id));
+      const pool = candidates.length >= 2 ? candidates : modules;
+      const ranked = pool
+        .map((m) => ({ m, agg: subtreeAgg(m) }))
+        .sort((a, b) => b.agg.lines - a.agg.lines)
+        .slice(0, MODULE_GRAPH_NODE_CAP);
+      if (!ranked.length) return null;
+      const kept = new Set(ranked.map((r) => r.m.id));
+      const nearestKept = (moduleId) => {
+        let m = moduleById.get(moduleId);
+        while (m && !kept.has(m.id)) m = moduleById.get(m.parentId);
+        return m ?? null;
+      };
+      const edgeMap = new Map();
+      for (const f of files) {
+        const src = nearestKept(f.moduleId);
+        if (!src) continue;
+        for (const iid of f.importIds ?? []) {
+          if (!iid.startsWith('file:')) continue;
+          const tf = fileByPath.get(iid.slice(5));
+          if (!tf) continue;
+          const dst = nearestKept(tf.moduleId);
+          if (!dst || dst.id === src.id) continue;
+          const key = src.id + '>' + dst.id;
+          const e = edgeMap.get(key) ?? { source: src.id, target: dst.id, weight: 0 };
+          e.weight += 1;
+          edgeMap.set(key, e);
+        }
+      }
+      const nodes = ranked.map((r) => ({
+        id: r.m.id, name: r.m.name, path: r.m.path, layer: r.m.layer ?? null,
+        lines: r.agg.lines, files: r.agg.files,
+      }));
+      const edges = [...edgeMap.values()].sort((a, b) => b.weight - a.weight).slice(0, GRAPH_EDGE_CAP);
+      return {
+        nodes,
+        edges,
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+        hiddenModuleCount: modules.filter((m) => !kept.has(m.id) && !excludedRoots.has(m.id)).length,
+      };
+    })();
+
+    const componentView = (() => {
+      if (!components.length) return null;
+      const propEdges = dataMap.PropEdge ?? [];
+      const mainCompByFileId = new Map();
+      for (const c of components) {
+        if (!c.fileId) continue;
+        const cur = mainCompByFileId.get(c.fileId);
+        if (!cur || (c.lineCount ?? 0) > (cur.lineCount ?? 0)) mainCompByFileId.set(c.fileId, c);
+      }
+      const storeByFileId = new Map();
+      for (const s of stores) {
+        if (s.fileId) storeByFileId.set(s.fileId, s);
+      }
+      const domainNameOf = (u) => {
+        const did = (u.domainIds ?? [])[0];
+        return did ? (domainById.get(did)?.name ?? null) : null;
+      };
+
+      const edgeMap = new Map();
+      const addEdge = (source, target, kind, weight) => {
+        if (source === target) return;
+        const key = kind + '|' + source + '>' + target;
+        const e = edgeMap.get(key) ?? { source, target, kind, weight: 0 };
+        e.weight += weight ?? 1;
+        edgeMap.set(key, e);
+      };
+      for (const pe of propEdges) {
+        addEdge(pe.fromComponentId, pe.toComponentId, 'props', pe.props?.length ?? 1);
+      }
+      for (const f of files) {
+        const srcComp = mainCompByFileId.get(f.id);
+        if (!srcComp) continue;
+        for (const iid of f.importIds ?? []) {
+          if (!iid.startsWith('file:')) continue;
+          const store = storeByFileId.get(iid);
+          if (store) {
+            addEdge(srcComp.id, store.id, 'usesStore', 1);
+            continue;
+          }
+          const dstComp = mainCompByFileId.get(iid);
+          if (dstComp) addEdge(srcComp.id, dstComp.id, 'imports', 1);
+        }
+      }
+      // 隐式 useStore：auto-import 场景组件直接调用 useXxxStore() 无 import 语句（builder 已解析 Component.storeIds）
+      for (const c of components) {
+        for (const sid of c.storeIds ?? []) addEdge(c.id, sid, 'usesStore', 1);
+      }
+
+      const degreeOf = new Map();
+      for (const e of edgeMap.values()) {
+        degreeOf.set(e.source, (degreeOf.get(e.source) ?? 0) + 1);
+        degreeOf.set(e.target, (degreeOf.get(e.target) ?? 0) + 1);
+      }
+      const storeNodes = stores
+        .slice().sort((a, b) => (b.lineCount ?? 0) - (a.lineCount ?? 0) || (degreeOf.get(b.id) ?? 0) - (degreeOf.get(a.id) ?? 0))
+        .slice(0, STORE_GRAPH_NODE_CAP)
+        .map((s) => ({ id: s.id, name: s.name, kind: 'store', domain: domainNameOf(s), lines: s.lineCount ?? 0 }));
+      const storeIds = new Set(storeNodes.map((s) => s.id));
+      const compNodes = components
+        .slice().sort((a, b) => (degreeOf.get(b.id) ?? 0) - (degreeOf.get(a.id) ?? 0) || (b.lineCount ?? 0) - (a.lineCount ?? 0) || a.name.localeCompare(b.name))
+        .slice(0, Math.max(0, COMPONENT_GRAPH_NODE_CAP - storeNodes.length))
+        .map((c) => ({ id: c.id, name: c.name, kind: 'component', domain: domainNameOf(c), lines: c.lineCount ?? 0, filePath: c.filePath ?? null }));
+      const nodes = [...compNodes, ...storeNodes];
+      const nodeIds = new Set(nodes.map((n) => n.id));
+      const edges = [...edgeMap.values()]
+        .filter((e) => nodeIds.has(e.source) && nodeIds.has(e.target))
+        .sort((a, b) => b.weight - a.weight)
+        .slice(0, GRAPH_EDGE_CAP);
+      return {
+        nodes,
+        edges,
+        nodeCount: nodes.length,
+        edgeCount: edges.length,
+        hiddenComponentCount: Math.max(0, components.length - compNodes.length),
+      };
+    })();
+
+    if (!moduleView && !componentView) return null;
+    return { moduleView, componentView };
+  })();
+
   return {
     viewerVersion: '1.0',
     generatedAt: meta.generatedAt ?? new Date().toISOString(),
@@ -977,6 +1232,8 @@ export function buildViewerModel(dataMap) {
     entities,
     routeMap,
     propFlow,
+    stats,
+    codeGraph,
     quality: {
       cycles: meta.cycles ?? [],
       orphanCandidateCount: (meta.orphanCandidates ?? []).length,
@@ -1142,6 +1399,39 @@ svg.focus text.pe-label.hl { opacity: 1; fill: var(--fg); }
 .prop-edge { padding: 6px 0; border-bottom: 1px dashed var(--border); }
 .prop-edge:last-child { border-bottom: none; }
 .prop-item { display: inline-block; margin: 2px 6px 2px 0; font-family: 'SF Mono', Menlo, monospace; font-size: 11px; }
+/* ---- 代码统计：KPI 卡片 + 环形图 ---- */
+.stats-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stats-kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; text-align: center; }
+.stats-kpi .v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stats-kpi .k { font-size: 12px; color: var(--fg-dim); margin-top: 4px; }
+.donut-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.donut-legend { flex: 1; min-width: 220px; }
+.donut-legend .dl-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 12px; color: var(--fg-dim); }
+.donut-legend .dl-row .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.donut-legend .dl-row .pv { font-variant-numeric: tabular-nums; }
+.layer-row.lr-wide .lbl { width: 240px; }
+.layer-row.lr-wide .val { width: 130px; }
+@media (max-width: 720px) { .layer-row.lr-wide .lbl { width: 120px; } }
+/* ---- 代码图谱：力导向图 ---- */
+.cg-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+button.btn.on { border-color: var(--cyan); color: var(--cyan); background: color-mix(in srgb, var(--cyan) 10%, var(--panel2)); }
+.cg-hint { font-size: 12px; color: var(--fg-faint); }
+.cg-stage { border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); overflow: hidden; position: relative; }
+.cg-stage svg { display: block; width: 100%; height: auto; cursor: grab; touch-action: none; }
+.cg-stage svg.dragging { cursor: grabbing; }
+svg .cgn circle { stroke-width: 1.5; cursor: pointer; }
+svg .cgn text { font-size: 10px; font-family: 'SF Mono', Menlo, monospace; fill: var(--fg-dim); paint-order: stroke; stroke: var(--panel2); stroke-width: 3px; pointer-events: none; }
+svg .cgn text.big { fill: var(--fg); font-weight: 600; }
+svg .cge { stroke: color-mix(in srgb, var(--blue) 45%, transparent); stroke-width: 1.1; }
+svg .cge.props { stroke: color-mix(in srgb, var(--green) 60%, transparent); }
+svg .cge.usesStore { stroke: color-mix(in srgb, var(--purple) 60%, transparent); stroke-dasharray: 4 3; }
+svg .cge.dim { opacity: .35; }
+svg.focus .cgn { opacity: .18; }
+svg.focus .cgn.hl { opacity: 1; }
+svg.focus .cge { opacity: .06; }
+svg.focus .cge.hl { opacity: 1; }
+#cg-info { margin-top: 10px; min-height: 20px; font-size: 13px; }
+#cg-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
 </style>
 </head>
 <body>
@@ -1153,6 +1443,8 @@ svg.focus text.pe-label.hl { opacity: 1; fill: var(--fg); }
     <div class="tab" data-tab="blueprint">领域蓝图</div>
     <div class="tab" data-tab="data">业务数据图</div>
     <div class="tab" data-tab="flow">业务逻辑流向</div>
+    <div class="tab" data-tab="stats">代码统计</div>
+    <div class="tab" data-tab="codegraph">代码图谱</div>
     <div class="tab" data-tab="routemap">路由地图</div>
     <div class="tab" data-tab="props">组件数据流</div>
     <div class="tab" data-tab="entities">实体类图</div>
@@ -1164,6 +1456,8 @@ svg.focus text.pe-label.hl { opacity: 1; fill: var(--fg); }
   <section class="view" id="view-blueprint"></section>
   <section class="view" id="view-data"></section>
   <section class="view" id="view-flow"></section>
+  <section class="view" id="view-stats"></section>
+  <section class="view" id="view-codegraph"></section>
   <section class="view" id="view-routemap"></section>
   <section class="view" id="view-props"></section>
   <section class="view" id="view-entities"></section>
@@ -2690,6 +2984,446 @@ function renderEntities() {
   renderEntityTable();
 }
 
+// ---------- Tab: 代码统计（KPI + 条形图 + 环形图，纯内联 SVG） ----------
+const STATS_COLORS = ['#39c5cf', '#58a6ff', '#bc8cff', '#f472b6', '#3fb950', '#d29922', '#fb923c', '#f87171', '#00b4ab', '#818cf8'];
+const STATS_BAR_CLASSES = ['cyan', '', 'purple', '', 'green', 'amber', 'red', 'teal', 'go', ''];
+// 环形图：r=15.9155 时周长恰为 100，dasharray 可直接用百分比
+function donutSvg(segs, centerVal, centerLabel) {
+  const total = segs.reduce((a, s) => a + s.value, 0);
+  if (!total) return '<div class="empty">无数据。</div>';
+  let acc = 0;
+  let circles = '';
+  segs.forEach((s, i) => {
+    const raw = (s.value / total) * 100;
+    const pct = i === segs.length - 1 ? +(100 - acc).toFixed(2) : +raw.toFixed(2);
+    circles += '<circle cx="21" cy="21" r="15.9155" fill="none" stroke="' + s.color + '" stroke-width="5.5" stroke-dasharray="' + pct + ' ' + (100 - pct).toFixed(2) + '" stroke-dashoffset="' + (25 - acc).toFixed(2) + '"></circle>';
+    acc += pct;
+  });
+  return '<svg viewBox="0 0 42 42" style="width:180px;height:180px;flex-shrink:0" role="img" aria-label="' + esc(centerLabel) + '">'
+    + '<circle cx="21" cy="21" r="15.9155" fill="none" stroke="var(--panel)" stroke-width="5.5"></circle>'
+    + circles
+    + '<text x="21" y="20.2" text-anchor="middle" style="font-size:6.5px;font-weight:700;fill:var(--fg)">' + esc(centerVal) + '</text>'
+    + '<text x="21" y="26.5" text-anchor="middle" style="font-size:3.2px;fill:var(--fg-dim)">' + esc(centerLabel) + '</text>'
+    + '</svg>';
+}
+
+function renderStats() {
+  const el = document.getElementById('view-stats');
+  const S = M.stats;
+  if (!S) {
+    el.innerHTML = '<div class="panel"><h2>代码统计</h2><div class="empty">无源文件数据。</div></div>';
+    return;
+  }
+  const U = S.unitCounts;
+  const unitTotal = U.components + U.hooks + U.stores + U.services;
+  const kpis = [
+    ['var(--cyan)', fmt(S.totalLines), '代码总行数'],
+    ['var(--green)', fmt(S.totalFiles), '源文件总数'],
+    ['var(--purple)', fmt(S.moduleStats.length), '一级模块'],
+    ['var(--orange)', fmt(unitTotal), '代码单元'],
+    ['var(--amber)', fmt(S.avgLinesPerFile), '平均单文件行数'],
+    ['var(--teal)', fmt(S.testFileCount), '测试文件'],
+  ];
+  const kpiHtml = '<div class="stats-kpis">' + kpis.map((k) =>
+    '<div class="stats-kpi"><div class="v" style="color:' + k[0] + '">' + k[1] + '</div><div class="k">' + k[2] + '</div></div>'
+  ).join('') + '</div>';
+
+  const maxMod = S.moduleStats.length ? S.moduleStats[0].lines : 0;
+  const moduleBars = S.moduleStats.slice(0, 12).map((m, i) =>
+    barRow(m.name, m.lines, maxMod, STATS_BAR_CLASSES[i % STATS_BAR_CLASSES.length], m.path + ' · ' + fmt(m.files) + ' 文件')
+  ).join('');
+
+  const donutSrc = S.moduleStats.slice(0, 9);
+  const restLines = S.moduleStats.slice(9).reduce((a, m) => a + m.lines, 0);
+  if (restLines > 0) donutSrc.push({ name: '其他 ' + (S.moduleStats.length - 9) + ' 个模块', lines: restLines });
+  const donutSegs = donutSrc.map((m, i) => ({ label: m.name, value: m.lines, color: STATS_COLORS[i % STATS_COLORS.length] }));
+  const donutTotal = donutSegs.reduce((a, s) => a + s.value, 0);
+  const donutLegend = donutSegs.map((s) => {
+    const pct = donutTotal ? ((100 * s.value) / donutTotal).toFixed(1) : '0';
+    return '<div class="dl-row"><span class="legend-dot" style="background:' + s.color + '"></span>'
+      + '<span class="nm" title="' + esc(s.label) + '">' + esc(s.label) + '</span>'
+      + '<span class="pv">' + fmt(s.value) + ' 行 · ' + pct + '%</span></div>';
+  }).join('');
+
+  const maxExt = S.byExt.length ? S.byExt[0].lines : 0;
+  const extBars = S.byExt.map((e, i) =>
+    barRow(e.label, e.lines, maxExt, STATS_BAR_CLASSES[i % STATS_BAR_CLASSES.length], fmt(e.files) + ' 文件 · ' + e.pct + '%')
+  ).join('');
+  const maxLayer = S.byLayer.length ? S.byLayer[0].lines : 0;
+  const layerBars = S.byLayer.map((l, i) =>
+    barRow(l.label, l.lines, maxLayer, STATS_BAR_CLASSES[i % STATS_BAR_CLASSES.length], fmt(l.files) + ' 文件 · ' + l.pct + '%')
+  ).join('');
+
+  const unitCls = { component: 'cyan', hook: 'teal', store: 'purple', service: 'amber' };
+  const maxUnit = S.topUnits.length ? S.topUnits[0].lineCount : 0;
+  const unitBars = S.topUnits.map((u) => {
+    const pct = maxUnit > 0 ? Math.round((u.lineCount / maxUnit) * 100) : 0;
+    const cls = unitCls[u.kind] || '';
+    return '<div class="layer-row lr-wide"><div class="lr-main">'
+      + '<span class="lbl" title="' + esc(u.filePath || u.name) + '">' + esc(u.name) + ' ' + chip(u.kindLabel, cls) + '</span>'
+      + '<div class="bar-wrap"><div class="bar ' + cls + '" style="width:' + pct + '%"></div></div>'
+      + '<span class="val">' + fmt(u.lineCount) + ' 行</span></div>'
+      + '<div class="lr-desc">' + esc(u.filePath || '') + '</div></div>';
+  }).join('');
+
+  const layerLabelOf = {};
+  S.byLayer.forEach((l) => { layerLabelOf[l.key] = l.label; });
+  const fileRows = S.topFiles.map((f) => [
+    { html: '<span class="path">' + esc(f.name) + '</span>' },
+    { v: f.ext || '-' },
+    { v: fmt(f.lineCount), num: true },
+    { v: f.archLayer ? (layerLabelOf[f.archLayer] || f.archLayer) : '-' },
+    { html: '<span class="path">' + esc(f.path) + '</span>' },
+  ]);
+
+  el.innerHTML =
+    '<div class="panel"><h2>代码统计</h2>'
+    + '<div class="chips" style="margin-bottom:12px">'
+    + chip('组件 ' + fmt(U.components), 'cyan') + chip('Hook ' + fmt(U.hooks), 'teal')
+    + chip('Store ' + fmt(U.stores), 'purple') + chip('服务 ' + fmt(U.services), 'amber')
+    + (S.declarationFileCount ? chip('声明文件 ' + fmt(S.declarationFileCount), 'red') : '')
+    + '</div>'
+    + kpiHtml
+    + '<div class="split" style="margin-top:8px">'
+    + '<div><h3>模块代码量分布' + (S.moduleStats.length > 12 ? '（Top 12 / ' + S.moduleStats.length + '）' : '') + '</h3>' + moduleBars + '</div>'
+    + '<div><h3>代码分布占比</h3><div class="donut-wrap">' + donutSvg(donutSegs, fmt(S.totalLines), '总行数') + '<div class="donut-legend">' + donutLegend + '</div></div></div>'
+    + '</div></div>'
+    + '<div class="panel"><div class="split">'
+    + '<div><h3>语言分布（按行数）</h3>' + extBars + '</div>'
+    + '<div><h3>架构层分布（按行数）</h3>' + layerBars + '</div>'
+    + '</div></div>'
+    + '<div class="panel"><h3>Top 20 代码单元（按行数）</h3>' + unitBars + '</div>'
+    + '<div class="panel"><h3>最大文件 Top 15</h3>'
+    + table([{ label: '文件' }, { label: '扩展' }, { label: '行数', num: true }, { label: '架构层' }, { label: '路径' }], fileRows)
+    + '</div>';
+}
+
+// ---------- Tab: 代码图谱（力导向图：内联力模拟，零依赖） ----------
+const CG_W = 1280, CG_H = 860;
+const CG_LAYER_COLORS = {
+  entry: '#f87171', presentation: '#58a6ff', state: '#bc8cff', service: '#3fb950',
+  integration: '#d29922', shared: '#8b949e', types: '#39c5cf', config: '#fb923c',
+  tauri: '#f87171', electron: '#f87171', script: '#fb923c', test: '#8b949e', mixed: '#818cf8',
+};
+const CG_DOMAIN_COLORS = ['#39c5cf', '#58a6ff', '#3fb950', '#d29922', '#f472b6', '#818cf8', '#fb923c', '#00b4ab', '#f87171', '#bc8cff'];
+const CG = { mode: 'module', nodes: [], edges: [], nodeById: new Map(), domainList: [], view: { k: 1, x: 0, y: 0 } };
+
+function cgPrepare(mode) {
+  const G = (M.codeGraph || {})[mode + 'View'];
+  if (!G || !G.nodes.length) return false;
+  CG.mode = mode;
+  CG.nodes = G.nodes.map((n) => Object.assign({}, n));
+  CG.nodeById = new Map(CG.nodes.map((n) => [n.id, n]));
+  CG.edges = G.edges
+    .filter((e) => CG.nodeById.has(e.source) && CG.nodeById.has(e.target))
+    .map((e) => ({ source: e.source, target: e.target, kind: e.kind || null, weight: e.weight || 1, sa: CG.nodeById.get(e.source), sb: CG.nodeById.get(e.target) }));
+  if (mode === 'module') {
+    CG.nodes.forEach((n) => { n.color = CG_LAYER_COLORS[n.layer] || '#8b949e'; });
+  } else {
+    CG.domainList = [...new Set(CG.nodes.map((n) => n.domain).filter(Boolean))].sort();
+    CG.nodes.forEach((n) => {
+      n.color = n.kind === 'store' ? '#bc8cff'
+        : (n.domain ? CG_DOMAIN_COLORS[CG.domainList.indexOf(n.domain) % CG_DOMAIN_COLORS.length] : '#8b949e');
+    });
+  }
+  return true;
+}
+
+function cgInitPositions() {
+  const count = CG.nodes.length || 1;
+  CG.nodes.forEach((n, i) => {
+    const angle = i * 2.39996;
+    const r = 50 + 330 * Math.sqrt((i + 0.5) / count);
+    n.x = CG_W / 2 + Math.cos(angle) * r;
+    n.y = CG_H / 2 + Math.sin(angle) * r * 0.72;
+    n.vx = 0; n.vy = 0; n.fixed = false;
+  });
+}
+
+// 单步力模拟：库仑斥力 + 弹簧引力 + 向心重力 + 速度阻尼
+function cgTick(alpha) {
+  const nodes = CG.nodes;
+  const edges = CG.edges;
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 0.01) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = 0.01; }
+      if (d2 > 900000) continue;
+      const d = Math.sqrt(d2);
+      const f = (5200 * alpha) / d2;
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
+    }
+  }
+  for (const e of edges) {
+    const a = e.sa, b = e.sb;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const f = (d - 150) * 0.018 * alpha;
+    const fx = (dx / d) * f, fy = (dy / d) * f;
+    a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+  }
+  for (const n of nodes) {
+    n.vx += (CG_W / 2 - n.x) * 0.045 * alpha;
+    n.vy += (CG_H / 2 - n.y) * 0.045 * alpha;
+    if (n.fixed) { n.vx = 0; n.vy = 0; continue; }
+    n.vx *= 0.85; n.vy *= 0.85;
+    const sp = Math.abs(n.vx) + Math.abs(n.vy);
+    if (sp > 30) { n.vx = (n.vx / sp) * 30; n.vy = (n.vy / sp) * 30; }
+    n.x += n.vx; n.y += n.vy;
+    if (n.x < 50) { n.x = 50; n.vx = Math.abs(n.vx) * 0.4; }
+    if (n.x > CG_W - 50) { n.x = CG_W - 50; n.vx = -Math.abs(n.vx) * 0.4; }
+    if (n.y < 36) { n.y = 36; n.vy = Math.abs(n.vy) * 0.4; }
+    if (n.y > CG_H - 36) { n.y = CG_H - 36; n.vy = -Math.abs(n.vy) * 0.4; }
+  }
+}
+
+function cgLayout() {
+  cgInitPositions();
+  for (let t = 0; t < 320; t++) cgTick(Math.pow(1 - t / 320, 1.5) * 0.85 + 0.015);
+}
+
+function cgGraphSvgInner() {
+  const maxLines = CG.nodes.reduce((a, n) => Math.max(a, n.lines || 0), 1);
+  const labelCap = CG.mode === 'module' ? 60 : 40;
+  const labeled = new Set(CG.nodes.slice().sort((a, b) => (b.lines || 0) - (a.lines || 0)).slice(0, labelCap).map((n) => n.id));
+  let out = '';
+  for (const e of CG.edges) {
+    const w = Math.min(1 + (e.weight > 1 ? Math.log2(e.weight + 1) : 0), 5).toFixed(1);
+    out += '<line class="cge' + (e.kind ? ' ' + e.kind : '') + '" x1="' + e.sa.x.toFixed(1) + '" y1="' + e.sa.y.toFixed(1)
+      + '" x2="' + e.sb.x.toFixed(1) + '" y2="' + e.sb.y.toFixed(1) + '" stroke-width="' + w
+      + '" data-a="' + esc(e.source) + '" data-b="' + esc(e.target) + '"></line>';
+  }
+  for (const n of CG.nodes) {
+    const r = 6 + 26 * Math.sqrt((n.lines || 0) / maxLines);
+    let label = '';
+    if (labeled.has(n.id)) {
+      const nm = n.name.length > 20 ? n.name.slice(0, 19) + '…' : n.name;
+      label = '<text class="' + ((n.lines || 0) > maxLines * 0.25 ? 'big' : '') + '" x="' + (n.x + r + 4).toFixed(1) + '" y="' + (n.y + 3).toFixed(1) + '">' + esc(nm) + '</text>';
+    }
+    out += '<g class="cgn" data-nid="' + esc(n.id) + '">'
+      + '<circle cx="' + n.x.toFixed(1) + '" cy="' + n.y.toFixed(1) + '" r="' + r.toFixed(1) + '" fill="' + n.color + '"></circle>'
+      + label + '</g>';
+  }
+  return out;
+}
+
+function cgApplyTransform() {
+  const g = document.getElementById('cg-transform');
+  if (g && g.setAttribute) g.setAttribute('transform', 'translate(' + CG.view.x.toFixed(1) + ',' + CG.view.y.toFixed(1) + ') scale(' + CG.view.k.toFixed(3) + ')');
+}
+
+function cgLayerLabel(key) {
+  const l = ((M.stats ? M.stats.byLayer : []) || []).find((x) => x.key === key);
+  return l ? l.label : key;
+}
+
+function cgUpdateToolbar() {
+  const c = document.getElementById('cg-count');
+  if (c && c.textContent !== undefined) {
+    const G = (M.codeGraph || {})[CG.mode + 'View'] || {};
+    const hidden = CG.mode === 'module' ? G.hiddenModuleCount : G.hiddenComponentCount;
+    c.textContent = (CG.mode === 'module' ? '模块视图' : '组件视图')
+      + ' · ' + CG.nodes.length + ' 节点 · ' + CG.edges.length + ' 边'
+      + (hidden ? '（未展示 ' + hidden + ' 个小' + (CG.mode === 'module' ? '模块' : '组件') + '）' : '');
+  }
+  ['module', 'component'].forEach((m) => {
+    const b = document.getElementById('cg-mode-' + m);
+    if (b && b.classList) {
+      if (CG.mode === m) b.classList.add('on'); else b.classList.remove('on');
+    }
+  });
+}
+
+function cgUpdateLegend() {
+  const lg = document.getElementById('cg-legend');
+  if (!lg) return;
+  let html = '';
+  if (CG.mode === 'module') {
+    const seen = [];
+    CG.nodes.forEach((n) => { if (n.layer && !seen.some((s) => s.layer === n.layer)) seen.push({ layer: n.layer, color: n.color }); });
+    html = seen.map((s) => '<span><span class="legend-dot" style="background:' + s.color + '"></span>' + esc(cgLayerLabel(s.layer)) + '</span>').join('');
+  } else {
+    html = '<span><span class="legend-dot" style="background:#bc8cff"></span>Store</span>'
+      + (CG.domainList || []).map((d, i) => '<span><span class="legend-dot" style="background:' + CG_DOMAIN_COLORS[i % CG_DOMAIN_COLORS.length] + '"></span>' + esc(d) + '</span>').join('');
+  }
+  html += '<span class="line" style="border-color:#3fb950"></span>props 传递'
+    + '<span class="line" style="border-color:#58a6ff"></span>文件导入'
+    + '<span class="line" style="border-color:#bc8cff;border-top-style:dashed"></span>useStore'
+    + '<span class="cg-hint">节点大小 ∝ 代码行数 · 拖拽节点 / 滚轮缩放 / 拖空白平移 / 点击聚焦</span>';
+  lg.innerHTML = html;
+}
+
+function cgSetFocus(node) {
+  const svg = document.getElementById('cg-svg');
+  const info = document.getElementById('cg-info');
+  if (!svg || !svg.querySelectorAll || !info) return;
+  if (!node) {
+    svg.classList.remove('focus');
+    svg.querySelectorAll('.cgn.hl, .cge.hl').forEach((x) => x.classList.remove('hl'));
+    info.innerHTML = '<span class="cg-hint">点击节点查看详情并高亮邻接。</span>';
+    return;
+  }
+  const neighbor = new Set([node.id]);
+  const connKeys = new Set();
+  for (const e of CG.edges) {
+    if (e.source === node.id || e.target === node.id) {
+      neighbor.add(e.source); neighbor.add(e.target);
+      connKeys.add(e.source + '>' + e.target);
+    }
+  }
+  svg.classList.add('focus');
+  svg.querySelectorAll('.cgn').forEach((g) => {
+    const nid = g.getAttribute('data-nid');
+    if (neighbor.has(nid)) g.classList.add('hl'); else g.classList.remove('hl');
+  });
+  svg.querySelectorAll('.cge').forEach((ln) => {
+    const key = ln.getAttribute('data-a') + '>' + ln.getAttribute('data-b');
+    if (connKeys.has(key)) ln.classList.add('hl'); else ln.classList.remove('hl');
+  });
+  const meta = CG.mode === 'module'
+    ? fmt(node.lines || 0) + ' 行 · ' + fmt(node.files || 0) + ' 文件' + (node.path ? ' · <span class="path">' + esc(node.path) + '</span>' : '')
+    : (node.kind === 'store' ? 'Store' : '组件') + ' · ' + fmt(node.lines || 0) + ' 行'
+      + (node.domain ? ' · ' + esc(node.domain) + ' 域' : '')
+      + (node.filePath ? ' · <span class="path">' + esc(node.filePath) + '</span>' : '');
+  info.innerHTML = '<span class="name">' + esc(node.name) + '</span> — ' + meta + ' · 邻接 ' + connKeys.size + ' 条边';
+}
+
+function cgSetMode(mode) {
+  if (!cgPrepare(mode)) return;
+  CG.view = { k: 1, x: 0, y: 0 };
+  cgApplyTransform();
+  cgLayout();
+  document.getElementById('cg-transform').innerHTML = cgGraphSvgInner();
+  cgSetFocus(null);
+  cgUpdateToolbar();
+  cgUpdateLegend();
+}
+
+function cgPointer(ev) {
+  const svg = document.getElementById('cg-svg');
+  const rect = svg.getBoundingClientRect();
+  const sx = rect.width / CG_W, sy = rect.height / CG_H;
+  return {
+    x: ((ev.clientX - rect.left) / sx - CG.view.x) / CG.view.k,
+    y: ((ev.clientY - rect.top) / sy - CG.view.y) / CG.view.k,
+  };
+}
+
+function cgBindStage() {
+  const stage = document.getElementById('cg-stage');
+  if (!stage || !stage.addEventListener) return;
+  let drag = null;
+  stage.addEventListener('mousedown', (ev) => {
+    const nidEl = ev.target && ev.target.closest ? ev.target.closest('[data-nid]') : null;
+    const svg = document.getElementById('cg-svg');
+    if (svg && svg.classList) svg.classList.add('dragging');
+    if (nidEl) {
+      const node = CG.nodeById.get(nidEl.getAttribute('data-nid'));
+      if (!node) return;
+      const p = cgPointer(ev);
+      node.fixed = true;
+      drag = { type: 'node', node, sx: ev.clientX, sy: ev.clientY, dx: node.x - p.x, dy: node.y - p.y, moved: false };
+    } else {
+      drag = { type: 'pan', sx: ev.clientX, sy: ev.clientY, ox: CG.view.x, oy: CG.view.y, moved: false };
+    }
+    ev.preventDefault();
+  });
+  stage.addEventListener('mousemove', (ev) => {
+    if (!drag) return;
+    if (Math.abs(ev.clientX - drag.sx) + Math.abs(ev.clientY - drag.sy) > 3) drag.moved = true;
+    if (drag.type === 'node') {
+      const p = cgPointer(ev);
+      drag.node.x = p.x + drag.dx;
+      drag.node.y = p.y + drag.dy;
+      for (let t = 0; t < 2; t++) cgTick(0.25);
+      document.getElementById('cg-transform').innerHTML = cgGraphSvgInner();
+    } else {
+      CG.view.x = drag.ox + (ev.clientX - drag.sx);
+      CG.view.y = drag.oy + (ev.clientY - drag.sy);
+      cgApplyTransform();
+    }
+  });
+  stage.addEventListener('mouseup', () => {
+    const svg = document.getElementById('cg-svg');
+    if (svg && svg.classList) svg.classList.remove('dragging');
+    if (!drag) return;
+    if (drag.type === 'node') {
+      if (!drag.moved) cgSetFocus(drag.node);
+    } else if (!drag.moved) {
+      cgSetFocus(null);
+    }
+    drag = null;
+  });
+  stage.addEventListener('mouseleave', () => {
+    const svg = document.getElementById('cg-svg');
+    if (svg && svg.classList) svg.classList.remove('dragging');
+    drag = null;
+  });
+  stage.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const svg = document.getElementById('cg-svg');
+    if (!svg || !svg.getBoundingClientRect) return;
+    const rect = svg.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) / (rect.width / CG_W);
+    const py = (ev.clientY - rect.top) / (rect.height / CG_H);
+    const factor = ev.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const k2 = Math.max(0.25, Math.min(6, CG.view.k * factor));
+    CG.view.x = px - (k2 / CG.view.k) * (px - CG.view.x);
+    CG.view.y = py - (k2 / CG.view.k) * (py - CG.view.y);
+    CG.view.k = k2;
+    cgApplyTransform();
+  }, { passive: false });
+}
+
+function renderCodeGraph() {
+  const el = document.getElementById('view-codegraph');
+  const G = M.codeGraph;
+  if (!G) {
+    el.innerHTML = '<div class="panel"><h2>代码图谱</h2><div class="empty">无代码图谱数据。</div></div>';
+    return;
+  }
+  const hasModule = !!(G.moduleView && G.moduleView.nodes.length);
+  const hasComponent = !!(G.componentView && G.componentView.nodes.length);
+  el.innerHTML =
+    '<div class="panel"><h2>代码图谱（力导向图）</h2>'
+    + '<div class="cg-toolbar">'
+    + (hasModule ? '<button class="btn" id="cg-mode-module">模块图谱</button>' : '')
+    + (hasComponent ? '<button class="btn" id="cg-mode-component">组件图谱</button>' : '')
+    + '<button class="btn" id="cg-relayout">重新布局</button>'
+    + '<button class="btn" id="cg-reset">重置视图</button>'
+    + '<span class="cg-hint" id="cg-count"></span>'
+    + '</div>'
+    + '<div class="cg-stage" id="cg-stage"><svg id="cg-svg" viewBox="0 0 ' + CG_W + ' ' + CG_H + '"><g id="cg-transform"></g></svg></div>'
+    + '<div class="legend" id="cg-legend"></div>'
+    + '<div id="cg-info"></div>'
+    + '<div class="note">模块视图：节点 = 二级以内模块，边 = 模块间文件导入（权重 = 导入次数）；组件视图：节点 = 组件 / Store，边 = props 传递、组件间文件导入与 useStore 依赖。力导向布局由内置力模拟（斥力 + 弹簧 + 向心力）实时计算。</div>'
+    + '</div>';
+  cgBindStage();
+  const bindMode = (id, mode) => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', () => cgSetMode(mode));
+  };
+  bindMode('cg-mode-module', 'module');
+  bindMode('cg-mode-component', 'component');
+  const relayout = document.getElementById('cg-relayout');
+  if (relayout) relayout.addEventListener('click', () => {
+    cgLayout();
+    document.getElementById('cg-transform').innerHTML = cgGraphSvgInner();
+    cgSetFocus(null);
+  });
+  const reset = document.getElementById('cg-reset');
+  if (reset) reset.addEventListener('click', () => {
+    CG.view = { k: 1, x: 0, y: 0 };
+    cgApplyTransform();
+    cgSetFocus(null);
+  });
+  cgSetMode(hasModule ? 'module' : 'component');
+}
+
 // ---------- 初始化 ----------
 // Tab 显隐：视图无有效数据时隐藏（含油猴意图适配视图；纯功能增强脚本分析不出业务结构）
 const hideTab = (tab) => { const t = document.querySelector('.tab[data-tab="' + tab + '"]'); if (t) t.style.display = 'none'; };
@@ -2706,10 +3440,14 @@ if (!M.logicFlow.layerFlowTotal && !M.scriptFlow) hideTab('flow');
 if (!M.entities) hideTab('entities');
 if (!M.routeMap) hideTab('routemap');
 if (!M.propFlow) hideTab('props');
+if (!M.stats) hideTab('stats');
+if (!M.codeGraph || (!M.codeGraph.moduleView && !M.codeGraph.componentView)) hideTab('codegraph');
 renderOverview();
 renderBlueprint();
 renderData();
 renderFlow();
+if (M.stats) renderStats();
+if (M.codeGraph) renderCodeGraph();
 if (M.routeMap) renderRouteMap();
 if (M.propFlow) renderPropFlow();
 if (M.entities) renderEntities();

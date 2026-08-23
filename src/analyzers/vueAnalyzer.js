@@ -612,6 +612,12 @@ export function analyzeVueFile(filePath, content, projectRoot) {
     ?? componentNameFromFile(filePath);
   const propsCount = options ? propsDefs.length : propsNames.length;
   const hooksUsed = [...new Set(sf.useCalls.map((c) => c.name))];
+  // 组件体内 store hook 调用名：useXxxStore 已入 hooksUsed；xxxStore（globalStore 等）不在 useCalls，
+  // 从 setup 变量域 storeVars 补齐——auto-import 场景无 import 语句，builder 靠调用名对全局 Store 名单建隐式边
+  const storeCalls = [...new Set([
+    ...hooksUsed.filter((n) => /^\w*Store$/.test(n)),
+    ...(setupScope ? [...setupScope.storeVars.values()] : []),
+  ])];
   const stateCount = options
     ? dataKeys.size
     : (setupScope ? dataKeys.size : (scriptText.match(/\b(?:ref|shallowRef|reactive|shallowReactive)\s*\(/g) ?? []).length);
@@ -642,6 +648,7 @@ export function analyzeVueFile(filePath, content, projectRoot) {
       propsCount,
       propsNames,
       hooksUsed,
+      storeCalls,
       stateCount,
       lineCount: (scriptBlock ? scriptBlock.content.split('\n').length : 0)
         + (templateBlock ? templateBlock.content.split('\n').length : 0),
