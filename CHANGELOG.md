@@ -2,6 +2,33 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.22.0] - 2026-08-23
+
+### 新增
+
+- **蓝图 CSS 主题化（`--theme`）**：三个蓝图查看器（部署 / 数据库 / 代码）的内嵌 CSS 拆分为「主题 token + 共享骨架 + 查看器专属布局」三段——布局骨架固定在 HTML 蓝图中，视觉风格按主题切换（参考 sglv-shared-css 的 CSS 变量 token 模式）
+- **主题注册表**（`src/themes/index.js`）：`deep-blue`（深蓝暗色，GitHub dark 配色）、`fresh-green`（淡绿清新浅色主题：白卡片 + 深绿主色 `#1e7f5c`，语义色调深保证浅背景可读）与 `elegant-purple`（典雅紫暗色：深紫夜幕底 `#12101f` + 紫主色 `#a78bfa` + 粉紫点缀，玻璃质感）三个主题，`THEMES` 对象可无限扩展；`resolveTheme()` / `buildThemeCss()` / `listThemeNames()`
+- **炫彩评分圆环**（`src/themes/ring.js`）：健康审计评分由普通 border 圆圈升级为 SVG 能量环（参考 steam-family-analysis 家庭健康分设计）——渐变弧（from → 分数插值色 → to）+ feGaussianBlur 辉光滤镜 + 圆头端点 + 顶部起始 + 1.1s 加载动画 + aria-label；客户端读取 `<html data-theme>` 按主题取环配色：deep-blue 紫→绿（分数越高越绿）、fresh-green 淡绿→深绿、elegant-purple 紫→粉
+- **维度得分条渐变辉光**：健康审计维度进度条升级为渐变填充（`--bar-c` CSS 变量驱动 `color-mix` 渐变 + 辉光阴影）
+- **共享骨架样式**（`src/themes/sharedCss.js`）：三个查看器完全一致的基础规则（body/header/统计卡片/标签页/面板/卡片网格/表格/搜索栏/健康仪表盘/响应式断点），透明色一律用 `color-mix()` 从主题变量派生，无硬编码 rgba
+- **CLI `--theme` 选项**：`deploy export`（默认 deep-blue）、`db export`（默认 fresh-green）、`export`（默认 deep-blue）均支持主题切换，未知主题名报错并列出可选项
+- **HTML 主题标记**：`<html data-theme="...">` + `:root[data-theme="..."]` 变量块，便于调试与未来 CSS 钩子
+- **无障碍与原生控件适配**：主题块输出 `color-scheme: dark/light`（暗色主题下滚动条/输入框跟随）；圆环动画与卡片过渡在 `prefers-reduced-motion: reduce` 下自动禁用
+
+### 变更
+
+- **CSS 内硬编码透明色全部变量化**：`rgba(88,166,255,.4)` 之类改为 `color-mix(in srgb, var(--blue) 40%, transparent)`，主题切换时边框/悬停/热度色等透明变体自动跟随
+- **代码蓝图（blueprint）语义色统一**：`--green` `#3fb950`→`#4ade80`、`--purple` `#bc8cff`→`#a78bfa`，与部署/数据库蓝图在 deep-blue 主题下完全一致（消除三个查看器间的历史色值漂移）；`--teal`/`--go` 作为代码蓝图私有变量经 `buildThemeCss` 追加
+- **数据库蓝图（dataoverview）默认主题改为 fresh-green**：外观由深色变为淡绿浅色（用户场景示例"数据分析是淡绿色风格"），可通过 `--theme deep-blue` 切回深色
+- 查看器专属布局样式（部署拓扑层 / ER 图 / UML 类图 / 路由树等）原样保留在各 viewer 中，DOM 结构与 class 名零改动——油猴脚本页面检测（`#deploy-viewer-data` / `#db-viewer-data` / `#viewer-data`）与 JS 渲染逻辑不受影响
+
+### 验证
+
+- 185 个单元测试全过（`test/themes.test.mjs` 13 个：注册表解析 / 变量块生成 / 私有变量追加 / 共享骨架完整性 / 三查看器默认主题与切换 / 圆环三主题配置 / 圆环客户端函数模拟 DOM 执行 / 产物注入）
+- 产物逐份验证：deploy×deep-blue、db×fresh-green、db×elegant-purple、deploy×elegant-purple——每份含 `data-theme` 标记、圆环客户端代码、专属样式齐全
+- 圆环端到端模拟：用产物内嵌真实健康数据（分数 90 / 等级 A）执行渲染，渐变端点、插值色、辉光滤镜、aria-label 全部正确
+- CLI 错误路径：未知主题名 → 报错并列出 `deep-blue / fresh-green / elegant-purple`
+
 ## [0.21.0] - 2026-08-23
 
 ### 新增

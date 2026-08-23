@@ -56,7 +56,7 @@ nice-aos link usesStore --src "store:useThemeStore"        # store 被谁用了
 # 4. 导出全景报告（路由地图 / 导航图 / 循环依赖 / 死代码候选 / Store 一览）
 nice-aos export --format markdown --output report.md
 
-# 5. 生成可交互蓝图 HTML（浏览器直接打开，离线可用）
+# 5. 生成可交互蓝图 HTML（浏览器直接打开，离线可用；--theme 可选 deep-blue / fresh-green）
 nice-aos export --format html --output blueprint.html
 
 # 6. 单文件分析（不建快照，stdout 直接输出本体 JSON，可与 jq/findstr 管道组合）
@@ -119,8 +119,9 @@ nice-aos db query foreignKeys                         # 外键关系
 nice-aos db query migrations --where "version~V2.1"  # 迁移历史
 nice-aos db query domains                             # 领域分组
 
-# 3. 生成数据蓝图 HTML（自包含，含 SVG ER 关系图，5 Tab）
+# 3. 生成数据蓝图 HTML（自包含，含 SVG ER 关系图，5 Tab；默认 fresh-green 淡绿主题）
 nice-aos db export --format html --output db-overview.html
+nice-aos db export --format html --theme deep-blue --output db-overview.html  # 切换深蓝暗色主题
 
 # 4. 增量扫描（仅处理新增/修改的迁移文件）
 nice-aos db scan --dir /path/to/migrations --incremental
@@ -155,8 +156,9 @@ nice-aos deploy audit resilience      # 高可用：健康检查/探针/副本/�
 nice-aos deploy audit consistency     # 配置一致性：环境漂移
 nice-aos deploy audit dependency      # 依赖：断链/循环依赖
 
-# 4. 生成部署蓝图 HTML（自包含，8 Tab，分层拓扑 + SVG 依赖图）
+# 4. 生成部署蓝图 HTML（自包含，8 Tab，分层拓扑 + SVG 依赖图；默认 deep-blue 深蓝主题）
 nice-aos deploy export --format html --output deploy-overview.html
+nice-aos deploy export --format html --theme fresh-green --output deploy-overview.html  # 切换淡绿浅色主题
 
 # 5. 增量扫描（无文件变化时直接复用快照）
 nice-aos deploy scan --dir /path/to/deploy --incremental
@@ -165,6 +167,18 @@ nice-aos deploy scan --dir /path/to/deploy --incremental
 部署模型对象：服务（Service，12 类：网关/前端/后端/适配器/任务/数据库/缓存/对象存储/搜索引擎/注册中心/可观测/CI-CD/工具）/路由（Route，nginx location → proxy_pass）/上游（Upstream）/依赖（Dependency，depends_on + 环境引用 + 路由推导）/中间件（Middleware，含版本与消费方）/环境（Environment，敏感值自动脱敏）/分层（Layer，9 层部署拓扑）。跨文件同名服务自动归一化合并，`${VAR:-default}` 镜像插值解引用。
 
 部署蓝图 HTML 内嵌 `<script id="deploy-viewer-data">` JSON 数据，蓝图 AI 助手（Tampermonkey 脚本）自动检测并切换至「部署蓝图」智能体（12 个专属工具）。
+
+### 蓝图主题风格
+
+三类蓝图（代码 blueprint / 数据 dataoverview / 部署 deployoverview）的 CSS 已拆分为「主题 token + 共享骨架 + 查看器专属布局」：布局骨架固定，视觉风格经 `--theme` 切换（主题注册表 `src/themes/index.js` 可扩展）。健康审计评分为炫彩 SVG 能量环——渐变弧 + 辉光滤镜 + 加载动画，环配色随主题（深蓝:紫→绿 / 淡绿:淡绿→深绿 / 典雅紫:紫→粉）。
+
+| 蓝图 | 默认主题 | 命令 |
+|------|---------|------|
+| 部署 deployoverview | deep-blue | `deploy export --theme <name>` |
+| 数据 dataoverview | fresh-green | `db export --theme <name>` |
+| 代码 blueprint | deep-blue | `export --theme <name>` |
+
+可用主题：`deep-blue`（深蓝暗色）/ `fresh-green`（淡绿清新）/ `elegant-purple`（典雅紫）。
 
 ## 本体模型
 

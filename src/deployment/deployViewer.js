@@ -14,6 +14,9 @@ import {
   auditSecurity, auditResilience, auditConfigConsistency, auditDependency, auditHealth,
 } from './deployAuditor.js';
 import { SERVICE_TYPE_LABELS, SERVICE_TYPE_COLORS, LAYER_RULES } from './deployModel.js';
+import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
+import { SHARED_CSS } from '../themes/sharedCss.js';
+import { RING_JS } from '../themes/ring.js';
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -180,44 +183,23 @@ export function buildDeployViewerModel(model) {
   };
 }
 
-export function renderDeployOverviewHtml(model) {
+export function renderDeployOverviewHtml(model, options = {}) {
   const dataJson = JSON.stringify(model).replace(/</g, '\\u003c').replace(/-->/g, '--\\u003e');
   const title = esc(model.meta.sourceDir ? model.meta.sourceDir.split('/').pop() : '部署蓝图');
+  const theme = options.theme || DEFAULT_THEMES.deploy;
 
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="${esc(theme)}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${title} · 部署架构蓝图</title>
 <style>
-:root {
-  --bg: #0d1117; --panel: #161b22; --panel2: #1c2128; --border: #30363d;
-  --fg: #e6edf3; --fg-dim: #8b949e; --fg-faint: #6e7681;
-  --blue: #58a6ff; --green: #4ade80; --amber: #d29922; --purple: #a78bfa;
-  --red: #f85149; --cyan: #39c5cf; --pink: #f472b6; --orange: #fb923c;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--fg); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px; line-height: 1.6; }
-header { padding: 20px 24px 0; border-bottom: 1px solid var(--border); }
-header > * { max-width: 1600px; margin-left: auto; margin-right: auto; }
-h1 { font-size: 20px; }
-.sub { color: var(--fg-dim); font-size: 12px; margin-top: 4px; }
-.stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
-.stats .stat { text-align: center; flex: 1 1 90px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
-.stats .stat .v { font-size: 22px; font-weight: 700; color: var(--blue); }
-.stats .stat .k { font-size: 11px; color: var(--fg-dim); }
-.tabs { display: flex; gap: 4px; margin-top: 14px; flex-wrap: wrap; }
-.tab-btn { padding: 8px 16px; cursor: pointer; color: var(--fg-dim); border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; font-size: 14px; background: none; }
-.tab-btn:hover { color: var(--fg); background: var(--panel); }
-.tab-btn.active { color: var(--fg); background: var(--panel); border-color: var(--border); position: relative; top: 1px; }
-main { padding: 20px 24px 48px; max-width: 1600px; margin-left: auto; margin-right: auto; }
-section.view { display: none; }
-section.view.active { display: block; }
-.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-.mono { font-family: 'SF Mono', Menlo, Consolas, monospace; }
+${buildThemeCss(theme)}
+${SHARED_CSS}
+/* ---- 布局骨架固定，以下为部署蓝图专属样式 ---- */
 /* ---- 拓扑 ---- */
-.topo-layer { background: linear-gradient(135deg, rgba(56,189,248,.06), rgba(167,139,250,.06)); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+.topo-layer { background: linear-gradient(135deg, color-mix(in srgb, var(--cyan) 6%, transparent), color-mix(in srgb, var(--purple) 6%, transparent)); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
 .topo-layer-title { font-size: 14px; font-weight: 600; color: var(--blue); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .topo-layer-title .cnt { font-weight: 400; color: var(--fg-dim); font-size: 12px; }
 .topo-services { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -229,12 +211,7 @@ section.view.active { display: block; }
 .svc-box .svc-meta span { font-size: 10px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--border); color: var(--fg-dim); }
 .topo-arrow { text-align: center; padding: 6px; color: var(--blue); font-size: 13px; opacity: .8; }
 /* ---- 通用 ---- */
-.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; border: 1px solid var(--border); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; cursor: pointer; transition: border-color .15s; }
-.card:hover { border-color: var(--blue); }
-.card .title { font-size: 14px; font-weight: 600; margin-bottom: 4px; font-family: 'SF Mono', Menlo, monospace; word-break: break-all; }
-.card .desc { color: var(--fg-dim); font-size: 12px; margin-bottom: 8px; }
 .badge-type { font-weight: 500; }
 .detail { display: none; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
 .card.expanded .detail { display: block; }
@@ -245,16 +222,9 @@ section.view.active { display: block; }
 .env-row .ek { min-width: 180px; color: var(--cyan); word-break: break-all; }
 .env-row .ev { color: var(--fg-dim); word-break: break-all; }
 .env-row.secret .ev { color: var(--amber); }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-th { color: var(--fg-dim); font-weight: 600; font-size: 12px; white-space: nowrap; }
-tr:hover td { background: rgba(88,166,255,.04); }
-.search-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-.search-bar input { flex: 1; min-width: 200px; padding: 8px 12px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; color: var(--fg); font-size: 14px; }
 .chip-filters { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { padding: 4px 10px; border-radius: 12px; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: var(--panel2); color: var(--fg-dim); }
 .chip.active { color: var(--fg); border-color: var(--blue); }
-.empty { text-align: center; padding: 40px; color: var(--fg-dim); }
 /* ---- 依赖图 ---- */
 .graph-container { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
 .graph-toolbar { position: absolute; top: 8px; right: 8px; z-index: 10; display: flex; gap: 4px; }
@@ -269,27 +239,8 @@ tr:hover td { background: rgba(88,166,255,.04); }
 .mw-card .mw-name { font-size: 15px; font-weight: 700; }
 .mw-kv { font-size: 12px; color: var(--fg-dim); padding: 2px 0; }
 .consumer-tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel2); margin: 2px 4px 2px 0; font-family: 'SF Mono', Menlo, monospace; }
-/* ---- 健康 ---- */
-.health-score { display: flex; align-items: center; gap: 32px; margin-bottom: 24px; }
-.score-ring { width: 140px; height: 140px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-direction: column; border: 6px solid var(--panel2); }
-.score-ring .score-num { font-size: 36px; font-weight: 700; }
-.score-ring .score-grade { font-size: 14px; color: var(--fg-dim); }
-.dim-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 20px; }
-.dim-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-.dim-card .dim-name { font-size: 13px; color: var(--fg-dim); margin-bottom: 6px; }
-.dim-card .dim-score { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
-.dim-bar { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
-.dim-bar-fill { height: 100%; border-radius: 3px; }
-.issue-item { padding: 8px 12px; border-left: 3px solid var(--border); margin-bottom: 6px; background: var(--panel2); border-radius: 0 4px 4px 0; font-size: 13px; }
-.issue-item.error { border-left-color: var(--red); }
-.issue-item.warn { border-left-color: var(--amber); }
-.issue-item.info { border-left-color: var(--blue); }
+/* ---- 健康（基础仪表盘样式见共享骨架，此处仅部署专属） ---- */
 .issue-item .loc { display: block; font-size: 11px; color: var(--fg-faint); font-family: 'SF Mono', Menlo, monospace; margin-top: 2px; }
-.metric-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
-.metric-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 20px; min-width: 130px; text-align: center; }
-.metric-card .metric-val { font-size: 26px; font-weight: 700; color: var(--blue); }
-.metric-card .metric-label { font-size: 12px; color: var(--fg-dim); margin-top: 2px; }
-@media (max-width: 768px) { .grid { grid-template-columns: 1fr; } .stats { gap: 12px; } .health-score { flex-direction: column; } }
 </style>
 </head>
 <body>
@@ -361,6 +312,7 @@ tr:hover td { background: rgba(88,166,255,.04); }
 </main>
 <script id="deploy-viewer-data" type="application/json">${dataJson}</script>
 <script>
+${RING_JS}
 const MODEL = JSON.parse(document.getElementById('deploy-viewer-data').textContent);
 const TYPE_COLORS = MODEL.typeColors || {};
 const TYPE_LABELS = MODEL.typeLabels || {};
@@ -590,9 +542,10 @@ function renderDepGraph() {
   svg.setAttribute('viewBox', '0 0 ' + totalW + ' ' + totalH);
   svg.setAttribute('width', '100%');
   svg.setAttribute('height', Math.min(totalH, 700));
+  svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
   svg.setAttribute('data-original-vb', '0 0 ' + totalW + ' ' + totalH);
 
-  let html = '<defs><marker id="deparrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#a78bfa"/></marker></defs>';
+  let html = '<defs><marker id="deparrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="var(--purple)"/></marker></defs>';
 
   // 分列背景
   colKeys.forEach((col, ci) => {
@@ -600,9 +553,9 @@ function renderDepGraph() {
     if (nodes.length === 0) return;
     const layerKey = nodes[0].layer;
     const layerLabel = (MODEL.topologyLayers || []).find(l => l.key === layerKey)?.label || layerKey;
-    html += '<rect x="' + (nodePos[nodes[0].id].x - 10) + '" y="10" width="' + (nodeW + 20) + '" height="' + (totalH - 20) + '" fill="rgba(88,166,255,0.03)" stroke="rgba(48,54,61,0.8)" rx="8"/>';
-    html += '<text x="' + nodePos[nodes[0].id].x + '" y="' + (totalH - 8) + '" fill="#6e7681" font-size="11">' + esc(layerLabel) + ' (' + cols[col].length + ')</text>';
-    if (ci < colKeys.length - 1) html += '<text x="' + (nodePos[nodes[0].id].x + nodeW + 20) + '" y="' + (totalH / 2) + '" fill="#6e7681" font-size="16" text-anchor="middle">→</text>';
+    html += '<rect x="' + (nodePos[nodes[0].id].x - 10) + '" y="10" width="' + (nodeW + 20) + '" height="' + (totalH - 20) + '" fill="color-mix(in srgb, var(--blue) 3%, transparent)" stroke="var(--border)" rx="8"/>';
+    html += '<text x="' + nodePos[nodes[0].id].x + '" y="' + (totalH - 8) + '" fill="var(--fg-faint)" font-size="11">' + esc(layerLabel) + ' (' + cols[col].length + ')</text>';
+    if (ci < colKeys.length - 1) html += '<text x="' + (nodePos[nodes[0].id].x + nodeW + 20) + '" y="' + (totalH / 2) + '" fill="var(--fg-faint)" font-size="16" text-anchor="middle">→</text>';
   });
 
   // 边
@@ -815,13 +768,9 @@ function depReset() {
   const h = MODEL.audits?.health;
   if (!h) return;
 
-  const levelColor = h.level === 'good' ? 'var(--green)' : h.level === 'fair' ? 'var(--blue)' : h.level === 'warn' ? 'var(--amber)' : 'var(--red)';
   document.getElementById('health-score').innerHTML =
     '<div class="health-score">' +
-      '<div class="score-ring" style="border-color:' + levelColor + '30;border-top-color:' + levelColor + '">' +
-        '<div class="score-num" style="color:' + levelColor + '">' + h.score + '</div>' +
-        '<div class="score-grade">等级 ' + h.grade + '</div>' +
-      '</div>' +
+      scoreRingSvg(h.score, { label: '等级 ' + h.grade, size: 156 }) +
       '<div style="flex:1;">' +
         '<h2 style="font-size:18px;margin-bottom:8px;">部署架构健康度总评</h2>' +
         '<div style="color:var(--fg-dim);margin-bottom:8px;">基于 ' + MODEL.meta.serviceCount + ' 个服务 / ' + MODEL.meta.routeCount + ' 条路由 / ' + MODEL.meta.dependencyCount + ' 条依赖的静态分析</div>' +
@@ -838,7 +787,7 @@ function depReset() {
     return '<div class="dim-card">' +
       '<div class="dim-name">' + esc(d.label) + ' <span style="color:var(--fg-faint);">权重 ' + Math.round(d.weight * 100) + '%</span></div>' +
       '<div class="dim-score" style="color:' + c + '">' + d.score + '</div>' +
-      '<div class="dim-bar"><div class="dim-bar-fill" style="width:' + d.score + '%;background:' + c + '"></div></div>' +
+      '<div class="dim-bar"><div class="dim-bar-fill" style="--bar-c:' + c + ';width:' + d.score + '%"></div></div>' +
     '</div>';
   }).join('');
 

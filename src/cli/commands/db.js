@@ -9,6 +9,7 @@ import {
   auditEvolution, auditFkChain, auditNaming,
 } from '../../database/dbAuditor.js';
 import { parseWhere, matchesWhere, outputJson, outputPretty, succeed, fail } from '../shared.js';
+import { listThemeNames } from '../../themes/index.js';
 
 export const dbCommand = new Command('db')
   .description('MySQL 数据库脚本目录分析：扫描迁移脚本 → 数据库模型 → 分析 JSON / 数据蓝图 dataoverview HTML');
@@ -82,13 +83,18 @@ dbCommand
   .description('导出数据库分析结果（json | html | viewmodel）')
   .option('--format <format>', '导出格式: json | html | viewmodel', 'json')
   .option('--output <path>', '写入文件（默认输出到 stdout）')
+  .option('--theme <name>', `HTML 主题风格（默认 fresh-green，可选: ${listThemeNames().join(' / ')}）`, 'fresh-green')
   .action((opts) => {
     const dbDataMap = loadDbSnapshot();
     let content;
     if (opts.format === 'json') {
       content = JSON.stringify(dbDataMap, null, 2);
     } else if (opts.format === 'html') {
-      content = renderDbOverviewHtml(buildDbViewerModel(dbDataMap));
+      let theme = opts.theme;
+      if (!listThemeNames().includes(theme)) {
+        fail(`未知主题: ${theme}（可选: ${listThemeNames().join(' / ')}）`);
+      }
+      content = renderDbOverviewHtml(buildDbViewerModel(dbDataMap), { theme });
     } else if (opts.format === 'viewmodel') {
       content = JSON.stringify(buildDbViewerModel(dbDataMap), null, 2);
     } else {

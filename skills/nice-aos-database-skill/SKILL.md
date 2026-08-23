@@ -108,7 +108,7 @@ nice-aos db audit all --table users --target-version V2.1.0
 # 导出完整分析 JSON
 nice-aos db export --format json --output db-analysis.json
 
-# 导出数据蓝图 HTML（含 SVG ER 图，8 Tab）
+# 导出数据蓝图 HTML（含 SVG ER 图，8 Tab；默认 fresh-green 淡绿主题，--theme 可选 deep-blue / elegant-purple）
 nice-aos db export --format html --output db-overview.html
 
 # 导出视图模型 JSON（供 agent 直接消费，含审计数据）

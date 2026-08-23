@@ -4,11 +4,13 @@ import { loadSnapshot } from '../../ontology/snapshot.js';
 import { exportToMarkdown } from '../../ontology/exporter.js';
 import { buildViewerModel, renderViewerHtml } from '../../ontology/viewer.js';
 import { fail } from '../shared.js';
+import { listThemeNames } from '../../themes/index.js';
 
 export const exportCommand = new Command('export')
   .description('导出本体快照为 Markdown / JSON / HTML 蓝图 / 视图模型 JSON')
   .option('--format <format>', '导出格式: markdown | json | html | viewmodel', 'markdown')
   .option('--output <path>', '写入文件（默认输出到 stdout）')
+  .option('--theme <name>', `HTML 主题风格（默认 deep-blue，可选: ${listThemeNames().join(' / ')}）`, 'deep-blue')
   .action((opts) => {
     const dataMap = loadSnapshot();
     let content;
@@ -18,7 +20,11 @@ export const exportCommand = new Command('export')
       content = exportToMarkdown(dataMap);
     } else if (opts.format === 'html') {
       // 本体蓝图查看器：数据聚合 → 自包含 HTML（领域蓝图 / 业务数据图 / 业务逻辑流向）
-      content = renderViewerHtml(buildViewerModel(dataMap));
+      let theme = opts.theme;
+      if (!listThemeNames().includes(theme)) {
+        fail(`未知主题: ${theme}（可选: ${listThemeNames().join(' / ')}）`);
+      }
+      content = renderViewerHtml(buildViewerModel(dataMap), { theme });
     } else if (opts.format === 'viewmodel') {
       // 视图模型 JSON（供 agent / 其他前端直接消费的聚合数据）
       content = JSON.stringify(buildViewerModel(dataMap), null, 2);

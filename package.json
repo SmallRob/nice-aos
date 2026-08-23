@@ -1,6 +1,6 @@
 {
   "name": "nice-aos",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "nice-aos —— 通用前端代码本体 / 数据库脚本 / 部署配置分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本 / MySQL 迁移脚本 / Dockerfile+Compose+K8s+nginx）：扫描 React/TypeScript、Vue 2 Options API / Vue 3 SFC、Flutter/Dart、Go 与 Tampermonkey UserScript 源码生成结构化本体快照；支持 MySQL 迁移脚本目录分析（Flyway 标准 / Sprint 非标准布局、多数据库、mysqldump 兼容），产出数据库模型（表/列/主键/外键/索引/迁移历史/领域分组/模式特征）和自包含数据蓝图 dataoverview HTML（SVG ER 关系图）；支持部署配置目录分析（docker-compose / K8s manifest / Dockerfile / nginx.conf / .env / shell），产出部署架构模型（服务/镜像/路由/依赖/中间件/环境/分层）和自包含部署蓝图 deployoverview HTML（分层拓扑 + SVG 依赖图 + 5 大审计场景），支持增量扫描；供 AI agent 与开发者毫秒级查询",
   "type": "module",
   "bin": {

@@ -13,6 +13,9 @@
 import {
   auditHealth, auditDomains, auditIndexes, auditEvolution, auditNaming,
 } from './dbAuditor.js';
+import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
+import { SHARED_CSS } from '../themes/sharedCss.js';
+import { RING_JS } from '../themes/ring.js';
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -137,64 +140,32 @@ export function buildDbViewerModel(dbDataMap) {
   };
 }
 
-export function renderDbOverviewHtml(model) {
+export function renderDbOverviewHtml(model, options = {}) {
   const dataJson = JSON.stringify(model).replace(/</g, '\\u003c').replace(/-->/g, '--\\u003e');
   const title = esc(model.meta.sourceDir ? model.meta.sourceDir.split('/').pop() : '数据库蓝图');
+  const theme = options.theme || DEFAULT_THEMES.db;
 
   return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="${esc(theme)}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${title} · 数据库蓝图</title>
 <style>
-:root {
-  --bg: #0d1117; --panel: #161b22; --panel2: #1c2128; --border: #30363d;
-  --fg: #e6edf3; --fg-dim: #8b949e; --fg-faint: #6e7681;
-  --blue: #58a6ff; --green: #4ade80; --amber: #d29922; --purple: #a78bfa;
-  --red: #f85149; --cyan: #39c5cf; --pink: #f472b6; --orange: #fb923c;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--fg); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px; line-height: 1.6; }
-header { padding: 20px 24px 0; border-bottom: 1px solid var(--border); }
-header > * { max-width: 1600px; margin-left: auto; margin-right: auto; }
-h1 { font-size: 20px; }
-.sub { color: var(--fg-dim); font-size: 12px; margin-top: 4px; }
-.stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 14px 0; }
-.stats .stat { text-align: center; flex: 1 1 90px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
-.stats .stat .v { font-size: 22px; font-weight: 700; color: var(--blue); }
-.stats .stat .k { font-size: 11px; color: var(--fg-dim); }
-.tabs { display: flex; gap: 4px; margin-top: 14px; }
-.tab-btn { padding: 8px 16px; cursor: pointer; color: var(--fg-dim); border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; font-size: 14px; background: none; }
-.tab-btn:hover { color: var(--fg); background: var(--panel); }
-.tab-btn.active { color: var(--fg); background: var(--panel); border-color: var(--border); position: relative; top: 1px; }
-main { padding: 20px 24px 48px; max-width: 1600px; margin-left: auto; margin-right: auto; }
-section.view { display: none; }
-section.view.active { display: block; }
-.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; cursor: pointer; transition: border-color .15s; }
-.card:hover { border-color: var(--blue); }
-.card .title { font-size: 14px; font-weight: 600; margin-bottom: 4px; font-family: 'SF Mono', Menlo, monospace; }
-.card .desc { color: var(--fg-dim); font-size: 12px; margin-bottom: 8px; }
-.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; border: 1px solid var(--border); }
+${buildThemeCss(theme)}
+${SHARED_CSS}
+/* ---- 布局骨架固定，以下为数据库蓝图专属样式 ---- */
 .badge-domain { font-weight: 500; }
-.badge-pk { color: var(--amber); border-color: rgba(210,153,34,.4); }
-.badge-fk { color: var(--purple); border-color: rgba(167,139,250,.4); }
-.badge-uniq { color: var(--cyan); border-color: rgba(57,197,207,.4); }
-.badge-pattern { color: var(--green); border-color: rgba(74,222,128,.4); font-size: 10px; }
+.badge-pk { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
+.badge-fk { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 40%, transparent); }
+.badge-uniq { color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 40%, transparent); }
+.badge-pattern { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); font-size: 10px; }
 .cols { display: none; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
 .card.expanded .cols { display: block; }
 .col-row { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; font-family: 'SF Mono', Menlo, monospace; }
 .col-name { min-width: 120px; color: var(--fg); }
 .col-type { min-width: 140px; color: var(--fg-dim); }
 .col-key { min-width: 40px; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-th { color: var(--fg-dim); font-weight: 600; font-size: 12px; white-space: nowrap; }
-tr:hover td { background: rgba(88,166,255,.04); }
-.search-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
-.search-bar input { flex: 1; min-width: 200px; padding: 8px 12px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; color: var(--fg); font-size: 14px; }
 .domain-filters { display: flex; gap: 6px; flex-wrap: wrap; }
 .domain-filter { padding: 4px 10px; border-radius: 12px; font-size: 12px; cursor: pointer; border: 1px solid var(--border); background: var(--panel2); color: var(--fg-dim); }
 .domain-filter.active { color: var(--fg); border-color: var(--blue); }
@@ -216,9 +187,9 @@ tr:hover td { background: rgba(88,166,255,.04); }
 .fk-card .arrow { color: var(--purple); }
 .fk-card .cols { color: var(--fg-dim); font-size: 12px; }
 .fk-card .on-delete { font-size: 11px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--border); }
-.fk-card .on-delete.CASCADE { color: var(--red); border-color: rgba(248,81,73,.4); }
-.fk-card .on-delete.SET\\ NULL { color: var(--amber); border-color: rgba(210,153,34,.4); }
-.fk-card .on-delete.RESTRICT { color: var(--cyan); border-color: rgba(57,197,207,.4); }
+.fk-card .on-delete.CASCADE { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); }
+.fk-card .on-delete.SET\\ NULL { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
+.fk-card .on-delete.RESTRICT { color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 40%, transparent); }
 .er-container { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
 .er-toolbar { position: absolute; top: 8px; right: 8px; z-index: 10; display: flex; gap: 4px; }
 .er-toolbar button { padding: 4px 10px; font-size: 12px; background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; color: var(--fg-dim); cursor: pointer; }
@@ -227,23 +198,9 @@ tr:hover td { background: rgba(88,166,255,.04); }
 .er-legend .item { display: flex; align-items: center; gap: 4px; margin: 2px 0; }
 .er-legend .dot { width: 10px; height: 10px; border-radius: 2px; }
 .er-empty { text-align: center; padding: 40px; color: var(--fg-dim); }
-/* Health dashboard */
-.health-score { display: flex; align-items: center; gap: 32px; margin-bottom: 24px; }
-.health-score .score-ring { width: 140px; height: 140px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-direction: column; border: 6px solid var(--panel2); position: relative; }
-.health-score .score-ring .score-num { font-size: 36px; font-weight: 700; }
-.health-score .score-ring .score-grade { font-size: 14px; color: var(--fg-dim); }
+/* Health dashboard（基础仪表盘样式见共享骨架，此处仅数据库专属） */
 .health-score .score-meta { flex: 1; }
 .health-score .score-meta h2 { font-size: 18px; margin-bottom: 8px; }
-.dim-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 20px; }
-.dim-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-.dim-card .dim-name { font-size: 13px; color: var(--fg-dim); margin-bottom: 6px; }
-.dim-card .dim-score { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
-.dim-card .dim-bar { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; }
-.dim-card .dim-bar-fill { height: 100%; border-radius: 3px; }
-.issue-item { padding: 8px 12px; border-left: 3px solid var(--border); margin-bottom: 6px; background: var(--panel2); border-radius: 0 4px 4px 0; font-size: 13px; }
-.issue-item.high { border-left-color: var(--red); }
-.issue-item.medium { border-left-color: var(--amber); }
-.issue-item.low { border-left-color: var(--blue); }
 .rec-list { list-style: none; }
 .rec-list li { padding: 6px 0 6px 24px; position: relative; font-size: 13px; }
 .rec-list li::before { content: '→'; position: absolute; left: 0; color: var(--green); }
@@ -270,7 +227,6 @@ tr:hover td { background: rgba(88,166,255,.04); }
 .domain-sankey { display: flex; gap: 4px; align-items: stretch; height: 200px; margin-top: 12px; }
 .sankey-col { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .sankey-block { border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #fff; min-height: 20px; overflow: hidden; }
-@media (max-width: 768px) { .grid { grid-template-columns: 1fr; } .stats { gap: 12px; } .health-score { flex-direction: column; } }
 </style>
 </head>
 <body>
@@ -384,6 +340,7 @@ tr:hover td { background: rgba(88,166,255,.04); }
 </main>
 <script id="db-viewer-data" type="application/json">${dataJson}</script>
 <script>
+${RING_JS}
 const MODEL = JSON.parse(document.getElementById('db-viewer-data').textContent);
 const DOMAIN_COLORS = ${JSON.stringify(model.domains.reduce((acc, d) => { acc[d.key] = d.color; return acc; }, {}))};
 let currentDomain = 'all';
@@ -422,7 +379,7 @@ function renderER() {
   const svg = document.getElementById('er-svg');
   const graph = MODEL.foreignKeyGraph;
   if (!graph.nodes || graph.nodes.length === 0) {
-    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="#8b949e">无表数据</text>';
+    svg.innerHTML = '<text x="50%" y="50%" text-anchor="middle" fill="var(--fg-dim)">无表数据</text>';
     return;
   }
 
@@ -500,12 +457,12 @@ function renderER() {
       table.columns.slice(0, 5).forEach((c, i) => {
         const cy = p.y + 20 + (i + 1) * colRowH - 4;
         const keyBadge = c.key === 'PK' ? '★' : c.key === 'UNIQUE' ? 'U' : '';
-        html += '<text x="' + (p.x + 6) + '" y="' + cy + '" fill="' + (c.key === 'PK' ? '#d29922' : '#8b949e') + '" font-size="10" font-family="monospace">' + esc(c.name) + '</text>';
-        html += '<text x="' + (p.x + 110) + '" y="' + cy + '" fill="#6e7681" font-size="9" font-family="monospace">' + esc(c.type) + '</text>';
-        if (keyBadge) html += '<text x="' + (p.x + p.w - 14) + '" y="' + cy + '" fill="#d29922" font-size="10">' + keyBadge + '</text>';
+        html += '<text x="' + (p.x + 6) + '" y="' + cy + '" fill="' + (c.key === 'PK' ? 'var(--amber)' : 'var(--fg-dim)') + '" font-size="10" font-family="monospace">' + esc(c.name) + '</text>';
+        html += '<text x="' + (p.x + 110) + '" y="' + cy + '" fill="var(--fg-faint)" font-size="9" font-family="monospace">' + esc(c.type) + '</text>';
+        if (keyBadge) html += '<text x="' + (p.x + p.w - 14) + '" y="' + cy + '" fill="var(--amber)" font-size="10">' + keyBadge + '</text>';
       });
       if (table.columns.length > 5) {
-        html += '<text x="' + (p.x + 6) + '" y="' + (p.y + 20 + 6 * colRowH - 4) + '" fill="#6e7681" font-size="9">+' + (table.columns.length - 5) + ' more...</text>';
+        html += '<text x="' + (p.x + 6) + '" y="' + (p.y + 20 + 6 * colRowH - 4) + '" fill="var(--fg-faint)" font-size="9">+' + (table.columns.length - 5) + ' more...</text>';
       }
     }
     html += '</g>';
@@ -706,13 +663,9 @@ function setDomain(el, d) {
   const h = MODEL.audits?.health;
   if (!h) return;
 
-  const gradeColor = h.grade === 'A' ? 'var(--green)' : h.grade === 'B' ? 'var(--blue)' : h.grade === 'C' ? 'var(--amber)' : 'var(--red)';
   document.getElementById('health-score').innerHTML =
     '<div class="health-score">' +
-      '<div class="score-ring" style="border-color:' + gradeColor + '30;border-top-color:' + gradeColor + '">' +
-        '<div class="score-num" style="color:' + gradeColor + '">' + h.score + '</div>' +
-        '<div class="score-grade">等级 ' + h.grade + '</div>' +
-      '</div>' +
+      scoreRingSvg(h.score, { label: '等级 ' + h.grade, size: 156 }) +
       '<div class="score-meta">' +
         '<h2>Schema 健康度总评</h2>' +
         '<div style="color:var(--fg-dim);margin-bottom:8px;">共发现 ' + h.totalIssues + ' 个问题，' + (h.recommendations?.length || 0) + ' 条优化建议</div>' +
@@ -725,13 +678,12 @@ function setDomain(el, d) {
     '</div>';
 
   const dimLabels = { completeness: '完整性', consistency: '一致性', indexQuality: '索引质量', patternHealth: '模式健康' };
-  const dimColors = { completeness: 'var(--green)', consistency: 'var(--blue)', indexQuality: 'var(--purple)', patternHealth: 'var(--cyan)' };
   const dimHtml = Object.entries(h.dimensions || {}).map(([key, dim]) => {
     const color = dim.score >= 80 ? 'var(--green)' : dim.score >= 60 ? 'var(--amber)' : 'var(--red)';
     return '<div class="dim-card">' +
       '<div class="dim-name">' + (dimLabels[key] || key) + '</div>' +
       '<div class="dim-score" style="color:' + color + '">' + dim.score + '</div>' +
-      '<div class="dim-bar"><div class="dim-bar-fill" style="width:' + dim.score + '%;background:' + color + '"></div></div>' +
+      '<div class="dim-bar"><div class="dim-bar-fill" style="--bar-c:' + color + ';width:' + dim.score + '%"></div></div>' +
     '</div>';
   }).join('');
   document.getElementById('health-dimensions').innerHTML = dimHtml;
@@ -753,10 +705,10 @@ function setDomain(el, d) {
   const evo = MODEL.audits?.evolution;
   if (!evo || !evo.timeline || evo.timeline.length === 0) return;
 
-  // 表数增长曲线
+  // 表数增长曲线（响应式宽度：按容器实际宽度绘制，宽屏铺满不居中留白）
   const growthSvg = document.getElementById('evo-chart-growth');
   const tl = evo.timeline;
-  const W = 900, H = 260, padL = 50, padR = 20, padT = 20, padB = 40;
+  const W = Math.max(480, Math.round(growthSvg.getBoundingClientRect().width)), H = 260, padL = 50, padR = 20, padT = 20, padB = 40;
   const chartW = W - padL - padR, chartH = H - padT - padB;
   const maxVal = Math.max(...tl.map(t => t.cumulativeTables), 1);
   const n = tl.length;
@@ -775,8 +727,8 @@ function setDomain(el, d) {
   for (let i = 0; i <= 4; i++) {
     const val = Math.round((maxVal * i) / 4);
     const y = padT + chartH - (val / maxVal) * chartH;
-    yTicks += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#30363d" stroke-dasharray="2,3"/>' +
-      '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" fill="#8b949e" font-size="10">' + val + '</text>';
+    yTicks += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="var(--border)" stroke-dasharray="2,3"/>' +
+      '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" fill="var(--fg-dim)" font-size="10">' + val + '</text>';
   }
 
   // X 轴标签（每隔几个显示一个）
@@ -785,15 +737,16 @@ function setDomain(el, d) {
   tl.forEach((t, i) => {
     if (i % labelStep !== 0 && i !== n - 1) return;
     const x = padL + (i / Math.max(n - 1, 1)) * chartW;
-    xLabels += '<text x="' + x + '" y="' + (H - padB + 16) + '" text-anchor="middle" fill="#8b949e" font-size="10" transform="rotate(-30 ' + x + ',' + (H - padB + 16) + ')">' + esc(t.version) + '</text>';
+    xLabels += '<text x="' + x + '" y="' + (H - padB + 16) + '" text-anchor="middle" fill="var(--fg-dim)" font-size="10" transform="rotate(-30 ' + x + ',' + (H - padB + 16) + ')">' + esc(t.version) + '</text>';
   });
 
   growthSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  growthSvg.setAttribute('preserveAspectRatio', 'none');
   growthSvg.innerHTML = yTicks + xLabels +
-    '<path d="' + areaD + '" fill="rgba(88,166,255,0.15)" stroke="none"/>' +
-    '<path d="' + pathD + '" fill="none" stroke="var(--blue)" stroke-width="2"/>' +
+    '<path d="' + areaD + '" fill="color-mix(in srgb, var(--blue) 15%, transparent)" stroke="none"/>' +
+    '<path d="' + pathD + '" fill="none" stroke="var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke"/>' +
     points.filter((_, i) => i % labelStep === 0 || i === points.length - 1).map(p =>
-      '<circle cx="' + p.x + '" cy="' + p.y + '" r="3" fill="var(--blue)"/>'
+      '<circle cx="' + p.x + '" cy="' + p.y + '" r="3" fill="var(--blue)" vector-effect="non-scaling-stroke"/>'
     ).join('');
 
   // 操作类型分布（堆叠柱状图）
@@ -825,11 +778,12 @@ function setDomain(el, d) {
   for (let i = 0; i <= 4; i++) {
     const val = Math.round((maxOps * i) / 4);
     const y = padT + chartH - (val / maxOps) * chartH;
-    yTicks2 += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#30363d" stroke-dasharray="2,3"/>' +
-      '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" fill="#8b949e" font-size="10">' + val + '</text>';
+    yTicks2 += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="var(--border)" stroke-dasharray="2,3"/>' +
+      '<text x="' + (padL - 6) + '" y="' + (y + 4) + '" text-anchor="end" fill="var(--fg-dim)" font-size="10">' + val + '</text>';
   }
 
   opsSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  opsSvg.setAttribute('preserveAspectRatio', 'none');
   opsSvg.innerHTML = yTicks2 + xLabels + barsHtml;
 
   // 图例

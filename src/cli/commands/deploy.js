@@ -8,6 +8,7 @@ import {
   auditSecurity, auditResilience, auditConfigConsistency, auditDependency, auditHealth,
 } from '../../deployment/deployAuditor.js';
 import { parseWhere, matchesWhere, outputJson, outputPretty, succeed, fail } from '../shared.js';
+import { listThemeNames } from '../../themes/index.js';
 
 export const deployCommand = new Command('deploy')
   .description('部署配置目录分析：扫描 Dockerfile / docker-compose / K8s manifest / nginx.conf / .env → 部署架构模型 → 分析 JSON / 部署蓝图 deployoverview HTML');
@@ -74,13 +75,18 @@ deployCommand
   .description('导出部署架构分析结果（json | html | viewmodel）')
   .option('--format <format>', '导出格式: json | html | viewmodel', 'json')
   .option('--output <path>', '写入文件（默认输出到 stdout）')
+  .option('--theme <name>', `HTML 主题风格（默认 deep-blue，可选: ${listThemeNames().join(' / ')}）`, 'deep-blue')
   .action((opts) => {
     const model = loadDeploySnapshot();
     let content;
     if (opts.format === 'json') {
       content = JSON.stringify(model, null, 2);
     } else if (opts.format === 'html') {
-      content = renderDeployOverviewHtml(buildDeployViewerModel(model));
+      let theme = opts.theme;
+      if (!listThemeNames().includes(theme)) {
+        fail(`未知主题: ${theme}（可选: ${listThemeNames().join(' / ')}）`);
+      }
+      content = renderDeployOverviewHtml(buildDeployViewerModel(model), { theme });
     } else if (opts.format === 'viewmodel') {
       content = JSON.stringify(buildDeployViewerModel(model), null, 2);
     } else {

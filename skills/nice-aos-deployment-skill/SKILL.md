@@ -137,7 +137,7 @@ nice-aos deploy audit all
 # 导出完整分析 JSON
 nice-aos deploy export --format json --output deploy-analysis.json
 
-# 导出部署蓝图 HTML（分层拓扑 + SVG 依赖图，8 Tab）
+# 导出部署蓝图 HTML（分层拓扑 + SVG 依赖图，8 Tab；--theme 可选 deep-blue / fresh-green / elegant-purple）
 nice-aos deploy export --format html --output deploy-overview.html
 
 # 导出视图模型 JSON（供 agent 直接消费，含审计数据）
