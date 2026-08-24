@@ -2,6 +2,53 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.25.0] - 2026-08-24
+
+### 新增
+
+- **代码↔数据库跨层审计**（借鉴 Java AOS 实体-表融合思路）：第 9 个审计场景 `db audit crosslayer`——孤儿表检测（无代码实体映射的表）、隐式外键识别（`*_id` 列无显式 FK 约束）、代码实体覆盖率、幽灵类型检测（代码有 Interface 但无对应数据库表）
+- **跨层命名约定匹配**（`dbModel.js`）：`matchTablesToCodeEntities()` 三级匹配策略（精确→命名约定→子串），snake_case 表名 ↔ PascalCase 接口名自动关联（`user_roles` → `UserRole`）
+- **前端数据模型类型识别**（`dbModel.js`）：`FRONTEND_DATA_MODEL_RULES` 5 种类型——API Response Type / API Request Type / Store Model / Entity Interface / Table Mirror
+- **跨层链接类型**（`blueprint.js`）：新增 `mapsToTable`（Interface/Class/Store → Table）和 `mappedFromCode`（Table → Interface/Class/Store）两种链接，支持代码↔数据库双向遍历
+- **CLI 命令**：`db audit crosslayer [--code-snapshot <path>]`；`db audit all` 新增 `--code-snapshot` 选项自动启用跨层审计
+
+### 变更
+
+- `dbModel.js` 导出新增：`tableNameToCandidateNames`、`codeNameToCandidateNames`、`matchTablesToCodeEntities`、`FRONTEND_DATA_MODEL_RULES`、`detectDataModelType`
+- `LINK_TYPES` 从 22 种扩展为 24 种（+`mapsToTable` / `mappedFromCode`）
+- 数据库 Skill SKILL.md 同步更新：9 大审计场景、跨层审计章节、触发场景、Agent 行为规则
+
+### 验证
+
+- 195 个单元测试全过，零回归
+- 端到端实测：asdm-admin deploy 目录（141 文件/53 服务/35 路由/6 中间件），5 维审计评分（健康度 76/C、安全性 60/D、高可用 76/C、一致性 96/A、依赖 82/B）
+
+## [0.24.0] - 2026-08-24
+
+### 新增
+
+- **数据统计 Tab**（数据库蓝图 dataoverview）：参考代码蓝图「代码统计」（9bbd034）为数据库脚本分析补齐规模画像——KPI 卡片（数据表 / 列总数 / 外键 / 索引 / 迁移版本 / 平均每表列数，视图/触发器/存储过程徽章）、领域数据量分布条形图（按列数排序，附表数/外键数/占比）、领域列数占比环形图（纯 SVG `stroke-dasharray`，r=15.9155 周长=100 直用百分比，领域沿用自身配色）、DDL/DML 操作分布（全部迁移 `operationSummary` 累计：CREATE TABLE/ALTER/INDEX/DROP/VIEW/TRIGGER/PROC/FUNC/INSERT/UPDATE）、列类型分布（归一化基础类型：`VARCHAR(255)`→VARCHAR、`INT UNSIGNED`→INT）、Top 20 宽表（按列数 + 领域/FK/索引/注释）、迁移版本操作量 Top 10 表格
+- **数据图谱 Tab**（数据库蓝图 dataoverview）：表 / 领域两级关系网络的**力导向图**（内联力模拟零依赖：库仑斥力 + 弹簧引力 + 向心重力 + 速度阻尼，320 步冷却布局，与代码蓝图代码图谱同一套参数）——表图谱节点 = 表（大小 ∝ 列数，颜色 = 领域，节点携带服务端配色免客户端映射）、边 = 外键引用（同向 FK 聚合权重，粗细 ∝ FK 数）；领域图谱节点 = 领域（大小 ∝ 表数）、边 = 跨领域外键耦合；交互：拖拽节点实时重算、滚轮缩放、空白平移、点击聚焦邻接高亮（显示列/外键/索引/领域/首建版本/注释与邻接边数）、表/领域视图切换、重新布局、重置视图
+
+### 变更
+
+- `buildDbViewerModel` 视图模型新增 `stats` 与 `dataGraph` 两个聚合（纯函数，可供 AI agent 直接消费 `db export --format viewmodel`）；无表数据时置空并隐藏对应 Tab
+- 数据图谱保护上限：表视图节点 ≤ 150（按 FK 度数 + 列数排序截断，`hiddenTableCount` 提示未展示小表）、领域节点 ≤ 24、边 ≤ 600；悬挂外键（指向不存在表）不建边；领域视图排除域内 FK 与自环
+- 多数据库场景领域键对齐：统计与图谱统一使用 `db:domain` 复合键（与 `buildDomainsArray` 一致）
+
+### 修复
+
+- **演进分析图表空白**（数据库蓝图）：`auditEvolution` 读取 `m.operations` 数组 / `m.tableCount` 字段，而 `dbBuilder` 产出的迁移只携带 `operationSummary` 对象——导致真实扫描下表数增长曲线恒为 0、操作类型分布无柱条、演进趋势占比恒 0%；现兼容两种形态（`operationSummary` 主路径 + `operations` 旧形态），操作大类按 operationSummary 键映射（CREATE/ALTER/INDEX/DROP/DML/其他），增长曲线优先按当前表 `createdAt` 精确累计（终点 = 当前表数，重建表不重复计数），无 createdAt 时退回 CREATE-DROP 净增近似
+- **顶部统计卡片窄屏错乱**（数据库蓝图）：flex 布局（`flex: 1 1 90px`）在约 780-800px 宽度下出现"第一行挤压 7 张窄卡 + 第二行 1 张孤卡被 grow 拉伸占满整行"；改为固定 8 项网格 `repeat(8, 1fr)`，≤1080px 切 4 列、≤560px 切 2 列，任意宽度下卡片等宽铺满
+- **演进分析图表宽屏横向拉伸变形**（数据库蓝图）：图表渲染 IIFE 在页面加载时执行，而该 Tab 默认 `display:none`，`getBoundingClientRect()` 量宽为 0 后回退 480 假宽度，叠加 `preserveAspectRatio="none"` + `width:100%` 在 1500px 视口下被横向拉伸 3.1 倍——曲线压扁、X 轴版本号文字剪切变形、数据点变椭圆、堆叠柱挤成一片；重构为惰性渲染 `renderEvolution()`（与 ER 图同一模式）：隐藏时跳过图表绘制、Tab 激活时按实测宽度 1:1 绘制（viewBox 严格等于容器像素宽、显式 width/height、移除 preserveAspectRatio=none）、窗口 resize 防抖重绘、静态部分（图例/领域首版/趋势/里程碑）只渲染一次
+
+### 验证
+
+- 195 个单元测试全过（`test/dbViewer.test.mjs` 新增 6 个：stats/dataGraph 模型聚合（领域分布/操作累计/列类型归一化/FK 聚合权重/悬挂外键排除/跨域边）+ DOM stub 执行内嵌脚本渲染产物（KPI/环形图/力导向 SVG 无 NaN 且坐标在画布内 + 演进图表有曲线与柱条 + 卡片网格 CSS）+ 演进分析 operationSummary 聚合 + 演进图表惰性渲染（隐藏时不绘制 / Tab 激活按实测宽度绘制 / resize 重绘 / 无 preserveAspectRatio）+ 空数据容错）
+- 端到端实测：sprint 布局 SQL 目录 `db scan` → `db export --format html`，5 表/19 列/5 领域全链路正确；真实浏览器验证两个新 Tab 渲染、表/领域视图切换、节点点击聚焦（user_info → 3 邻接高亮 + 元信息）
+- 修复项实测（asdm-admin 真实库）：migrations（140 迁移/95 表）与 mysql-telemetry（8 迁移/6 表）演进分析均出数——telemetry 早期 CREATE 63% / 后期 ALTER 95%、11 根操作柱条、里程碑出现；顶部卡片 780px 下 4+4 两行等宽铺满（修复前 7 张 94px + 1 张 732px 孤卡）
+- 图表变形修复几何级验证：1500px 视口下 Tab 激活前 viewBox 为空（隐藏不绘制），激活后 viewBox=1403=容器实测像素宽、preserveAspectRatio 已移除（修复前 viewBox=480 被拉伸 3.1 倍）；视觉复检 X 轴版本号字形端正无剪切、数据点为正圆、柱条宽度正常；窗口 resize 防抖重绘跟随新宽度
+
 ## [0.23.0] - 2026-08-23
 
 ### 新增

@@ -1,8 +1,8 @@
 // 数据库审计纯函数模块
-// 7 大审计场景：健康度 / 迁移影响 / 领域依赖 / 索引优化 / 模型演进 / 外键链路 / 命名规范
+// 8 大审计场景：健康度 / 迁移影响 / 领域依赖 / 索引优化 / 模型演进 / 外键链路 / 命名规范 / 实体边界（DDD）
 // 全部基于 dbDataMap 输入，无副作用，便于测试和复用
 
-import { DOMAIN_RULES, versionCompare } from './dbModel.js';
+import { DOMAIN_RULES, versionCompare, buildEntities, matchTablesToCodeEntities, tableNameToCandidateNames } from './dbModel.js';
 
 // ============================================================
 //  1. auditHealth — Schema 健康度总审计
@@ -370,30 +370,58 @@ export function auditIndexes(dbDataMap) {
 //  5. auditEvolution — 模型演进分析
 // ============================================================
 
+// operationSummary 键 → 操作大类（键与 sqlAnalyzer operationSummary 对齐）
+const OPERATION_CATEGORY = {
+  createTable: 'create', alterTable: 'alter', createIndex: 'index', dropTable: 'drop',
+  insert: 'dml', update: 'dml', createView: 'other', createTrigger: 'other', createProcedure: 'other',
+};
+
 export function auditEvolution(dbDataMap) {
   const migrations = [...(dbDataMap.migrations || [])].sort((a, b) => versionCompare(a.version, b.version));
   const tables = dbDataMap.tables || [];
 
-  // 按版本的表数量增长
+  // 表数量增长：优先按当前表 createdAt 精确累计（终点 = 当前表数，重建表不重复计数），
+  // 无 createdAt 可追溯时退回迁移操作计数近似（净增 = CREATE - DROP）
+  const hasCreatedAt = tables.some((t) => t.createdAt);
+  const bornUpTo = (version) => tables.filter((t) => t.createdAt && versionCompare(t.createdAt, version) <= 0).length;
+
   let cumulativeTables = 0;
   const timeline = [];
   const domainFirstVersions = {};
 
   for (const m of migrations) {
-    const created = m.tableCount || (m.operations || []).filter((o) => o.type === 'createTable').length;
-    const dropped = (m.operations || []).filter((o) => o.type === 'dropTable').length;
-    cumulativeTables += created - dropped;
+    const ops = m.operations || [];
+    const summary = m.operationSummary || {};
+    // dbBuilder 产出的迁移只带 operationSummary（无 operations 数组），两种形态都支持
+    const useSummary = ops.length === 0;
+
+    const created = useSummary ? (summary.createTable || 0) : ops.filter((o) => o.type === 'createTable').length;
+    const dropped = useSummary ? (summary.dropTable || 0) : ops.filter((o) => o.type === 'dropTable').length;
+    cumulativeTables = useSummary && hasCreatedAt
+      ? bornUpTo(m.version)
+      : cumulativeTables + created - dropped;
 
     // 操作类型分布
     const opTypes = {};
-    for (const op of (m.operations || [])) {
-      const cat = op.type.includes('createTable') ? 'create'
-        : op.type.includes('alter') ? 'alter'
-        : op.type.includes('index') ? 'index'
-        : op.type.includes('drop') ? 'drop'
-        : op.type.includes('insert') || op.type.includes('update') ? 'dml'
-        : 'other';
-      opTypes[cat] = (opTypes[cat] || 0) + 1;
+    let operationCount = 0;
+    if (useSummary) {
+      for (const [k, v] of Object.entries(summary)) {
+        if (!v) continue;
+        const cat = OPERATION_CATEGORY[k] || 'other';
+        opTypes[cat] = (opTypes[cat] || 0) + v;
+        operationCount += v;
+      }
+    } else {
+      for (const op of ops) {
+        const cat = op.type.includes('createTable') ? 'create'
+          : op.type.includes('alter') ? 'alter'
+          : op.type.includes('index') ? 'index'
+          : op.type.includes('drop') ? 'drop'
+          : op.type.includes('insert') || op.type.includes('update') ? 'dml'
+          : 'other';
+        opTypes[cat] = (opTypes[cat] || 0) + 1;
+        operationCount += 1;
+      }
     }
 
     // 领域首版出现
@@ -409,7 +437,7 @@ export function auditEvolution(dbDataMap) {
       description: m.description,
       cumulativeTables: Math.max(0, cumulativeTables),
       tableCount: m.tableCount || created,
-      operationCount: (m.operations || []).length,
+      operationCount,
       opTypes,
     });
   }
@@ -723,4 +751,250 @@ function findCircularRefs(start, outgoing, incoming) {
   }
 
   return circular.slice(0, 10);
+}
+
+// ============================================================
+//  8. auditEntities — 实体边界审计（DDD 视角：识别业务领域边界 → 划分模块 → 猜测进化方向）
+// ============================================================
+
+export function auditEntities(dbDataMap) {
+  const tables = dbDataMap.tables || [];
+  const foreignKeys = dbDataMap.foreignKeys || [];
+  const migrations = [...(dbDataMap.migrations || [])].sort((a, b) => versionCompare(a.version, b.version));
+  if (!tables.length) return { entityCount: 0, entities: [] };
+
+  const entities = buildEntities(tables, foreignKeys);
+  const entityByName = new Map(tables.map((t) => [t.name, t]));
+
+  // ---- 1) 实体清单摘要（按领域分组，供"划分模块"消费） ----
+  const byDomain = new Map();
+  for (const e of entities) {
+    const key = e.domain || 'other';
+    if (!byDomain.has(key)) byDomain.set(key, { key, label: e.domainLabel || key, entities: 0, aggregates: 0, associations: 0, linkTables: 0 });
+    const d = byDomain.get(key);
+    d.entities += 1;
+    if (e.kind === 'aggregate') {
+      d.aggregates += 1;
+      d.linkTables += e.linkTables.length;
+    } else {
+      d.associations += 1;
+    }
+  }
+  const domainSummary = [...byDomain.values()].sort((a, b) => b.entities - a.entities);
+
+  // ---- 2) 跨域外键（边界侵蚀信号：FK 跨领域 = 边界不纯，耦合点） ----
+  const tableDomain = new Map(tables.map((t) => [t.name, t.domain || 'other']));
+  const crossDomain = foreignKeys
+    .filter((fk) => tableDomain.has(fk.fromTable) && tableDomain.has(fk.toTable)
+      && tableDomain.get(fk.fromTable) !== tableDomain.get(fk.toTable))
+    .map((fk) => ({
+      fromTable: fk.fromTable, toTable: fk.toTable,
+      fromDomain: tableDomain.get(fk.fromTable), toDomain: tableDomain.get(fk.toTable),
+      fkName: fk.name,
+    }));
+  const erosionPairs = new Map();
+  for (const c of crossDomain) {
+    const key = `${c.fromDomain}>${c.toDomain}`;
+    const e = erosionPairs.get(key) ?? { fromDomain: c.fromDomain, toDomain: c.toDomain, count: 0, tables: [] };
+    e.count += 1;
+    if (!e.tables.includes(c.fromTable)) e.tables.push(c.fromTable);
+    erosionPairs.set(key, e);
+  }
+  const boundaryErosion = [...erosionPairs.values()].sort((a, b) => b.count - a.count);
+
+  // ---- 3) 孤立实体（零 FK 的主实体：边界信号缺失，归属存疑） ----
+  const degree = new Map();
+  for (const fk of foreignKeys) {
+    degree.set(fk.fromTable, (degree.get(fk.fromTable) ?? 0) + 1);
+    degree.set(fk.toTable, (degree.get(fk.toTable) ?? 0) + 1);
+  }
+  const isolatedAggregates = entities
+    .filter((e) => e.kind === 'aggregate' && (degree.get(e.name) ?? 0) === 0)
+    .map((e) => ({ name: e.name, domain: e.domain, domainLabel: e.domainLabel, businessColumnCount: e.businessColumnCount }));
+
+  // ---- 4) 归属置信度：表名前缀与领域规则不一致（detectDomain 兜底到 other 的实体占比） ----
+  const otherDomainEntities = entities.filter((e) => (e.domain || 'other') === 'other');
+  const confidence = entities.length
+    ? Math.round((1 - otherDomainEntities.length / entities.length) * 100)
+    : 100;
+  const unmatchedSamples = otherDomainEntities.slice(0, 10).map((e) => e.name);
+
+  // ---- 5) 进化方向推测（近期迁移的 ALTER 热点实体 + 新兴领域） ----
+  const recent = migrations.slice(-Math.max(3, Math.ceil(migrations.length / 3)));
+  const recentVersions = new Set(recent.map((m) => m.version));
+  const alterHeat = new Map(); // tableName -> alter 次数（来自 migrationVersions ∩ 近期 + 近期 operationSummary 不可按表归属，用表的 migrationVersions 近期计数近似）
+  for (const t of tables) {
+    const recentHits = (t.migrationVersions || []).filter((v) => recentVersions.has(v)).length;
+    if (recentHits > 0) alterHeat.set(t.name, (alterHeat.get(t.name) ?? 0) + recentHits);
+  }
+  const hotEntities = entities
+    .map((e) => ({ name: e.name, kind: e.kind, domain: e.domain, domainLabel: e.domainLabel, churn: alterHeat.get(e.name) ?? 0 }))
+    .filter((e) => e.churn > 0)
+    .sort((a, b) => b.churn - a.churn)
+    .slice(0, 10);
+  // 新兴领域：近期版本中首次出现表的领域（createdAt ∈ 近期版本）
+  const emergingDomains = new Map();
+  for (const t of tables) {
+    if (t.createdAt && recentVersions.has(t.createdAt)) {
+      const key = t.domain || 'other';
+      const e = emergingDomains.get(key) ?? { key, label: t.domainLabel || key, newTables: [] };
+      e.newTables.push(t.name);
+      emergingDomains.set(key, e);
+    }
+  }
+  const emerging = [...emergingDomains.values()]
+    .map((e) => ({ ...e, newTableCount: e.newTables.length }))
+    .sort((a, b) => b.newTableCount - a.newTableCount);
+
+  // ---- 6) 建议 ----
+  const recommendations = [];
+  if (boundaryErosion.length) {
+    const top = boundaryErosion[0];
+    recommendations.push(`跨域外键 ${crossDomain.length} 条（最热：${top.fromDomain}→${top.toDomain} ${top.count} 条），考虑引入防腐层或重组实体归属`);
+  }
+  if (isolatedAggregates.length > entities.length * 0.5) {
+    recommendations.push(`${isolatedAggregates.length}/${entities.length} 个实体零外键关联——schema 以隐式约定（*_id 列）为主，建议在文档或命名上显式化实体边界`);
+  }
+  if (confidence < 60) {
+    recommendations.push(`领域归属置信度 ${confidence}%（${otherDomainEntities.length} 个实体落入"其他"域），可在 dbModel.js DOMAIN_RULES 补充项目专属前缀`);
+  }
+  if (hotEntities.length) {
+    recommendations.push(`演进热点：${hotEntities.slice(0, 3).map((e) => e.name + '（' + e.churn + ' 次）').join('、')} 近期迁移频繁，属活跃实体，改动需回归验证`);
+  }
+
+  return {
+    entityCount: entities.length,
+    aggregateCount: entities.filter((e) => e.kind === 'aggregate').length,
+    associationCount: entities.filter((e) => e.kind === 'association').length,
+    linkTableCount: tables.length
+      - entities.filter((e) => e.kind === 'aggregate').length
+      - entities.filter((e) => e.kind === 'association').length,
+    entities,
+    domainSummary,
+    boundaryErosion,
+    isolatedAggregates,
+    domainConfidence: { score: confidence, unmatchedCount: otherDomainEntities.length, unmatchedSamples },
+    evolutionGuess: { hotEntities, emergingDomains: emerging, recentVersionCount: recent.length },
+    recommendations,
+  };
+}
+
+// ============================================================
+//  9. auditCrossLayer — 代码↔数据库跨层审计（借鉴 asdm-aos 的实体-表融合思路）
+//  输入：dbDataMap（数据库快照）+ codeEntities（代码实体列表，可选）
+//  codeEntities 格式：[{ name, type, id, filePath }]
+//  无 codeEntities 时仅做数据库侧自治分析（孤儿表/隐式引用检测）
+// ============================================================
+
+export function auditCrossLayer(dbDataMap, codeEntities) {
+  const tables = dbDataMap.tables || [];
+  const foreignKeys = dbDataMap.foreignKeys || [];
+  if (!tables.length) return { tableCount: 0, codeEntityCount: 0 };
+
+  // ---- 1) 命名约定匹配（表 ↔ 代码实体）----
+  const matchMap = codeEntities?.length
+    ? matchTablesToCodeEntities(tables, codeEntities)
+    : new Map();
+
+  // ---- 2) 孤儿表检测（无任何代码实体映射的表）----
+  const matchedTables = new Set(matchMap.keys());
+  const orphanTables = tables
+    .filter((t) => !matchedTables.has(t.name))
+    .map((t) => ({
+      name: t.name,
+      domain: t.domain,
+      domainLabel: t.domainLabel,
+      columnCount: (t.columns || []).length,
+      businessColumnCount: (t.columns || []).filter((c) =>
+        !['id', 'created_at', 'updated_at', 'create_time', 'update_time', 'deleted_at', 'version'].includes(c.name)).length,
+      candidateNames: tableNameToCandidateNames(t.name),
+    }));
+
+  // ---- 3) 隐式外键检测（*_id 列但无显式 FK 约束）----
+  const implicitFks = [];
+  for (const t of tables) {
+    const explicitFkCols = new Set((t.foreignKeys || []).flatMap((fk) => fk.columns || []));
+    for (const col of (t.columns || [])) {
+      if (col.name.endsWith('_id') && !explicitFkCols.has(col.name) && col.name !== 'id') {
+        implicitFks.push({
+          table: t.name,
+          column: col.name,
+          type: col.type,
+          inferredRefTable: col.name.replace(/_id$/, '') + 's',
+        });
+      }
+    }
+  }
+
+  // ---- 4) 代码实体覆盖率 ----
+  const coverage = tables.length
+    ? Math.round((matchedTables.size / tables.length) * 100)
+    : 100;
+
+  // ---- 5) 未匹配代码实体（可能是数据库已删除但代码仍引用的"幽灵类型"）----
+  const unmatchedCodeEntities = [];
+  if (codeEntities?.length) {
+    const matchedCodeIds = new Set();
+    for (const matches of matchMap.values()) {
+      for (const m of matches) matchedCodeIds.add(m.codeEntityId);
+    }
+    // 仅报告疑似数据模型类型的未匹配实体
+    const dataModelTypes = ['Interface', 'Class', 'Store'];
+    for (const e of codeEntities) {
+      if (!dataModelTypes.includes(e.type)) continue;
+      if (matchedCodeIds.has(e.id)) continue;
+      // 检查是否有 *_id 列指向它
+      const snakeName = e.name
+        .replace(/([A-Z])/g, '_$1')
+        .toLowerCase()
+        .replace(/^_/, '');
+      const hasImplicitRef = implicitFks.some(
+        (f) => f.column === snakeName + '_id' || f.inferredRefTable === snakeName + 's',
+      );
+      if (hasImplicitRef) {
+        unmatchedCodeEntities.push({
+          name: e.name,
+          type: e.type,
+          id: e.id,
+          filePath: e.filePath,
+          implicitRefEvidence: true,
+        });
+      }
+    }
+  }
+
+  // ---- 6) 建议 ----
+  const recommendations = [];
+  if (orphanTables.length > tables.length * 0.5) {
+    recommendations.push(`${orphanTables.length}/${tables.length} 张表无代码实体映射——项目可能以隐式约定（*_id 列）代替显式类型定义`);
+  }
+  if (implicitFks.length > 5) {
+    recommendations.push(`${implicitFks.length} 个 *_id 列无显式外键约束（隐式引用），建议补充 DDL 外键或在代码中显式建模`);
+  }
+  if (unmatchedCodeEntities.length) {
+    recommendations.push(`${unmatchedCodeEntities.length} 个代码类型有隐式数据库引用但无表匹配——可能是数据库已删除的"幽灵类型"，建议清理`);
+  }
+  if (coverage < 40 && codeEntities?.length) {
+    recommendations.push(`代码-数据库覆盖率仅 ${coverage}%，建议在代码中补充与数据库表对应的 Interface/类型定义`);
+  }
+
+  return {
+    tableCount: tables.length,
+    codeEntityCount: codeEntities?.length || 0,
+    matchedTableCount: matchedTables.size,
+    coveragePercent: coverage,
+    orphanTables: orphanTables.slice(0, 30),
+    orphanTableCount: orphanTables.length,
+    implicitFks: implicitFks.slice(0, 50),
+    implicitFkCount: implicitFks.length,
+    unmatchedCodeEntities: unmatchedCodeEntities.slice(0, 20),
+    unmatchedCodeEntityCount: unmatchedCodeEntities.length,
+    matchDetails: codeEntities?.length
+      ? [...matchMap.entries()].slice(0, 50).map(([tableName, matches]) => ({
+        tableName,
+        matches: matches.map((m) => ({ name: m.codeEntityName, type: m.codeEntityType, strategy: m.matchStrategy })),
+      }))
+      : [],
+    recommendations,
+  };
 }

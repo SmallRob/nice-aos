@@ -1,16 +1,19 @@
 ---
 name: nice-aos-database
 description: |
-  MySQL 数据库脚本深度分析技能。将 Flyway 风格的 MySQL 迁移脚本目录分析为结构化数据库模型，
+  MySQL 数据库脚本深度分析技能（领域驱动设计视角）。将 Flyway 风格的 MySQL 迁移脚本目录分析为结构化数据库模型，
   把"SQL 文件"转化为 AI agent 可直接查询的"数据库关系图谱"——包含表、列、主键、外键、索引、
-  迁移历史、领域分组、模式特征（软删除/审计字段/多租户/自引用/UUID主键/复合主键/JSON列等）。
-  7 大审计场景：健康度评估 / 迁移影响 / 领域依赖 / 索引优化 / 模型演进 / 外键链路 / 命名规范。
+  迁移历史、领域分组、业务实体层（主实体聚合/关联表/链接表分类与聚合）、
+  模式特征（软删除/审计字段/多租户/自引用/UUID主键/复合主键/JSON列等）。
+  9 大审计场景：健康度评估 / 迁移影响 / 领域依赖 / 索引优化 / 模型演进 / 外键链路 / 命名规范 / 实体边界（DDD）/ 代码↔数据库跨层审计。
+  跨层审计（借鉴 Java AOS 实体-表融合思路）：孤儿表检测 / 隐式外键识别 / 代码实体覆盖率 / 幽灵类型检测。
   数据蓝图查看器（dbViewer）：db export --format html 生成自包含 dataoverview HTML
-  （8 Tab：ER 图 / 表清单 / 外键 / 迁移 / 建模特征 / 健康总览 / 演进分析 / 索引优化，零依赖可离线打开）。
+  （10 Tab：ER 图 / 数据统计 / 数据图谱 / 表清单 / 外键 / 迁移 / 建模特征 / 健康总览 / 演进分析 / 索引优化，零依赖可离线打开）。
   油猴脚本 AI 助手（blueprint-ai-agent）支持双智能体切换：结构分析智能体 + 数据概览智能体。
   触发：用户说"分析数据库迁移脚本 / 数据库有哪些表 / 表结构是什么 / 外键关系 / 生成数据库全览图 /
   数据库蓝图 / ER 图 / 迁移历史 / 哪些表有软删除 / 多租户表有哪些 / 生成 dataoverview /
-  数据库健康度 / 索引优化 / 演进分析 / 领域依赖 / 命名规范 / 外键链路"，
+  数据库健康度 / 索引优化 / 演进分析 / 领域依赖 / 命名规范 / 外键链路 /
+  数据库有哪些业务实体 / 实体边界 / 领域是怎么划分的 / 表是怎么演进的 / 该往哪个方向重构"，
   或在需要理解数据库结构但不想逐个读 SQL 文件时。
   不做：代码扫描分析（用 nice-aos skill）、死代码清理（用 nice-aos-deadcode skill）、
   油猴脚本审计（用 nice-aos-userscript skill）。
@@ -18,10 +21,29 @@ description: |
 
 # Nice AOS Database Skill — MySQL 数据库脚本深度分析
 
-> 将 MySQL Flyway 迁移脚本目录分析为结构化数据库模型，产出数据分析 JSON、数据蓝图 dataoverview HTML（含 SVG ER 图）、以及 7 大审计场景报告。
+> 将 MySQL Flyway 迁移脚本目录分析为结构化数据库模型，产出数据分析 JSON、数据蓝图 dataoverview HTML（含 SVG ER 图 + 力导向数据图谱）、以及 8 大审计场景报告。
 > SQL 分析器（sqlAnalyzer）位于 `src/analyzers/`，与其他语言分析器并列；数据库模型/构建器/审计/查看器/快照位于 `src/database/` 独立子系统。
 > **核心价值**：把"逐个读 SQL 文件 + LLM 推理"降级为"毫秒级数据库查询"，在 120+ 迁移文件的项目中保障 agent 的结构理解准确度，并提供深度审计洞察。
 > **分工**：本 Skill 承载数据库脚本分析；代码本体分析见 `nice-aos` skill；死代码清理见 `nice-aos-deadcode` skill；油猴审计见 `nice-aos-userscript` skill。四者共享同一 CLI。
+
+## AI 定位：领域驱动设计（DDD）
+
+本 Skill 的分析产物按以下推理链组织，供 AI agent 做架构级判断：
+
+**识别业务领域边界 → 划分模块（实体聚合）→ 猜测进化方向 → 验证**
+
+| 环节 | 数据来源 | 命令 |
+|------|---------|------|
+| **1. 识别业务领域边界** | 领域分组（表名前缀规则）+ 跨域外键（边界侵蚀信号） | `db query domains` / `db audit entities`（boundaryErosion） |
+| **2. 划分模块（实体聚合）** | 业务实体层：主实体（聚合根候选）/ 关联表 / 链接表（junction 归属到主实体） | `db query entities` / `db audit entities`（domainSummary） |
+| **3. 猜测进化方向** | 近期迁移热点实体 + 新兴领域（近期首版表） | `db audit entities`（evolutionGuess） / `db audit evolution` |
+| **4. 验证** | 外键链路 / 命名规范 / 领域耦合矩阵交叉验证猜测 | `db audit fkchain` / `db audit naming` / `db audit domains` |
+
+关键判断规则（AI 应知）：
+- **零外键 ≠ 无关系**：多数业务库以 `*_id` 隐式约定代替显式 FK（实测 asdm-admin 58/93 实体零外键）。孤立实体多说明边界靠命名约定维持，重构时更依赖命名/注释验证。
+- **链接表不是实体**：`user_roles` 这类纯 junction（无业务属性列）应归入两侧主实体的聚合，独立审视会高估实体数。
+- **跨域 FK = 边界侵蚀**：auth→proj 3 条外键说明权限域正在渗入项目域，是重组或加防腐层的信号。
+- **领域归属置信度**：`db audit entities` 的 domainConfidence 给出前缀规则覆盖率；落入"其他"域的表是 DOMAIN_RULES 需要补充的样本。
 
 ## 概述
 
@@ -43,6 +65,7 @@ description: |
 | **领域分组** | "数据库有哪些领域？" / "auth 领域有哪些表？" | `db query domains` |
 | **生成数据库全览** | "生成数据库蓝图" / "ER 图" / "dataoverview" | `db export --format html --output overview.html` |
 | **模式特征** | "哪些表有软删除？" / "多租户表有哪些？" | `db query tables --where "patterns~soft_delete"` |
+| **业务实体清单** | "数据库有哪些业务实体？" / "哪些是链接表？" | `db query entities` / `db query entities --where "kind=aggregate"` |
 | **增量扫描** | "扫描新增的迁移文件" | `db scan --dir <path> --incremental` |
 | **视图/触发器/存储过程** | "数据库有视图吗？" | `db query views` / `db query triggers` / `db query procedures` |
 
@@ -57,6 +80,8 @@ description: |
 | **模型演进** | "数据库是如何演进的？" / "哪个版本变化最大？" | `db audit evolution` |
 | **外键链路** | "users 表上下游有哪些依赖？" / "删某表影响谁？" | `db audit fkchain --table users` |
 | **命名规范** | "命名规范怎么样？" / "有哪些命名不统一？" | `db audit naming` |
+| **实体边界（DDD）** | "数据库有哪些业务实体？" / "领域边界清晰吗？" / "表往哪个方向演进？" | `db audit entities` |
+| **跨层审计** | "哪些表没有对应的代码类型？" / "代码和数据库一致性如何？" / "有没有孤儿表？" | `db audit crosslayer` |
 | **全量审计** | "全面审计数据库" / "生成完整审计报告" | `db audit all` |
 
 ## CLI 命令参考
@@ -97,6 +122,10 @@ nice-aos db audit fkchain --table users
 
 # 命名规范审计（表名/主键/外键列/时间戳/软删除/索引命名）
 nice-aos db audit naming
+
+# 代码↔数据库跨层审计（孤儿表/隐式外键/代码实体覆盖率/幽灵类型）
+nice-aos db audit crosslayer
+nice-aos db audit crosslayer --code-snapshot /path/to/snapshot.json
 
 # 运行全部审计，输出汇总
 nice-aos db audit all --table users --target-version V2.1.0
@@ -186,7 +215,7 @@ nice-aos db query procedures
 
 > 领域规则定义在 `src/database/dbModel.js` 的 `DOMAIN_RULES`，可按需扩展。
 
-## 7 大审计场景详解
+## 9 大审计场景详解
 
 ### 1. 健康度审计（health）
 
@@ -253,6 +282,30 @@ nice-aos db query procedures
 - 索引命名：`idx_` / `uk_` 前缀
 
 输出：问题列表（按严重程度排序）+ 优化建议。
+
+### 9. 代码↔数据库跨层审计（crosslayer）
+
+借鉴 Java AOS 的实体-表融合思路，分析代码本体与数据库模型之间的映射关系。
+
+```bash
+# 仅数据库侧自治分析（孤儿表 + 隐式外键）
+nice-aos db audit crosslayer
+
+# 跨层分析（加载代码快照，匹配 Interface/Class/Store ↔ Table）
+nice-aos db audit crosslayer --code-snapshot /path/to/snapshot.json
+```
+
+检查项：
+- **孤儿表检测**：无任何代码 Interface/Class 映射的数据库表（可能靠隐式约定维护）
+- **隐式外键识别**：`*_id` 列但无显式 FK 约束，推断引用目标表
+- **代码实体覆盖率**：数据库表中有多少能通过命名约定匹配到代码实体
+- **幽灵类型检测**：代码中有 Interface/Class 被 `*_id` 列隐式引用，但无对应数据库表
+- **命名约定匹配策略**：snake_case 表名 ↔ PascalCase 接口名（`user_roles` → `UserRole`）
+
+输出：匹配清单 / 孤儿表列表 / 隐式 FK 列表 / 覆盖率 / 优化建议。
+
+> 跨层匹配定义在 `src/database/dbModel.js` 的 `matchTablesToCodeEntities()`，匹配策略可扩展。
+> 代码本体中的跨层链接类型：`mapsToTable`（Interface/Class → Table）、`mappedFromCode`（Table → Interface/Class）。
 
 ## 数据蓝图 HTML（dataoverview，8 Tab）
 
@@ -329,6 +382,7 @@ nice-aos db scan --dir /path/to/migrations --incremental
 - 用户问命名规范 / 命名一致性 → 用 `db audit naming`
 - 用户问表的上下游依赖 / 影响范围 → 用 `db audit fkchain --table <name>`
 - 用户问某版本影响 / 风险 → 用 `db audit impact --version <ver>`
+- 用户问代码和数据库一致性 / 孤儿表 / 覆盖率 → 用 `db audit crosslayer --code-snapshot <path>`
 - 给出评分时附带解读（A=优秀, B=良好, C=一般, D=待改进），给出问题时附带改进建议
 
 ## 与代码扫描技能的区分
@@ -340,7 +394,8 @@ nice-aos db scan --dir /path/to/migrations --incremental
 | HTML | 代码蓝图（`#viewer-data`） | 数据蓝图 dataoverview（`#db-viewer-data`） |
 | 分析对象 | TS/Vue/Go/Dart/Rust 源码 | MySQL SQL 迁移脚本 |
 | 智能体 | 本体蓝图智能体 | 结构分析智能体 + 数据概览智能体 |
-| 审计能力 | 死代码 / 循环依赖 / 依赖治理 | 健康度 / 索引优化 / 演进 / 领域耦合 / 命名规范 |
+| 审计能力 | 死代码 / 循环依赖 / 依赖治理 | 健康度 / 索引优化 / 演进 / 领域耦合 / 命名规范 / 跨层审计 |
+| 跨层链接 | — | `mapsToTable` / `mappedFromCode`（代码↔数据库） |
 
 ## 文件结构
 
@@ -349,10 +404,10 @@ src/
 ├── analyzers/
 │   └── sqlAnalyzer.js          # SQL 迁移脚本解析器（纯函数）
 ├── database/
-│   ├── dbModel.js              # 模型定义 + 领域规则 + 模式检测
+│   ├── dbModel.js              # 模型定义 + 领域规则 + 模式检测 + 跨层引用（表↔代码实体匹配）
 │   ├── dbSnapshot.js           # 快照持久化 + 增量 manifest
 │   ├── dbBuilder.js            # 模型构建器（全量 + 增量）
-│   ├── dbAuditor.js            # 7 大审计场景纯函数
+│   ├── dbAuditor.js            # 9 大审计场景纯函数（含跨层审计）
 │   └── dbViewer.js             # 数据蓝图 HTML 生成器（8 Tab）
 └── cli/commands/
     └── db.js                   # db CLI 命令（scan/query/audit/export）

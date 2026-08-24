@@ -4,9 +4,11 @@ import { Command } from 'commander';
 import { loadDbSnapshot, saveDbSnapshot } from '../../database/dbSnapshot.js';
 import { buildDatabaseModel, buildDatabaseModelIncremental } from '../../database/dbBuilder.js';
 import { buildDbViewerModel, renderDbOverviewHtml } from '../../database/dbViewer.js';
+import { buildEntities } from '../../database/dbModel.js';
 import {
   auditHealth, auditImpact, auditDomains, auditIndexes,
-  auditEvolution, auditFkChain, auditNaming,
+  auditEvolution, auditFkChain, auditNaming, auditEntities,
+  auditCrossLayer,
 } from '../../database/dbAuditor.js';
 import { parseWhere, matchesWhere, outputJson, outputPretty, succeed, fail } from '../shared.js';
 import { listThemeNames } from '../../themes/index.js';
@@ -110,7 +112,7 @@ dbCommand
 
 dbCommand
   .command('query')
-  .description('查询数据库快照（tables | foreignKeys | indexes | migrations | domains | views | triggers | procedures）')
+  .description('查询数据库快照（tables | foreignKeys | indexes | migrations | domains | views | triggers | procedures | entities）')
   .argument('<type>', '对象类型')
   .option('--where <conditions>', '过滤条件 (k=v 精确, k~v 模糊)')
   .option('--pretty', '人类可读表格输出')
@@ -127,10 +129,11 @@ dbCommand
       views: dbDataMap.views || [],
       triggers: dbDataMap.triggers || [],
       procedures: dbDataMap.procedures || [],
+      entities: buildEntities(dbDataMap.tables || [], dbDataMap.foreignKeys || []),
     };
     const objects = typeMap[type];
     if (!objects) {
-      fail(`未知类型: ${type}（支持 tables / foreignKeys / indexes / migrations / domains / views / triggers / procedures）`);
+      fail(`未知类型: ${type}（支持 tables / foreignKeys / indexes / migrations / domains / views / triggers / procedures / entities）`);
     }
     const conditions = parseWhere(opts.where);
     const result = conditions
@@ -145,7 +148,7 @@ dbCommand
 
 // ---------- db audit 子命令 ----------
 const auditCommand = new Command('audit')
-  .description('数据库审计：7 大场景（health / impact / domains / indexes / evolution / fkchain / naming / all）');
+  .description('数据库审计：9 大审计场景（health / impact / domains / indexes / evolution / fkchain / naming / entities / crosslayer / all）');
 
 auditCommand
   .command('health')
@@ -215,10 +218,42 @@ auditCommand
   });
 
 auditCommand
+  .command('entities')
+  .description('实体边界审计（DDD）：实体聚合清单 / 跨域外键侵蚀 / 孤立实体 / 领域归属置信度 / 演进方向推测')
+  .action(() => {
+    const dbDataMap = loadDbSnapshot();
+    const result = auditEntities(dbDataMap);
+    outputJson(result);
+  });
+
+auditCommand
+  .command('crosslayer')
+  .description('代码↔数据库跨层审计：孤儿表 / 隐式外键 / 代码实体覆盖率 / 幽灵类型检测')
+  .option('--code-snapshot <path>', '代码本体快照路径（snapshot.json），用于跨层匹配')
+  .action((opts) => {
+    const dbDataMap = loadDbSnapshot();
+    let codeEntities = null;
+    if (opts.codeSnapshot) {
+      try {
+        const codeSnapshot = JSON.parse(fs.readFileSync(opts.codeSnapshot, 'utf-8'));
+        const interfaces = (codeSnapshot.Interface || []).map((e) => ({ name: e.name, type: 'Interface', id: e.id, filePath: e.filePath }));
+        const classes = (codeSnapshot.Class || []).map((e) => ({ name: e.name, type: 'Class', id: e.id, filePath: e.filePath }));
+        const stores = (codeSnapshot.Store || []).map((e) => ({ name: e.name, type: 'Store', id: e.id, filePath: e.filePath }));
+        codeEntities = [...interfaces, ...classes, ...stores];
+      } catch (err) {
+        fail(`无法加载代码快照: ${err.message}`);
+      }
+    }
+    const result = auditCrossLayer(dbDataMap, codeEntities);
+    outputJson(result);
+  });
+
+auditCommand
   .command('all')
-  .description('运行全部 7 个审计场景，输出汇总结果')
+  .description('运行全部 9 个审计场景，输出汇总结果')
   .option('--table <tableName>', '外键链路分析的目标表名（fkchain）')
   .option('--target-version <version>', '迁移影响分析的版本号（impact）')
+  .option('--code-snapshot <path>', '代码本体快照路径（snapshot.json），用于跨层审计')
   .action((opts) => {
     const dbDataMap = loadDbSnapshot();
     const result = {
@@ -227,9 +262,20 @@ auditCommand
       indexes: auditIndexes(dbDataMap),
       evolution: auditEvolution(dbDataMap),
       naming: auditNaming(dbDataMap),
+      entities: auditEntities(dbDataMap),
     };
     if (opts.targetVersion) result.impact = auditImpact(dbDataMap, opts.targetVersion);
     if (opts.table) result.fkchain = auditFkChain(dbDataMap, opts.table);
+    // 跨层审计（有代码快照时自动启用）
+    if (opts.codeSnapshot) {
+      try {
+        const codeSnapshot = JSON.parse(fs.readFileSync(opts.codeSnapshot, 'utf-8'));
+        const interfaces = (codeSnapshot.Interface || []).map((e) => ({ name: e.name, type: 'Interface', id: e.id, filePath: e.filePath }));
+        const classes = (codeSnapshot.Class || []).map((e) => ({ name: e.name, type: 'Class', id: e.id, filePath: e.filePath }));
+        const stores = (codeSnapshot.Store || []).map((e) => ({ name: e.name, type: 'Store', id: e.id, filePath: e.filePath }));
+        result.crossLayer = auditCrossLayer(dbDataMap, [...interfaces, ...classes, ...stores]);
+      } catch { /* 无代码快照则跳过跨层审计 */ }
+    }
     outputJson(result);
   });
 

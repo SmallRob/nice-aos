@@ -48,6 +48,7 @@ export const LINK_TYPES = [
   'contains', 'imports', 'importedBy', 'renders', 'renderedBy', 'passesProps', 'navigatesTo', 'registers', 'usesStore', 'usesHook',
   'implements', 'implementedBy', 'extends', 'extendedBy', 'overrides', 'overriddenBy',
   'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy', 'belongsTo',
+  'mapsToTable', 'mappedFromCode',
 ];
 
 export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addNote'];
@@ -347,6 +348,26 @@ export function createBlueprint(dataMap) {
         return objectsForIds(index, obj.calledByIds ?? []);
       }
       return [];
+    },
+
+    // ---- 跨层链接：代码实体 ↔ 数据库表（借鉴 asdm-aos 的 mapperMapsTable/mapperMapsEntity）----
+    // mapsToTable: Interface/Class/Store → Table（代码实体映射到数据库表）
+    mapsToTable(srcId) {
+      const obj = getObject(index, srcId);
+      if (!obj) return [];
+      const tableIds = obj.mappedTableIds ?? [];
+      return objectsForIds(index, tableIds);
+    },
+
+    // mappedFromCode: Table → Interface/Class/Store（数据库表被哪些代码实体映射）
+    mappedFromCode(srcId) {
+      if (!srcId.startsWith('table:')) return [];
+      const codeEntities = [
+        ...(dataMap.Interface ?? []),
+        ...(dataMap.Class ?? []),
+        ...(dataMap.Store ?? []),
+      ];
+      return codeEntities.filter((e) => (e.mappedTableIds ?? []).includes(srcId));
     },
 
     // ---- 功能域归属（双向：dom: 列成员；mod:/comp:/store:/hook:/route: 反查所属域）----
