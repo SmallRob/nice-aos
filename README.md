@@ -168,15 +168,52 @@ nice-aos deploy scan --dir /path/to/deploy --incremental
 
 部署蓝图 HTML 内嵌 `<script id="deploy-viewer-data">` JSON 数据，蓝图 AI 助手（Tampermonkey 脚本）自动检测并切换至「部署蓝图」智能体（12 个专属工具）。
 
+### Java 后端服务蓝图（asdm-aos 快照）
+
+基于 asdm-aos 工具产出的 Java 后端本体快照（`snapshot.json`，含包/类/接口/方法/调用关系/DDL 表/依赖）生成**后端服务蓝图**：模块架构 / 分层结构 / API 面 / 数据层 / 技术栈 / 代码质量 / 健康审计。模块规则**不硬编码**——首次构建从快照包结构动态推导并写入模块配置文件（`service-modules.json`），后续构建自动加载，切换后端项目无需改代码。本仓库已引入 `skills/asdm-aos-skill/SKILL.md`（asdm-aos 工具说明，CLI `aos`），**先扫描后转换**两步工作流：
+
+```bash
+# 0. asdm-aos 扫描 Java 后端 → 生成本体快照
+aos --snapshot-dir <Java仓库>/.asdm/skills/asdm-aos-skill/data action refreshRepo \
+  --params '{"repoPath":"<Java仓库>"}'
+
+# 1. 一步出图（指定 asdm-aos 快照 json 路径直接生成服务蓝图 HTML）
+nice-aos service export --snapshot <Java仓库>/.asdm/skills/asdm-aos-skill/data/snapshot.json --format html --output service-blueprint.html
+
+# 2. 两步式：构建服务模型（保存 service-snapshot.json + 动态推导模块配置）
+nice-aos service build --snapshot /path/to/snapshot.json
+
+# 3. 查询后端服务模型
+nice-aos service query modules                             # 模块（包/类/接口/方法/端点/职责）
+nice-aos service query layers --where "key=controller"     # 分层
+nice-aos service query endpoints --where "httpMethod=GET"  # API 端点
+nice-aos service query tables --where "isOrphan=true"      # 孤儿表
+nice-aos service query complexityHotspots                  # 高复杂度方法 TOP
+nice-aos service query techStack                           # 技术栈判定
+
+# 4. 健康审计（五维加权）
+nice-aos service audit health        # 综合评分（复杂度/数据层/测试/分析质量/依赖）
+nice-aos service audit all
+
+# 5. 自定义模块规则（--module-prefix 临时覆盖 / --module-config 指定配置文件）
+nice-aos service export --snapshot /path/to/snapshot.json --format html \
+  --module-prefix '{"core":{"label":"核心","prefixes":["ai.asdm.admin.core"]}}'
+```
+
+服务模型对象：模块（Module）/分层（Layer，Controller/Service/Repository/Mapper/Entity/DTO/Config/Adapter/任务/工具）/图谱（ModuleGraph，模块依赖 + 分层调用流 + 模块×技术栈三类力导向图）/端点（Endpoint，HTTP 方法分布 + 领域前缀）/表（Table，实体映射/孤儿表/FK 链）/依赖（Dependency，技术栈分类）/复杂度热点（ComplexityHotspot）/数据模型（DataModel）/测试统计（TestStats）。
+
+服务蓝图 HTML 内嵌 `<script id="service-viewer-data">` JSON 数据（9 Tab：总览/模块/分层/**图谱**/API 面/数据层/依赖与集成/代码质量/健康审计），图谱 Tab 含三种力导向视图——**模块图谱**（节点=服务模块，边=包依赖+跨模块调用）、**分层调用流**（节点=架构分层，边=跨层方法调用，如 Controller→Service→Repository→Entity）、**模块×技术栈**（节点=模块+技术分类，边=模块使用该技术）。模块配置 `service-modules.json` 与 `service-snapshot.json` 均落在服务快照目录（默认 `.nice-aos/data`）。蓝图 AI 助手（Tampermonkey 脚本）自动检测 `service-viewer-data` 并切换至「服务蓝图」智能体（10 个专属工具：概览/模块/分层/端点/表/依赖技术栈/代码质量/健康审计/审计明细/图谱查询）。
+
 ### 蓝图主题风格
 
-三类蓝图（代码 blueprint / 数据 dataoverview / 部署 deployoverview）的 CSS 已拆分为「主题 token + 共享骨架 + 查看器专属布局」：布局骨架固定，视觉风格经 `--theme` 切换（主题注册表 `src/themes/index.js` 可扩展）。健康审计评分为炫彩 SVG 能量环——渐变弧 + 辉光滤镜 + 加载动画，环配色随主题（深蓝:紫→绿 / 淡绿:淡绿→深绿 / 典雅紫:紫→粉）。
+四类蓝图（代码 blueprint / 数据 dataoverview / 部署 deployoverview / 服务 service-blueprint）的 CSS 已拆分为「主题 token + 共享骨架 + 查看器专属布局」：布局骨架固定，视觉风格经 `--theme` 切换（主题注册表 `src/themes/index.js` 可扩展）。健康审计评分为炫彩 SVG 能量环——渐变弧 + 辉光滤镜 + 加载动画，环配色随主题（深蓝:紫→绿 / 淡绿:淡绿→深绿 / 典雅紫:紫→粉）。
 
 | 蓝图 | 默认主题 | 命令 |
 |------|---------|------|
 | 部署 deployoverview | deep-blue | `deploy export --theme <name>` |
 | 数据 dataoverview | fresh-green | `db export --theme <name>` |
 | 代码 blueprint | deep-blue | `export --theme <name>` |
+| 服务 service-blueprint | elegant-purple | `service export --theme <name>` |
 
 可用主题：`deep-blue`（深蓝暗色）/ `fresh-green`（淡绿清新）/ `elegant-purple`（典雅紫）。
 
@@ -540,8 +577,9 @@ CLI 保持原子普适（只提供对象/链接/字段/动作级通用能力）�
 | `nice-aos-deadcode`（死代码清理） | 四级死代码（文件/导出/类型/函数）检测 → 分级复核 → 清理 → 验证工作流；单文件死函数查询 | "哪些文件没人用" / "哪些函数没人调用" / "这个文件能删吗" |
 | `nice-aos-database`（数据库分析） | MySQL 迁移脚本扫描 → 表/列/外键/索引/迁移/领域/模式特征查询 + 7 大审计（健康度/影响/领域耦合/索引优化/演进/外键链路/命名）+ dataoverview 蓝图 | "数据库有哪些表" / "外键关系" / "索引优化建议" / "哪个版本变化最大" |
 | `nice-aos-deployment`（部署分析） | 部署配置目录扫描（compose/K8s/Dockerfile/nginx/.env）→ 服务/路由/依赖/中间件/环境/分层查询 + 5 大审计（安全/高可用/一致性/依赖/健康度）+ deployoverview 蓝图 | "部署架构是什么样" / "nginx 路由怎么配的" / "哪些服务缺健康检查" / "用了哪些中间件" |
+| `nice-aos-service`（Java 后端服务蓝图） | 基于 asdm-aos Java 后端本体快照（snapshot.json）→ 模块/分层/API 面/数据层/技术栈/代码质量查询 + 五维健康审计（复杂度/数据层/测试/分析质量/依赖）+ service-blueprint 蓝图（模块规则动态推导，切换项目免配置） | "这个 Java 后端有哪些模块" / "技术栈是什么" / "有多少 API 端点" / "哪些方法复杂度高" / "服务健康吗" |
 
-五者共享同一份 CLI 与快照根目录（`<REPO_ROOT>/.nice-aos/data`：`snapshot.json` / `db-snapshot.json` / `deploy-snapshot.json`），无独立安装步骤。
+五者共享同一份 CLI 与快照根目录（`<REPO_ROOT>/.nice-aos/data`：`snapshot.json` / `db-snapshot.json` / `deploy-snapshot.json` / `service-snapshot.json`），无独立安装步骤。
 
 ## Contrib（按需集成）
 
@@ -549,7 +587,7 @@ CLI 保持原子普适（只提供对象/链接/字段/动作级通用能力）�
 
 | 目录 | 说明 |
 |------|------|
-| [`contrib/blueprint-ai-agent`](./contrib/blueprint-ai-agent) | **蓝图页 AI 分析助手**（油猴脚本，Tampermonkey 安装）：在蓝图 HTML 右下角注入浮窗按钮展开对话侧边栏，按页面类型自动切换智能体——代码蓝图（模块/组件/Store/Service/路由/接口/方法/功能域/死代码，9 工具）、数据库蓝图（表/外键/索引/迁移/领域/模式特征 + 7 审计，双智能体）、部署蓝图（服务/镜像/路由/依赖/中间件/环境/分层 + 5 审计，12 工具）。双数据源（页面内嵌 viewer-data / db-viewer-data / deploy-viewer-data 零依赖，或 `nice-aos serve` 本地快照地址），ReAct 文本协议工具循环驱动，支持多模型接入（DeepSeek/GLM/千问/Kimi/豆包/OpenAI/自定义）、新建会话、会话历史与 JSON/Markdown 导出 |
+| [`contrib/blueprint-ai-agent`](./contrib/blueprint-ai-agent) | **蓝图页 AI 分析助手**（油猴脚本，Tampermonkey 安装）：在蓝图 HTML 右下角注入浮窗按钮展开对话侧边栏，按页面类型自动切换智能体——代码蓝图（模块/组件/Store/Service/路由/接口/方法/功能域/死代码，9 工具）、数据库蓝图（表/外键/索引/迁移/领域/模式特征 + 7 审计，双智能体）、部署蓝图（服务/镜像/路由/依赖/中间件/环境/分层 + 5 审计，12 工具）、后端服务蓝图（模块/分层/API 面/表/技术栈/代码质量/健康审计/图谱 + 五维审计，10 工具）。双数据源（页面内嵌 viewer-data / db-viewer-data / deploy-viewer-data / service-viewer-data 零依赖，或 `nice-aos serve` 本地快照地址），ReAct 文本协议工具循环驱动，支持多模型接入（DeepSeek/GLM/千问/Kimi/豆包/OpenAI/自定义）、新建会话、会话历史与 JSON/Markdown 导出 |
 
 ## 开发
 

@@ -1,6 +1,8 @@
 .DS_Store
 node_modules
 .nice-aos/
+.workbuddy/
 .npmrc
 .trae/
 *-db-overview.html
+*-service-blueprint.html

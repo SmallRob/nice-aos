@@ -40,6 +40,7 @@ export const DEFAULT_THEMES = {
   deploy: 'deep-blue',
   db: 'fresh-green',
   code: 'deep-blue',
+  service: 'elegant-purple',
 };
 
 export function resolveTheme(name) {

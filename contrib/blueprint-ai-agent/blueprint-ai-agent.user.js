@@ -4,8 +4,8 @@
 // @name:en      AOS Blueprint AI Code Analysis Assistant
 // @namespace    https://github.com/nice-aos
 // @version      1.1.0
-// @description  nice-aos 蓝图页 AI 对话侧边栏。在 blueprint.html 右下角插入浮窗按钮，展开即可对项目代码本体（模块/组件/Hook/Store/Service/路由/接口/死代码/依赖/功能域等）进行自然语言问答分析。同时支持数据库蓝图页（dataoverview：表/列/外键/索引/迁移/领域/模式特征）与部署蓝图页（deployoverview：服务/镜像/网关路由/依赖/中间件/环境/分层/审计），自动检测页面类型并切换对应分析模式。双数据源：优先读取页面内嵌 viewer-data / db-viewer-data / deploy-viewer-data，可配置本地快照地址。支持多模型供应商(DeepSeek/GLM/Qwen/Kimi/Doubao/OpenAI/自定义)、新建会话、会话历史、导出 JSON/Markdown。参考 steam-ai-agent 的 ToolRegistry + ReAct 工具循环架构。
-// @description:en nice-aos blueprint AI chat sidebar. Floating button in blueprint.html. Natural language Q&A over code ontology (modules/components/hooks/stores/services/routes/interfaces/deadcode/deps/domains). Also supports database blueprint pages (dataoverview) with auto-detection and database-specific tools (tables/columns/fks/indexes/migrations/domains/patterns). Dual data source. Multi-provider, sessions, history, export.
+// @description  nice-aos 蓝图页 AI 对话侧边栏。在 blueprint.html 右下角插入浮窗按钮，展开即可对项目代码本体（模块/组件/Hook/Store/Service/路由/接口/死代码/依赖/功能域等）进行自然语言问答分析。同时支持数据库蓝图页（dataoverview：表/列/外键/索引/迁移/领域/模式特征）、部署蓝图页（deployoverview：服务/镜像/网关路由/依赖/中间件/环境/分层/审计）与 Java 后端服务蓝图页（service-blueprint：模块/分层/API 面/数据层/技术栈/代码质量/健康审计/模块图谱），自动检测页面类型并切换对应分析模式。双数据源：优先读取页面内嵌 viewer-data / db-viewer-data / deploy-viewer-data / service-viewer-data，可配置本地快照地址。支持多模型供应商(DeepSeek/GLM/Qwen/Kimi/Doubao/OpenAI/自定义)、新建会话、会话历史、导出 JSON/Markdown。参考 steam-ai-agent 的 ToolRegistry + ReAct 工具循环架构。
+// @description:en nice-aos blueprint AI chat sidebar. Floating button in blueprint.html. Natural language Q&A over code ontology (modules/components/hooks/stores/services/routes/interfaces/deadcode/deps/domains). Also supports database blueprint pages (dataoverview) with auto-detection and database-specific tools (tables/columns/fks/indexes/migrations/domains/patterns), deploy blueprint pages (deployoverview) and Java backend service blueprint pages (service-blueprint: modules/layers/API/database/techstack/quality/health/module graph). Dual data source. Multi-provider, sessions, history, export.
 // @icon         data:image/svg+xml,%3Csvg%20viewBox='0%200%2024%2024'%20fill='none'%20xmlns='http://www.w3.org/2000/svg'%3E%3Crect%20width='24'%20height='24'%20rx='6'%20fill='%236366f1'/%3E%3Cpath%20d='M7%205.5h10a1.5%201.5%200%200%201%201.5%201.5v7a1.5%201.5%200%200%201-1.5%201.5h-4.5l-4%203.2V15.5H7a1.5%201.5%200%200%201-1.5-1.5V7A1.5%201.5%200%200%201%207%205.5z'%20fill='white'/%3E%3Cpath%20d='M12%207.5l1%202.8a2%202%200%200%200%201.1%201.1L17%2012.5l-2.9%201.1a2%202%200%200%200-1.1%201.1L12%2017.5l-1-2.8a2%202%200%200%200-1.1-1.1L7%2012.5l2.9-1.1a2%202%200%200%200%201.1-1.1L12%207.5z'%20fill='%236366f1'/%3E%3C/svg%3E
 // @author       nice-aos
 // @match        file:///*
@@ -36,8 +36,9 @@
 (function () {
     'use strict';
 
-    // 页面类型检测：部署蓝图页 (deploy-viewer-data) / 数据库蓝图页 (db-viewer-data) / 代码蓝图页 (viewer-data / #viewer)
+    // 页面类型检测：服务蓝图页 (service-viewer-data) / 部署蓝图页 (deploy-viewer-data) / 数据库蓝图页 (db-viewer-data) / 代码蓝图页 (viewer-data / #viewer)
     function detectPageType() {
+        if (document.getElementById('service-viewer-data')) return 'service';
         if (document.getElementById('deploy-viewer-data')) return 'deploy';
         if (document.getElementById('db-viewer-data')) return 'database';
         if (document.getElementById('viewer-data') || document.querySelector('#viewer')) return 'code';
@@ -258,6 +259,17 @@
         queryDeployLayers:     { label: '分层查询',     icon: 'sitemap' },
         getDeployHealth:       { label: '健康度评估',   icon: 'chart' },
         getDeployAudit:        { label: '审计明细',     icon: 'lightbulb' },
+        // 后端服务蓝图工具
+        getServiceStats:       { label: '服务概览',     icon: 'chart' },
+        queryServiceModules:   { label: '模块查询',     icon: 'sitemap' },
+        queryServiceLayers:    { label: '分层查询',     icon: 'sitemap' },
+        queryServiceEndpoints: { label: '端点查询',     icon: 'server' },
+        queryServiceTables:    { label: '表查询',       icon: 'database' },
+        queryServiceDeps:      { label: '依赖/技术栈',  icon: 'sitemap' },
+        getServiceQuality:     { label: '代码质量',     icon: 'chart' },
+        getServiceHealth:      { label: '健康度评估',   icon: 'chart' },
+        getServiceAudit:       { label: '审计明细',     icon: 'lightbulb' },
+        queryServiceGraph:     { label: '图谱查询',     icon: 'sitemap' },
     };
 
     function getToolDisplay(name) {
@@ -338,6 +350,16 @@
         },
 
         readInjected() {
+            if (PAGE_TYPE === 'service') {
+                const el = document.getElementById('service-viewer-data');
+                if (!el) return null;
+                try {
+                    const parsed = JSON.parse(el.textContent);
+                    const idx = this._buildServiceIndex(parsed);
+                    if (idx) { idx.sourceLabel = '页面内嵌数据 (service-viewer-data)'; return idx; }
+                } catch (e) { console.warn('[BA-Agent] service-viewer-data 解析失败', e); }
+                return null;
+            }
             if (PAGE_TYPE === 'deploy') {
                 const el = document.getElementById('deploy-viewer-data');
                 if (!el) return null;
@@ -387,6 +409,29 @@
             return { byId: byName, byType, byName, meta, raw };
         },
 
+        _buildServiceIndex(raw) {
+            if (!raw || typeof raw !== 'object') return null;
+            const byType = {
+                modules: raw.modules || [],
+                layers: raw.layers || [],
+                endpoints: raw.endpoints || [],
+                tables: raw.tables || [],
+                orphanTables: raw.orphanTables || [],
+                fkChains: raw.fkChains || [],
+                dependencies: raw.dependencies || [],
+                techStack: raw.techStack || [],
+                complexityHotspots: raw.complexityHotspots || [],
+                testStats: raw.testStats ? [raw.testStats] : [],
+                repositories: raw.repositories || [],
+                moduleGraph: raw.moduleGraph ? [raw.moduleGraph] : [],
+            };
+            const byName = new Map();
+            for (const m of byType.modules) { if (m.key && !byName.has(m.key)) byName.set(m.key, m); }
+            for (const t of byType.tables) { if (t.name && !byName.has(t.name)) byName.set(t.name, t); }
+            const meta = raw.meta || raw._meta || {};
+            return { byId: byName, byType, byName, meta, raw };
+        },
+
         _buildDbIndex(raw) {
             if (!raw || typeof raw !== 'object') return null;
             const byName = new Map();
@@ -431,6 +476,7 @@
                     const raw = await this.fetchSnapshot(s.snapshotUrl);
                     const idx = PAGE_TYPE === 'deploy' ? this._buildDeployIndex(raw)
                         : PAGE_TYPE === 'database' ? this._buildDbIndex(raw)
+                        : PAGE_TYPE === 'service' ? this._buildServiceIndex(raw)
                         : this._buildIndex(raw && typeof raw === 'object' && ('dataMap' in raw) ? raw : { dataMap: raw });
                     if (!idx) throw new Error('快照结构无法识别');
                     idx.sourceLabel = `本地快照 ${s.snapshotUrl}`;
@@ -441,7 +487,9 @@
                     ? '未找到可用数据：页面未内嵌 db-viewer-data，且未配置本地快照地址。请在设置中填写 db-snapshot.json 地址。'
                     : PAGE_TYPE === 'deploy'
                         ? '未找到可用数据：页面未内嵌 deploy-viewer-data。请使用最新版 nice-aos deploy export --format html 重新生成部署蓝图。'
-                        : '未找到可用数据：页面未内嵌 viewer-data，且未配置本地 snapshot.json。请在设置中填写快照地址。';
+                        : PAGE_TYPE === 'service'
+                            ? '未找到可用数据：页面未内嵌 service-viewer-data。请使用最新版 nice-aos service export --format html 重新生成服务蓝图。'
+                            : '未找到可用数据：页面未内嵌 viewer-data，且未配置本地 snapshot.json。请在设置中填写快照地址。';
                 return null;
             } catch (e) {
                 this.status = 'error'; this.error = String(e.message || e);
@@ -1373,6 +1421,252 @@
         });
     }
 
+    // ============================================================
+    //  后端服务蓝图工具（仅在 PAGE_TYPE === 'service' 时注册）
+    // ============================================================
+    function registerServiceTools() {
+        const svNeedsData = () => {
+            if (DataSource.status !== 'ready' || !DataSource.ctx) return '数据尚未加载';
+            return null;
+        };
+        const svMatch = (o, kw) => {
+            kw = String(kw ?? '').trim().toLowerCase();
+            if (!kw) return true;
+            return [o.name, o.key, o.label, o.path, o.className, o.httpMethod, o.category, o.moduleKey, o.location].filter(Boolean).some((f) => String(f).toLowerCase().includes(kw));
+        };
+
+        ToolRegistry.register({
+            name: 'getServiceStats',
+            description: '获取后端服务整体统计：文件/包/类/枚举/接口/方法/端点/表/依赖/测试/分析错误数、HTTP 方法分布、技术栈清单、健康分。适合"这个 Java 后端有多大/整体如何/技术栈是什么"',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const { byType, meta, raw } = DataSource.ctx;
+                const s = meta;
+                return {
+                    success: true,
+                    data: {
+                        repositoryName: s.repositoryName,
+                        modulePrefixSource: s.modulePrefixSource,
+                        files: s.fileCount, packages: s.packageCount,
+                        classes: s.classCount, enums: s.enumCount, interfaces: s.interfaceCount, methods: s.methodCount,
+                        endpoints: s.endpointCount, tables: s.tableCount, dependencies: s.dependencyCount,
+                        tests: s.testMethodCount, analysisErrors: s.analysisErrorCount,
+                        avgCyclomatic: s.avgCyclomatic,
+                        endpointByMethod: s.endpointByMethod,
+                        modules: (byType.modules || []).length,
+                        layers: (byType.layers || []).length,
+                        techStack: (byType.techStack || []).map((t) => `${t.label}×${t.count}`),
+                        healthScore: raw?.audits?.health?.score,
+                        healthGrade: raw?.audits?.health?.grade,
+                    },
+                    summary: `${s.classCount + s.enumCount} 个类 / ${s.methodCount} 方法 / ${s.endpointCount} 端点 / ${s.tableCount} 表 / ${s.dependencyCount} 依赖，健康分 ${raw?.audits?.health?.score ?? '-'}`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryServiceModules',
+            description: '查询后端服务模块列表：包数/类/接口/方法/端点/职责。可按模块 key 或标签关键词过滤。适合"有哪些模块/模块规模/职责"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '模块 key/标签关键词（如 core/adapter）' }, limit: { type: 'number', description: '返回条数上限，默认30' } }, required: [] },
+            execute(args) {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const modules = DataSource.ctx.byType.modules || [];
+                let hit = modules;
+                if (args.keyword) hit = hit.filter((m) => svMatch(m, args.keyword));
+                const limit = Math.min(Number(args.limit) || 30, 80);
+                const result = hit.slice(0, limit).map((m) => ({
+                    key: m.key, label: m.label, packagePrefix: m.packagePrefix,
+                    packageCount: m.packageCount, classCount: m.classCount, interfaceCount: m.interfaceCount,
+                    methodCount: m.methodCount, endpointCount: m.endpointCount, responsibility: m.responsibility,
+                }));
+                if (!result.length) return { success: false, error: `未找到匹配的模块${args.keyword ? `(关键词 ${args.keyword})` : ''}` };
+                return { success: true, data: result, summary: `${result.length} 个模块（共 ${modules.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryServiceLayers',
+            description: '查询后端服务架构分层：接口层/业务层/数据访问/Mapper/实体/DTO/配置/适配/任务/工具 的类/接口/方法/端点统计。适合"分层架构/Controller 和 Service 各多少"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '分层 key/标签关键词（如 controller/service/repository）' }, limit: { type: 'number', description: '返回条数上限，默认30' } }, required: [] },
+            execute(args) {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const layers = DataSource.ctx.byType.layers || [];
+                let hit = layers;
+                if (args.keyword) hit = hit.filter((l) => svMatch(l, args.keyword));
+                const limit = Math.min(Number(args.limit) || 30, 50);
+                const result = hit.slice(0, limit).map((l) => ({
+                    key: l.key, label: l.label, packageCount: l.packageCount,
+                    classCount: l.classCount, interfaceCount: l.interfaceCount,
+                    methodCount: l.methodCount, endpointCount: l.endpointCount,
+                }));
+                if (!result.length) return { success: false, error: `未找到匹配的分层${args.keyword ? `(关键词 ${args.keyword})` : ''}` };
+                return { success: true, data: result, summary: `${result.length} 个分层（共 ${layers.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryServiceEndpoints',
+            description: '查询 REST API 端点：HTTP 方法/路径/框架/Controller 类/领域前缀/模块。可按 HTTP 方法、路径关键词、Controller、领域过滤。适合"有哪些 API 端点/GET 接口"',
+            parameters: { type: 'object', properties: { method: { type: 'string', description: 'HTTP 方法（GET/POST/PUT/DELETE/PATCH）' }, path: { type: 'string', description: '路径关键词（如 /users）' }, controller: { type: 'string', description: 'Controller 类名关键词' }, domain: { type: 'string', description: '领域前缀（如 users/projects）' }, limit: { type: 'number', description: '返回条数上限，默认50' } }, required: [] },
+            execute(args) {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const eps = DataSource.ctx.byType.endpoints || [];
+                let hit = eps;
+                if (args.method) hit = hit.filter((e) => String(e.httpMethod).toUpperCase() === String(args.method).toUpperCase());
+                if (args.path) hit = hit.filter((e) => String(e.path || '').toLowerCase().includes(String(args.path).toLowerCase()));
+                if (args.controller) hit = hit.filter((e) => String(e.className || '').toLowerCase().includes(String(args.controller).toLowerCase()));
+                if (args.domain) hit = hit.filter((e) => String(e.domainPrefix || '').toLowerCase().includes(String(args.domain).toLowerCase()));
+                const limit = Math.min(Number(args.limit) || 50, 100);
+                const result = hit.slice(0, limit).map((e) => ({
+                    method: e.httpMethod, path: e.path || '(类级路径)', className: e.className,
+                    domainPrefix: e.domainPrefix, moduleKey: e.moduleKey, hasPathVariables: e.hasPathVariables,
+                }));
+                if (!result.length) return { success: false, error: '未找到匹配的端点' };
+                return { success: true, data: result, summary: `${result.length} 个端点（共 ${eps.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryServiceTables',
+            description: '查询后端数据库表：列数/主键/外键数/实体映射/孤儿表标记。可按表名关键词过滤、按 isOrphan=true 查孤儿表。适合"有哪些表/孤儿表/实体映射"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '表名关键词' }, isOrphan: { type: 'boolean', description: '仅孤儿表（无实体映射且无外键）' }, limit: { type: 'number', description: '返回条数上限，默认50' } }, required: [] },
+            execute(args) {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const tables = DataSource.ctx.byType.tables || [];
+                let hit = tables;
+                if (args.isOrphan === true) hit = hit.filter((t) => t.isOrphan);
+                if (args.keyword) hit = hit.filter((t) => String(t.name || '').toLowerCase().includes(String(args.keyword).toLowerCase()));
+                const limit = Math.min(Number(args.limit) || 50, 100);
+                const result = hit.slice(0, limit).map((t) => ({
+                    name: t.name, comment: t.comment, columnCount: t.columnCount, primaryKey: t.primaryKey,
+                    fkCount: t.fkCount, matchedEntityClass: t.matchedEntityClass || null,
+                    isOrphan: t.isOrphan, orphanReason: t.orphanReason,
+                }));
+                if (!result.length) return { success: false, error: '未找到匹配的表' };
+                return { success: true, data: result, summary: `${result.length} 张表（共 ${tables.length}${tables.filter((t) => t.isOrphan).length > 0 ? `，其中孤儿表 ${tables.filter((t) => t.isOrphan).length}` : ''}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryServiceDeps',
+            description: '查询外部依赖与技术栈：依赖名/版本/scope/技术分类。可按分类（jpa/spring-boot/redis/elasticsearch/mysql/minio/jjwt 等）或关键词过滤。适合"用了哪些技术/某依赖版本/技术栈"',
+            parameters: { type: 'object', properties: { category: { type: 'string', description: '技术分类（jpa/redis/spring-security/minio/spring-boot 等）' }, keyword: { type: 'string', description: '依赖名关键词（如 jjwt/minio）' }, limit: { type: 'number', description: '返回条数上限，默认50' } }, required: [] },
+            execute(args) {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const deps = DataSource.ctx.byType.dependencies || [];
+                const techStack = DataSource.ctx.byType.techStack || [];
+                let hit = deps;
+                if (args.category) hit = hit.filter((d) => d.category === args.category);
+                if (args.keyword) hit = hit.filter((d) => String(d.name || '').toLowerCase().includes(String(args.keyword).toLowerCase()));
+                const limit = Math.min(Number(args.limit) || 50, 100);
+                const result = hit.slice(0, limit).map((d) => ({
+                    name: d.name, version: d.version || '(未指定)', scope: d.scope, source: d.source, category: d.category, label: d.label,
+                }));
+                return {
+                    success: true,
+                    data: { techStack: techStack.map((t) => `${t.label}×${t.count}`), dependencies: result, total: deps.length },
+                    summary: `技术栈 ${techStack.length} 类；依赖 ${result.length} 项（共 ${deps.length}）`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getServiceQuality',
+            description: '获取代码质量：高复杂度方法 TOP（圈复杂度/嵌套深度/位置/模块）+ 测试统计（单元/集成/测试类）。适合"哪些方法复杂度高/重构对象/测试覆盖"',
+            parameters: { type: 'object', properties: { limit: { type: 'number', description: '热点条数上限，默认20' } }, required: [] },
+            execute(args) {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const hotspots = DataSource.ctx.byType.complexityHotspots || [];
+                const testStats = (DataSource.ctx.byType.testStats || [])[0] || {};
+                const limit = Math.min(Number(args.limit) || 20, 50);
+                return {
+                    success: true,
+                    data: {
+                        hotspots: hotspots.slice(0, limit).map((h) => ({
+                            cyclomaticComplexity: h.cyclomaticComplexity, location: h.location,
+                            maxNestingDepth: h.maxNestingDepth, branchCount: h.branchCount, loopCount: h.loopCount, moduleKey: h.moduleKey,
+                        })),
+                        testStats: {
+                            total: testStats.total, unitTest: testStats.unitTest, integrationTest: testStats.integrationTest,
+                            testSetup: testStats.testSetup, testClassCount: testStats.testClassCount,
+                            byClass: (testStats.byClass || []).slice(0, 10),
+                        },
+                    },
+                    summary: `热点方法 ${hotspots.length} 个（cc≥15）；测试 ${testStats.total ?? 0} 个（单元 ${testStats.unitTest ?? 0} / 集成 ${testStats.integrationTest ?? 0}）`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getServiceHealth',
+            description: '获取后端服务健康度总评：综合评分、等级（A-E）、五维得分（代码复杂度/数据层/测试覆盖率/分析质量/依赖健康）、Top 问题。适合"后端服务健康吗/有什么风险"',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const h = DataSource.ctx.raw?.audits?.health;
+                if (!h) return { success: false, error: '未找到健康度审计数据，请确保使用最新版 nice-aos service export 生成蓝图' };
+                return {
+                    success: true,
+                    data: {
+                        score: h.score, grade: h.grade,
+                        errorCount: h.errorCount, warnCount: h.warnCount, infoCount: h.infoCount,
+                        dimensions: (h.dimensions || []).map((d) => ({ label: d.label, score: d.score, weight: d.weight })),
+                        topFindings: (h.topFindings || []).slice(0, 10).map((f) => ({ level: f.level, title: f.title, detail: f.detail })),
+                    },
+                    summary: `健康度 ${h.score} 分（等级 ${h.grade}），${h.errorCount} 错误 / ${h.warnCount} 警告 / ${h.infoCount} 提示`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getServiceAudit',
+            description: '获取服务健康审计明细：代码复杂度/数据层健康/测试覆盖率/分析质量/依赖健康。参数 dimension: complexity/dataHealth/testCoverage/analysisQuality/dependencyHealth',
+            parameters: { type: 'object', properties: { dimension: { type: 'string', description: '审计维度（complexity/dataHealth/testCoverage/analysisQuality/dependencyHealth）' } }, required: ['dimension'] },
+            execute(args) {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const audits = DataSource.ctx.raw?.audits;
+                if (!audits) return { success: false, error: '未找到审计数据，请确保使用最新版 nice-aos service export 生成蓝图' };
+                const dimension = String(args.dimension || '').trim();
+                const a = audits[dimension];
+                if (!a) return { success: false, error: `未知审计维度 "${dimension}"（支持 complexity / dataHealth / testCoverage / analysisQuality / dependencyHealth）` };
+                return {
+                    success: true,
+                    data: {
+                        label: a.label, score: a.score, stats: a.stats,
+                        findings: (a.findings || []).slice(0, 20).map((f) => ({ level: f.level, title: f.title, detail: f.detail, location: f.location })),
+                    },
+                    summary: `${a.label}：得分 ${a.score}，${(a.findings || []).length} 项发现`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryServiceGraph',
+            description: '查询后端服务图谱关系：模块依赖（moduleView：模块间包依赖/跨模块调用）、分层调用流（layerView：跨层方法调用）、模块×技术栈（techView：模块使用哪些技术）。参数 view: module/layer/tech',
+            parameters: { type: 'object', properties: { view: { type: 'string', description: '视图（module/layer/tech），缺省返回全部' } }, required: [] },
+            execute(args) {
+                const err = svNeedsData(); if (err) return { success: false, error: err };
+                const g = DataSource.ctx.byType.moduleGraph[0];
+                if (!g) return { success: false, error: '未找到图谱数据，请确保使用最新版 nice-aos service export 生成蓝图' };
+                const pick = (view) => {
+                    const v = g[view + 'View'];
+                    if (!v) return null;
+                    return {
+                        nodes: v.nodes.map((n) => ({ name: n.name, size: n.classCount || n.methodCount || n.count })),
+                        edges: v.edges.slice(0, 30).map((e) => ({ source: e.source, target: e.target, weight: e.weight, kind: e.kind || null })),
+                        nodeCount: v.nodeCount, edgeCount: v.edgeCount,
+                    };
+                };
+                const result = {};
+                if (!args.view || args.view === 'module') result.moduleGraph = pick('module');
+                if (!args.view || args.view === 'layer') result.layerFlow = pick('layer');
+                if (!args.view || args.view === 'tech') result.moduleTech = pick('tech');
+                return { success: true, data: result, summary: `模块依赖 ${g.moduleView?.edgeCount ?? 0} 边 / 分层调用流 ${g.layerView?.edgeCount ?? 0} 边 / 模块×技术栈 ${g.techView?.edgeCount ?? 0} 边` };
+            },
+        });
+    }
+
     function currentViewContext() {
         const activeTab = $d('.bp-tab-btn.is-active, .tab-btn.is-active, nav .active, [aria-selected="true"]');
         const activeText = activeTab ? activeTab.textContent.trim() : '';
@@ -1444,6 +1738,37 @@
             ],
         },
 
+        // Java 后端服务蓝图页：后端服务智能体
+        service_blueprint: {
+            key: 'service_blueprint',
+            label: '服务蓝图',
+            icon: 'server',
+            description: '模块/分层/API/数据层/技术栈/质量/健康/图谱问答',
+            pageType: 'service',
+            systemPrompt: `你是「Java 后端服务分析智能体」，运行在后端服务蓝图页（service-blueprint）上。你的专长是基于 asdm-aos Java 后端本体快照的服务层面问答：模块架构、架构分层（Controller/Service/Repository/Mapper/Entity/DTO/Config/Adapter/任务/工具）、API 面、数据层（表/实体映射/孤儿表/外键链）、技术栈判定（JPA/MyBatis/Spring Security/JJWT/ShedLock/SpringDoc/Redis/ES/S3/OBS/MinIO 等）、代码质量（高复杂度方法/测试统计）、五维健康审计、以及模块间关系图谱。
+分析服务问题时：
+- 优先调用工具获取真实数据，禁止凭记忆编造后端项目不存在的信息；
+- 工具返回的结构化数据，用清晰的中文 Markdown 表格或列表汇总，保持简洁；
+- 涉及"整体规模/技术栈是什么"时用 getServiceStats，涉及"模块划分/职责"时用 queryServiceModules；
+- 涉及"分层架构/Controller 和 Service 各多少"时用 queryServiceLayers，涉及"API 端点/GET 接口"时用 queryServiceEndpoints；
+- 涉及"数据库表/孤儿表/实体映射"时用 queryServiceTables，涉及"用了哪些技术/某依赖版本"时用 queryServiceDeps；
+- 涉及"高复杂度方法/重构对象/测试覆盖"时用 getServiceQuality，涉及"模块间依赖/分层调用流/模块用了哪些技术"时用 queryServiceGraph；
+- 涉及"健康度/风险"时用 getServiceHealth，涉及某一审计维度明细（complexity/dataHealth/testCoverage/analysisQuality/dependencyHealth）时用 getServiceAudit（传 dimension）；
+- 工具返回 success:false 或找不到数据时，如实告知并建议其它查询方式。
+注意：数据来自 aos service 命令基于 asdm-aos 本体快照构建的后端服务蓝图快照。字段含义：moduleKey=模块（按包前缀动态推导），layerKey=分层，endpointInfo=API 端点，matchedEntityClass=实体映射的表，isOrphan=孤儿表（无实体且无外键），complexityHotspots=圈复杂度≥15 的高复杂度方法，audits.health=五维健康评分（A=优秀, B=良好, C=一般, D=待改进, E=较差）。
+当前数据源：\${DataSource.ctx?.sourceLabel || '未加载'}。`,
+            suggestedQuestions: [
+                '这个 Java 后端整体如何？技术栈是什么？',
+                '有哪些服务模块？各自规模与职责？',
+                '分层架构是怎样的？Controller 和 Service 各多少？',
+                '有多少 API 端点？GET 接口有哪些？',
+                '数据库有哪些表？有孤儿表吗？',
+                '哪些方法复杂度高？需要重构吗？',
+                '后端服务健康吗？有什么风险？',
+                '模块之间有什么关系？分层调用流如何？',
+            ],
+        },
+
         // 数据库蓝图页：结构智能体（默认）
         db_structure: {
             key: 'db_structure',
@@ -1503,7 +1828,7 @@
 
     // 当前智能体状态
     const currentAgent = {
-        key: PAGE_TYPE === 'database' ? 'db_structure' : PAGE_TYPE === 'deploy' ? 'deploy_architecture' : 'code_ontology',
+        key: PAGE_TYPE === 'database' ? 'db_structure' : PAGE_TYPE === 'deploy' ? 'deploy_architecture' : PAGE_TYPE === 'service' ? 'service_blueprint' : 'code_ontology',
     };
 
     function getAgentList() {
@@ -2127,16 +2452,19 @@ ${ctxNote || '（无）'}
         panel = el('div', 'ba-panel');
         const isDb = PAGE_TYPE === 'database';
         const isDeploy = PAGE_TYPE === 'deploy';
+        const isService = PAGE_TYPE === 'service';
         const agent = getCurrentAgent();
-        const panelTitleIcon = isDb ? 'database' : isDeploy ? 'server' : 'robot';
-        const panelTitleText = isDb ? '数据蓝图 <b>AI 分析</b>' : isDeploy ? '部署蓝图 <b>AI 分析</b>' : 'AOS 蓝图 <b>AI 分析</b>';
+        const panelTitleIcon = isDb ? 'database' : isDeploy ? 'server' : isService ? 'server' : 'robot';
+        const panelTitleText = isDb ? '数据蓝图 <b>AI 分析</b>' : isDeploy ? '部署蓝图 <b>AI 分析</b>' : isService ? '服务蓝图 <b>AI 分析</b>' : 'AOS 蓝图 <b>AI 分析</b>';
         const inputPlaceholder = isDb
             ? (agent.key === 'db_overview'
                 ? '询问数据库概览/审计，如：健康度？索引优化建议？发送 Enter，换行 Shift+Enter'
                 : '询问数据库结构，如：数据库有哪些表？外键关系？发送 Enter，换行 Shift+Enter')
             : isDeploy
                 ? '询问部署架构，如：有哪些服务？nginx 路由怎么配的？发送 Enter，换行 Shift+Enter'
-                : '询问项目代码结构，如：这个项目的 Service 有哪些？发送 Enter，换行 Shift+Enter';
+                : isService
+                    ? '询问后端服务，如：有哪些模块？技术栈是什么？健康度？发送 Enter，换行 Shift+Enter'
+                    : '询问项目代码结构，如：这个项目的 Service 有哪些？发送 Enter，换行 Shift+Enter';
         panel.innerHTML = `
             <div class="ba-head">
                 <div class="ba-head-title">${getIcon(panelTitleIcon, 18)} ${panelTitleText}</div>
@@ -2409,9 +2737,9 @@ ${ctxNote || '（无）'}
                     <div class="hint">ReAct 工具循环步数上限。回答一次复杂问题时 agent 可多次调用工具。</div>
                 </div>
                 <div class="ba-field">
-                    <label>${PAGE_TYPE === 'database' ? '本地数据库快照地址 (db-snapshot.json，可选)' : PAGE_TYPE === 'deploy' ? '本地部署快照地址 (deploy-snapshot.json，可选)' : '本地快照地址 (snapshot.json，可选)'}</label>
-                    <input id="st-snap" value="${esc(s.snapshotUrl || '')}" placeholder="${PAGE_TYPE === 'database' ? 'http://127.0.0.1:8420/db-snapshot.json' : PAGE_TYPE === 'deploy' ? 'http://127.0.0.1:8420/deploy-snapshot.json' : 'http://127.0.0.1:8420/snapshot.json（nice-aos serve）'}"/>
-                    <div class="hint">${PAGE_TYPE === 'database' ? '当蓝图页未内嵌 db-viewer-data 时，从此地址拉取数据库快照。' : PAGE_TYPE === 'deploy' ? '当蓝图页未内嵌 deploy-viewer-data 时，从此地址拉取部署快照。' : '当蓝图页未内嵌 viewer-data 时，从此地址拉取快照。可用 <code>nice-aos serve</code> 一行启动本地数据源（默认 127.0.0.1:8420，CORS 就绪）。'}</div>
+                    <label>${PAGE_TYPE === 'database' ? '本地数据库快照地址 (db-snapshot.json，可选)' : PAGE_TYPE === 'deploy' ? '本地部署快照地址 (deploy-snapshot.json，可选)' : PAGE_TYPE === 'service' ? '本地服务快照地址 (service-snapshot.json，可选)' : '本地快照地址 (snapshot.json，可选)'}</label>
+                    <input id="st-snap" value="${esc(s.snapshotUrl || '')}" placeholder="${PAGE_TYPE === 'database' ? 'http://127.0.0.1:8420/db-snapshot.json' : PAGE_TYPE === 'deploy' ? 'http://127.0.0.1:8420/deploy-snapshot.json' : PAGE_TYPE === 'service' ? 'http://127.0.0.1:8420/service-snapshot.json' : 'http://127.0.0.1:8420/snapshot.json（nice-aos serve）'}"/>
+                    <div class="hint">${PAGE_TYPE === 'database' ? '当蓝图页未内嵌 db-viewer-data 时，从此地址拉取数据库快照。' : PAGE_TYPE === 'deploy' ? '当蓝图页未内嵌 deploy-viewer-data 时，从此地址拉取部署快照。' : PAGE_TYPE === 'service' ? '当蓝图页未内嵌 service-viewer-data 时，从此地址拉取服务快照（service-snapshot.json，含 moduleGraph 图谱）。' : '当蓝图页未内嵌 viewer-data 时，从此地址拉取快照。可用 <code>nice-aos serve</code> 一行启动本地数据源（默认 127.0.0.1:8420，CORS 就绪）。'}</div>
                 </div>
                 <div class="ba-field">
                     <label>当前数据源</label>
@@ -2556,7 +2884,7 @@ ${ctxNote || '（无）'}
         $all('.ba-set-viewdrv', pane).forEach((b) => b.addEventListener('click', async () => {
             const idx = DataSource.readInjected();
             if (idx) { DataSource.ctx = idx; DataSource.status = 'ready'; toast('已重读页面内嵌数据', 'success'); }
-            else toast(PAGE_TYPE === 'database' ? '页面未发现内嵌 db-viewer-data' : PAGE_TYPE === 'deploy' ? '页面未发现内嵌 deploy-viewer-data' : '页面未发现内嵌 viewer-data', 'error');
+            else toast(PAGE_TYPE === 'database' ? '页面未发现内嵌 db-viewer-data' : PAGE_TYPE === 'deploy' ? '页面未发现内嵌 deploy-viewer-data' : PAGE_TYPE === 'service' ? '页面未发现内嵌 service-viewer-data' : '页面未发现内嵌 viewer-data', 'error');
         }));
     }
 
@@ -2692,8 +3020,8 @@ ${ctxNote || '（无）'}
     function createFab() {
         const fab = el('button', 'ba-fab ba-fab-pulse');
         fab.id = 'ba-fab';
-        fab.title = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析' : PAGE_TYPE === 'deploy' ? '部署蓝图 AI 分析' : 'AOS 蓝图 AI 分析';
-        fab.innerHTML = getIcon(PAGE_TYPE === 'database' ? 'database' : PAGE_TYPE === 'deploy' ? 'server' : 'chat', 24);
+        fab.title = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析' : PAGE_TYPE === 'deploy' ? '部署蓝图 AI 分析' : PAGE_TYPE === 'service' ? '服务蓝图 AI 分析' : 'AOS 蓝图 AI 分析';
+        fab.innerHTML = getIcon(PAGE_TYPE === 'database' ? 'database' : PAGE_TYPE === 'deploy' ? 'server' : PAGE_TYPE === 'service' ? 'server' : 'chat', 24);
         fab.addEventListener('click', openPanel);
         document.body.appendChild(fab);
     }
@@ -2707,6 +3035,8 @@ ${ctxNote || '（无）'}
             registerDatabaseTools();
         } else if (PAGE_TYPE === 'deploy') {
             registerDeployTools();
+        } else if (PAGE_TYPE === 'service') {
+            registerServiceTools();
         } else {
             registerAnalysisTools();
         }
@@ -2723,6 +3053,7 @@ ${ctxNote || '（无）'}
         PanelRefreshHook();
         const logMsg = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析助手已启动'
             : PAGE_TYPE === 'deploy' ? '部署蓝图 AI 分析助手已启动'
+            : PAGE_TYPE === 'service' ? '后端服务蓝图 AI 分析助手已启动'
             : 'AOS 蓝图 AI 分析助手已启动';
         console.log('%c[BA-Agent] ' + logMsg, 'color:#8b5cf6;font-weight:bold');
     }

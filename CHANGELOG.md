@@ -2,6 +2,54 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.27.0] - 2026-08-24
+
+### 新增
+
+- **nice-aos-code-review-skill**：综合代码评审 Skill（严格超集 `nice-aos-deadcode-skill`）。在四级死代码（文件/导出/类型/函数）清理工作流之上，整合 nice-aos 本体快照 + asdm-aos 服务模型（含五维健康审计 complexity/dataHealth/testCoverage/analysisQuality/dependencyHealth）+ 代码/服务蓝图（`export --format html|viewmodel`）+ 外部扫描 JSON（ESLint/Sonar/Checkstyle/Semgrep/Trivy/npm audit），编排七步流水线：**装配 → 通用维度 → 领域维度 → 死代码 → 后端服务 → 外部扫描融合 → 报告输出与 markReviewed 闭环**。规则按 ASDM code-review v2.0 的领域驱动模型扩展为 4 组共 **11 维度 + 50+ 规则 ID**（ARCH/TYPE/PERF/UX/SEC/STYLE 通用 + DOMAIN/REUSE/COUPLE/COHESION 领域 + DEAD-FILE/EXPORT/TYPE/FN 死代码 + BACK-CX/DATA/TEST/QA/DEP 后端）。报告模板 `spec/review-template.md` 含五维评分 + 死代码清单 + 外部扫描融合 + markReviewed 跨会话闭环；评级 P0~P3（CRITICAL/MAJOR/MINOR/INFO）。继承 nice-aos-deadcode-skill 全部规则矩阵（含判定豁免：命名空间导入 / `export *` / 动态 import / 接口方法永不判死 / 油猴 ScriptFunction 额外豁免），并明确边界——死代码**清理动作**（删除实体）仍由 deadcode skill 承载，本 Skill 仅输出评审报告
+- `spec/review-rules.md` 通用+领域+死代码完整规则矩阵（含 PROJ-01~05 项目特定规则）
+- `spec/backend-review-rules.md` 后端服务五维规则 + 蓝图评审 4 条
+- `spec/review-template.md` 综合评审 Markdown 报告模板（11 维度小计表 + 死代码清单 + 外部扫描融合表 + markReviewed 闭环表）
+- `reports/` 评审报告输出目录（gitkeep 占位）
+
+### 变更
+
+- `.gitignore` 新增 `.workbuddy/`（本地 memory 文件）与 `*-service-blueprint.html`（本地生成的服务蓝图）—— 避免误提交
+- SKILL.md 系列继续保持 **`nice-aos-skill`（核心查询） / `nice-aos-deadcode-skill`（死代码清理） / `nice-aos-userscript-skill`（油猴审计） / `nice-aos-database-skill`（数据库） / `nice-aos-deployment-skill`（部署） / `nice-aos-service-skill`（后端服务查询） / `asdm-aos-skill`（Java 本体）** 七系生态 + **新增 `nice-aos-code-review-skill`（综合评审）**，职责边界明确
+
+### 不变更
+
+- nice-aos-deadcode-skill 的全部清理动作（删除 / `markReviewed` / `addNote`）保持不变——本 Skill 仅消费其四级候选清单，不接管清理
+
+## [0.26.0] - 2026-08-24
+
+### 新增
+
+- **Java 后端服务蓝图**（基于 asdm-aos 本体快照）：新增 `service` 命令组，消费 asdm-aos 工具产出的 Java 后端本体快照（`snapshot.json`，含包/类/接口/方法/调用关系/DDL 表/依赖）构建后端服务模型，产出分析 JSON 与自包含服务蓝图 HTML（`service-blueprint.html`，9 Tab：总览/模块/分层/**图谱**/API 面/数据层/依赖与集成/代码质量/健康审计）
+- **图谱 Tab**（力导向图，内联力模拟零依赖）：三种视图——**模块图谱**（节点=服务模块，大小 ∝ 类数；边=包依赖 `Package.dependsOnPackageIds`（蓝）+ 跨模块方法调用（绿），排除 other 噪声模块）、**分层调用流**（节点=架构分层，边=跨层方法调用，宽度 ∝ 调用次数，如 Controller→Service→Repository→Entity，实测 service→entity ×5310）、**模块×技术栈**（二分图：模块 + 技术分类（紫），边=模块使用该技术 `Package.dependencyIds`）；交互：拖拽节点/滚轮缩放/拖空白平移/点击聚焦高亮邻接
+- **蓝图 AI 助手适配服务蓝图**（`contrib/blueprint-ai-agent`）：页面类型检测新增 `service-viewer-data` → 「服务蓝图」智能体（10 个专属工具：概览/模块/分层/端点/表/依赖技术栈/代码质量/健康审计/审计明细/图谱查询），系统提示词、建议问题、设置面板快照地址、FAB 与启动日志同步适配
+- **模块动态推导**（`serviceModel.js` `deriveModuleRules`）：模块规则**不硬编码**——首次构建从快照包结构动态推导（基础包多数前缀 + 分层关键词守门员 + 单模块仓库坍缩），写入模块配置文件 `service-modules.json`（默认 `serviceSnapshotDir` 下），后续构建自动加载；`--module-prefix` 临时覆盖 / `--module-config` 指定配置文件，切换后端项目无需改代码
+- **分层判定**（`serviceModel.js` `detectLayer`）：注解（`@RestController`/`@Service`/`@Repository`/`@Entity`/`@Configuration`/`@Mapper`）→ 类名后缀 → 包名关键词，覆盖 Controller/Service/Repository/Mapper/Entity/DTO/Config/Adapter/任务/工具 11 层
+- **技术栈判定**（`serviceModel.js` `TECH_STACK_RULES`）：33 条依赖名正则，具体 starter（data-jpa/data-redis/security/webflux…）优先于泛型 spring-boot，识别 JPA/MyBatis/Spring Security/JJWT/ShedLock/SpringDoc/Redis/ES/S3/OBS/MinIO/OkHttp/MySQL 等
+- **五维健康审计**（`serviceAuditor.js`）：代码复杂度 / 数据层健康 / 测试覆盖率 / 分析质量 / 依赖健康加权评分（含评分环 SVG）
+- **CLI 命令**：`service build --snapshot <path>`（构建+保存模型）、`service export [--format json|html|viewmodel] [--snapshot <path>]`（支持直接指定快照 json 路径一步生成蓝图）、`service query <type>`（14 种对象）、`service audit health|all`
+- 全局选项 `--service-snapshot-dir`；默认主题映射 `DEFAULT_THEMES.service = 'elegant-purple'`
+
+### 变更
+
+- `src/themes/index.js`：`DEFAULT_THEMES` 新增 `service` 条目
+- 服务快照文件：`service-snapshot.json` / `service-modules.json`（与代码/数据库/部署快照分离，均在服务快照目录）
+- **分层判定修复**：`domain` 包关键词从 `util` 改为 `entity`（DDD/MyBatis 项目的 POJO 位于 domain 包，leaniss-system-core 实测实体层 4→100 类）；接口补充 `layerKey` 判定（Mapper/Repository 接口归入对应分层，Mapper 接口 65 个、Repository 接口 3 个）
+- **审计修正（代码审核发现）**：复杂度热点占比改为从全量方法重算（`complexityHotspots` 是 TOP50 展示截断列表，此前以截断列表计算占比，asdm-admin 实测热点数 50→159）；依赖多版本检测只比较具体版本号，忽略 Maven 属性占位符（`${xxx.version}`）与空版本（消除 asdm-admin 4 条误报 error，依赖健康 60→90，综合 77/C→82/B）
+- **模块配置跨仓库防串用**：加载 `service-modules.json` 时校验 `repositoryName`，与快照仓库不符（切项目残留）则忽略并重新推导，CLI 输出警告并记入 `_meta.moduleConfigWarning`
+- **口径统一与瘦身**：仓库级 `classCount` 与 `stats.classCount` 一致（不含枚举，asdm-admin 1878→1801）；服务蓝图 HTML 审计数据去重（`health.audits` 不再重复内嵌），热点标题显示实际条数（cc≥15，TOP n）
+
+### 验证
+
+- 221 个单元测试全过，零回归（新增 `serviceBuilder` / `serviceViewer` / `serviceAuditor` 25 个）
+- 端到端实测：asdm-admin 本体快照（3583 文件/335 包/1878 类/189 接口/20408 方法/799 端点/107 表/55 依赖），模块动态推导与报告手写模块完全一致（core 960 类/adapter 282/integration 124/agentorbit 99/orgmapping 98/telemetry 81/file 49/sso 41/mcp 26/portal 118），热点 TOP3（圈复杂度 74/69/59）与测试统计（1154 单元/47 集成）均与报告一致；五维健康评分 82/B（复杂度 97：全量 159 个 cc≥15 热点；依赖 90：占位符误报清零）
+- **leaniss-system-core 实测（引入 asdm-aos-skill 后）**：asdm-aos 扫描（577 Java 文件/464 类/157 接口/5581 方法/86 依赖/3316 DDL 表/63 Mapper）→ 后端服务蓝图（7 模块 common 126 类/system 120/manager 149/job 38/file 9/gateway 14/auth 8；技术栈 jjwt/quartz/springdoc/redis/minio/feign/mysql；448 端点；模块图谱 22 边）；另建前端（Vue2，163 组件/132 路由/67 领域）、数据库（Sprint 布局，80 迁移/106 表/6 库/11 领域）、部署（19 服务/15 路由/5 中间件）三类蓝图，四蓝图 HTML 内嵌数据与脚本均验证通过
+
 ## [0.25.0] - 2026-08-24
 
 ### 新增
