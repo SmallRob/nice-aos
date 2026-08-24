@@ -1,6 +1,6 @@
 # AOS 蓝图 AI 代码分析助手（油猴脚本）
 
-在 **nice-aos 蓝图页**（`export --format html` 生成的 `blueprint.html`）右下方插入浮动按钮，点击展开 AI 对话侧边栏，可对项目**代码本体**（模块/组件/Hook/Store/Service/路由/接口/类/方法/依赖/功能域/死代码等）进行自然语言问答分析。
+在 **nice-aos 蓝图页**（`export --format html` 生成的 `blueprint.html`）右下方插入浮动按钮，点击展开 AI 对话侧边栏。除代码蓝图（模块/组件/Hook/Store/Service/路由/接口/类/方法/依赖/功能域/死代码等）外，还自动检测并支持**数据库蓝图（dataoverview）**、**部署蓝图（deployoverview）**、**后端服务蓝图（service-blueprint）** 与 **产品规划蓝图（planning-overview：特性/模块/依赖/发布/里程碑/Roadmap/规划健康审计）**，按页面类型自动切换对应的分析模式与领域工具。
 
 架构借鉴自 [steam-ai-agent](/E:/WorkSource/steam-py/steam-workspace/steam-tampermonkey-scripts/steam-ai-agent/steam-ai-agent-1.8.3.user.js)：采用 **ToolRegistry + ReAct 文本协议**（`<tool_calls>{"name":..,"arguments":{..}}</tool_calls>`），用纯文本规避各厂商 function-calling 差异，从而低成本支持多模型供应商。
 
@@ -24,14 +24,30 @@
 - **数据导出**：会话可导出 **JSON**（可备份 / 再恢复）或 **Markdown**。
 - **流式打字输出**、工具调用可视化、可中断生成。
 
+### 产品规划蓝图工具集（`planning-overview` 页）
+
+在规划蓝图页自动注册以下领域工具：
+
+- `getPlanningStats` 规划整体统计（特性/模块/依赖/发布/里程碑/主题数、状态/优先级/版本分布、健康分）
+- `queryPlanningFeatures` 特性清单查询（按 status/priority/version/module/keyword 过滤）
+- `getPlanningFeatureDetail` 单个特性详情（描述/开放问题/依赖列表）
+- `queryPlanningModules` 功能模块构成与覆盖特性
+- `getPlanningFeatureDependencies` 特性间依赖关系（依赖谁 / 被谁依赖）
+- `getPlanningReleasePlan` 发布与迭代计划、里程碑
+- `getPlanningRoadmap` Roadmap 战略主题与里程碑
+- `getPlanningHealthAudit` 规划健康审计（四维评分 + 问题清单）
+- `queryPlanningDocs` 产品规划全文关键词搜索
+
+示例问答：*《有哪些处于实现中的特性？》* *《FT-001 依赖了哪些特性？》* *《各模块覆盖哪些特性？》* *《本月发布计划？》* *《规划健康度如何？有什么风险？》*
+
 ---
 
 ## 双数据源
 
 脚本按以下顺序自动选择数据源（无需后端服务）：
 
-1. **页面内嵌 `viewer-data`**（推荐）：`blueprint.html` 本身内嵌了完整视图模型 JSON（`<script id="viewer-data">`），油猴脚本直接读取，**零依赖、离线可用**。
-   > 注意：需要**重新 export** 一次 blueprint.html 才能拿到最新代码快照。
+1. **页面内嵌 `viewer-data`**（推荐）：`blueprint.html` 本身内嵌了完整视图模型 JSON（`<script id="viewer-data">`）；数据库/部署/服务/规划蓝图页分别内嵌 `db-viewer-data` / `deploy-viewer-data` / `service-viewer-data` / `planning-viewer-data`，油猴脚本按页面类型自动读取，**零依赖、离线可用**。
+   > 注意：需要**重新 export** 一次蓝图页才能拿到最新快照。
 2. **本地 `snapshot.json`**（可选配置）：在「设置」中填写快照 HTTP 地址，脚本会用 `GM_xmlhttpRequest` 拉取。适合不希望重新 export、或想直接消费 `.nice-aos/data/snapshot.json` 的场景。推荐用 aos 自带的 `serve` 命令一行启动（同时暴露快照与蓝图，CORS 就绪）：
    ```bash
    nice-aos serve                     # 默认 http://127.0.0.1:8420

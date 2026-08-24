@@ -41,6 +41,7 @@ export const DEFAULT_THEMES = {
   db: 'fresh-green',
   code: 'deep-blue',
   service: 'elegant-purple',
+  planning: 'deep-blue',
 };
 
 export function resolveTheme(name) {

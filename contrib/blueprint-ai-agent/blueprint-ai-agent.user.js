@@ -4,7 +4,7 @@
 // @name:en      AOS Blueprint AI Code Analysis Assistant
 // @namespace    https://github.com/nice-aos
 // @version      1.1.0
-// @description  nice-aos 蓝图页 AI 对话侧边栏。在 blueprint.html 右下角插入浮窗按钮，展开即可对项目代码本体（模块/组件/Hook/Store/Service/路由/接口/死代码/依赖/功能域等）进行自然语言问答分析。同时支持数据库蓝图页（dataoverview：表/列/外键/索引/迁移/领域/模式特征）、部署蓝图页（deployoverview：服务/镜像/网关路由/依赖/中间件/环境/分层/审计）与 Java 后端服务蓝图页（service-blueprint：模块/分层/API 面/数据层/技术栈/代码质量/健康审计/模块图谱），自动检测页面类型并切换对应分析模式。双数据源：优先读取页面内嵌 viewer-data / db-viewer-data / deploy-viewer-data / service-viewer-data，可配置本地快照地址。支持多模型供应商(DeepSeek/GLM/Qwen/Kimi/Doubao/OpenAI/自定义)、新建会话、会话历史、导出 JSON/Markdown。参考 steam-ai-agent 的 ToolRegistry + ReAct 工具循环架构。
+// @description  nice-aos 蓝图页 AI 对话侧边栏。在 blueprint.html 右下角插入浮窗按钮，展开即可对项目代码本体（模块/组件/Hook/Store/Service/路由/接口/死代码/依赖/功能域等）进行自然语言问答分析。同时支持数据库蓝图页（dataoverview：表/列/外键/索引/迁移/领域/模式特征）、部署蓝图页（deployoverview：服务/镜像/网关路由/依赖/中间件/环境/分层/审计）、Java 后端服务蓝图页（service-blueprint：模块/分层/API 面/数据层/技术栈/代码质量/健康审计/模块图谱）与产品规划蓝图页（planning-overview：特性/模块/依赖/发布/里程碑/Roadmap 战略/规划健康审计），自动检测页面类型并切换对应分析模式。双数据源：优先读取页面内嵌 viewer-data / db-viewer-data / deploy-viewer-data / service-viewer-data / planning-viewer-data，可配置本地快照地址。支持多模型供应商(DeepSeek/GLM/Qwen/Kimi/Doubao/OpenAI/自定义)、新建会话、会话历史、导出 JSON/Markdown。参考 steam-ai-agent 的 ToolRegistry + ReAct 工具循环架构。
 // @description:en nice-aos blueprint AI chat sidebar. Floating button in blueprint.html. Natural language Q&A over code ontology (modules/components/hooks/stores/services/routes/interfaces/deadcode/deps/domains). Also supports database blueprint pages (dataoverview) with auto-detection and database-specific tools (tables/columns/fks/indexes/migrations/domains/patterns), deploy blueprint pages (deployoverview) and Java backend service blueprint pages (service-blueprint: modules/layers/API/database/techstack/quality/health/module graph). Dual data source. Multi-provider, sessions, history, export.
 // @icon         data:image/svg+xml,%3Csvg%20viewBox='0%200%2024%2024'%20fill='none'%20xmlns='http://www.w3.org/2000/svg'%3E%3Crect%20width='24'%20height='24'%20rx='6'%20fill='%236366f1'/%3E%3Cpath%20d='M7%205.5h10a1.5%201.5%200%200%201%201.5%201.5v7a1.5%201.5%200%200%201-1.5%201.5h-4.5l-4%203.2V15.5H7a1.5%201.5%200%200%201-1.5-1.5V7A1.5%201.5%200%200%201%207%205.5z'%20fill='white'/%3E%3Cpath%20d='M12%207.5l1%202.8a2%202%200%200%200%201.1%201.1L17%2012.5l-2.9%201.1a2%202%200%200%200-1.1%201.1L12%2017.5l-1-2.8a2%202%200%200%200-1.1-1.1L7%2012.5l2.9-1.1a2%202%200%200%200%201.1-1.1L12%207.5z'%20fill='%236366f1'/%3E%3C/svg%3E
 // @author       nice-aos
@@ -36,8 +36,9 @@
 (function () {
     'use strict';
 
-    // 页面类型检测：服务蓝图页 (service-viewer-data) / 部署蓝图页 (deploy-viewer-data) / 数据库蓝图页 (db-viewer-data) / 代码蓝图页 (viewer-data / #viewer)
+    // 页面类型检测：产品规划蓝图页 (planning-viewer-data) / 服务蓝图页 (service-viewer-data) / 部署蓝图页 (deploy-viewer-data) / 数据库蓝图页 (db-viewer-data) / 代码蓝图页 (viewer-data / #viewer)
     function detectPageType() {
+        if (document.getElementById('planning-viewer-data')) return 'planning';
         if (document.getElementById('service-viewer-data')) return 'service';
         if (document.getElementById('deploy-viewer-data')) return 'deploy';
         if (document.getElementById('db-viewer-data')) return 'database';
@@ -350,6 +351,16 @@
         },
 
         readInjected() {
+            if (PAGE_TYPE === 'planning') {
+                const el = document.getElementById('planning-viewer-data');
+                if (!el) return null;
+                try {
+                    const parsed = JSON.parse(el.textContent);
+                    const idx = this._buildPlanningIndex(parsed);
+                    if (idx) { idx.sourceLabel = '页面内嵌数据 (planning-viewer-data)'; return idx; }
+                } catch (e) { console.warn('[BA-Agent] planning-viewer-data 解析失败', e); }
+                return null;
+            }
             if (PAGE_TYPE === 'service') {
                 const el = document.getElementById('service-viewer-data');
                 if (!el) return null;
@@ -447,6 +458,26 @@
             return { byId: byName, byType, byName, meta, raw };
         },
 
+        _buildPlanningIndex(raw) {
+            if (!raw || typeof raw !== 'object') return null;
+            const byType = {
+                features: raw.features || [],
+                modules: raw.modules || [],
+                releases: raw.releases || [],
+                milestones: raw.milestones || [],
+                themes: raw.themes || [],
+                dependencies: raw.dependencies || [],
+                stats: raw.stats ? [raw.stats] : [],
+                audit: raw.audit ? [raw.audit] : [],
+                distribution: raw.distribution ? [raw.distribution] : [],
+            };
+            const byId = new Map();
+            for (const f of byType.features) { if (f.id && !byId.has(f.id)) byId.set(f.id, f); }
+            for (const m of byType.modules) { if (m.key && !byId.has(m.key)) byId.set(m.key, m); }
+            const meta = raw.meta || raw._meta || {};
+            return { byId, byType, byName: byId, meta, raw };
+        },
+
         fetchSnapshot(url) {
             return new Promise((resolve, reject) => {
                 if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('无 GM_xmlhttpRequest')); return; }
@@ -477,6 +508,7 @@
                     const idx = PAGE_TYPE === 'deploy' ? this._buildDeployIndex(raw)
                         : PAGE_TYPE === 'database' ? this._buildDbIndex(raw)
                         : PAGE_TYPE === 'service' ? this._buildServiceIndex(raw)
+                        : PAGE_TYPE === 'planning' ? this._buildPlanningIndex(raw)
                         : this._buildIndex(raw && typeof raw === 'object' && ('dataMap' in raw) ? raw : { dataMap: raw });
                     if (!idx) throw new Error('快照结构无法识别');
                     idx.sourceLabel = `本地快照 ${s.snapshotUrl}`;
@@ -489,6 +521,8 @@
                         ? '未找到可用数据：页面未内嵌 deploy-viewer-data。请使用最新版 nice-aos deploy export --format html 重新生成部署蓝图。'
                         : PAGE_TYPE === 'service'
                             ? '未找到可用数据：页面未内嵌 service-viewer-data。请使用最新版 nice-aos service export --format html 重新生成服务蓝图。'
+                            : PAGE_TYPE === 'planning'
+                                ? '未找到可用数据：页面未内嵌 planning-viewer-data。请使用最新版 nice-aos planning export --format html 重新生成产品规划蓝图。'
                             : '未找到可用数据：页面未内嵌 viewer-data，且未配置本地 snapshot.json。请在设置中填写快照地址。';
                 return null;
             } catch (e) {
@@ -1676,6 +1710,267 @@
     }
 
     // ============================================================
+    //  产品规划蓝图工具（仅在 PAGE_TYPE === 'planning' 时注册）
+    // ============================================================
+    function registerPlanningTools() {
+        const plNeedsData = () => {
+            if (DataSource.status !== 'ready' || !DataSource.ctx) return '数据尚未加载';
+            return null;
+        };
+        // 状态标签查找（features 已带 statusEmoji）
+        const plMatch = (o, v) => {
+            v = String(v ?? '').trim().toLowerCase();
+            if (!v) return true;
+            return [o.id, o.title, o.moduleKey, o.moduleLabel, o.priority, o.targetVersion, o.owner, o.status, o.description].filter(Boolean).some((f) => String(f).toLowerCase().includes(v));
+        };
+
+        ToolRegistry.register({
+            name: 'getPlanningStats',
+            description: '获取产品规划整体统计：特性/模块/依赖/发布/里程碑/战略主题数、状态/优先级/目标版本分布、平均完成度、健康分。适合"这个产品规划整体如何/有多少特性/各状态多少/健康分多少"',
+            parameters: { type: 'object', properties: {}, required: [] },
+            execute() {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const { byType, meta } = DataSource.ctx;
+                const dist = byType.distribution?.[0] || {};
+                const audit = byType.audit?.[0];
+                const features = byType.features || [];
+                const withCompletion = features.filter((f) => typeof f.completion === 'number');
+                const avgCompletion = withCompletion.length ? Math.round(withCompletion.reduce((s, f) => s + f.completion, 0) / withCompletion.length) : null;
+                return {
+                    success: true,
+                    data: {
+                        name: meta.name, sourceDir: meta.sourceDir, scannedAt: meta.scannedAt,
+                        fileCount: meta.fileCount,
+                        features: features.length,
+                        modules: (byType.modules || []).length,
+                        dependencies: (byType.dependencies || []).length,
+                        releases: (byType.releases || []).length,
+                        milestones: (byType.milestones || []).length,
+                        themes: (byType.themes || []).length,
+                        statusDistribution: dist.status || {},
+                        priorityDistribution: dist.priority || {},
+                        versionDistribution: dist.targetVersion || {},
+                        avgCompletion,
+                        healthScore: audit?.score, healthLevel: audit?.level,
+                    },
+                    summary: `${features.length} 个特性 / ${(byType.modules || []).length} 模块 / ${(byType.dependencies || []).length} 依赖 / ${(byType.releases || []).length} 发布 / ${(byType.milestones || []).length} 里程碑 / ${(byType.themes || []).length} 战略主题，规划健康分 ${audit?.score ?? '-'}${audit?.level ? `(${audit.level})` : ''}`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryPlanningFeatures',
+            description: '查询产品特性清单：特性 ID/标题/优先级/目标版本/负责人/状态/完成度。可按状态(implementing/designing/clarifying/blocked/done/unknown)、优先级(P1/P2/P3)、目标版本(v1.x)、模块、标题关键词过滤。适合"有哪些特性 / 实现中的特性 / P1 有哪些 / v1.2 有哪些"',
+            parameters: { type: 'object', properties: { status: { type: 'string', description: '状态（implementing/designing/clarifying/blocked/done/unknown）' }, priority: { type: 'string', description: '优先级（P1/P2/P3）' }, version: { type: 'string', description: '目标版本（如 v1.2.1）' }, module: { type: 'string', description: '模块 key 或标签关键词' }, keyword: { type: 'string', description: '标题/ID 关键词' }, limit: { type: 'number', description: '返回条数上限，默认50' } }, required: [] },
+            execute(args) {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const features = DataSource.ctx.byType.features || [];
+                let hit = features;
+                if (args.status) hit = hit.filter((f) => String(f.status).toLowerCase() === String(args.status).toLowerCase());
+                if (args.priority) hit = hit.filter((f) => String(f.priority).toUpperCase() === String(args.priority).toUpperCase());
+                if (args.version) hit = hit.filter((f) => String(f.targetVersion || '').toLowerCase() === String(args.version).toLowerCase());
+                if (args.module) hit = hit.filter((f) => String(f.moduleKey || '').toLowerCase().includes(String(args.module).toLowerCase()) || String(f.moduleLabel || '').toLowerCase().includes(String(args.module).toLowerCase()));
+                if (args.keyword) hit = hit.filter((f) => plMatch(f, args.keyword));
+                const limit = Math.min(Number(args.limit) || 50, 100);
+                const result = hit.slice(0, limit).map((f) => ({
+                    id: f.id, title: f.title, moduleLabel: f.moduleLabel, priority: f.priority,
+                    targetVersion: f.targetVersion, owner: f.owner, status: f.status, statusEmoji: f.statusEmoji,
+                    completion: f.completion, openQuestionCount: f.openQuestionCount,
+                }));
+                if (!result.length) return { success: false, error: '未找到匹配的特性' };
+                const dist = {};
+                for (const f of result) dist[f.status] = (dist[f.status] || 0) + 1;
+                return { success: true, data: result, summary: `${result.length} 个特性（共 ${hit.length} 匹配）`, note: `状态分布: ${JSON.stringify(dist)}` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getPlanningFeatureDetail',
+            description: '查询单个特性的完整详情：标题/模块/优先级/目标版本/负责人/状态/完成度/开放问题数/特性描述/来源文档/关联特性依赖。适合"FT-001 是什么/详情/依赖哪些特性/开放问题"',
+            parameters: { type: 'object', properties: { id: { type: 'string', description: '特性 ID（如 FT-001）' } }, required: ['id'] },
+            execute(args) {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const f = DataSource.ctx.byId.get(String(args.id || '').toUpperCase());
+                if (!f) return { success: false, error: `未找到特性 ${args.id}（共 ${DataSource.ctx.byType.features.length} 个）` };
+                const depsAll = DataSource.ctx.byType.dependencies || [];
+                const targets = depsAll.filter((d) => d.source === f.id).map((d) => d.target);
+                const sources = depsAll.filter((d) => d.target === f.id).map((d) => d.source);
+                const depTitles = (ids) => ids.map((id) => {
+                    const t = DataSource.ctx.byId.get(id);
+                    return t ? `${id}(${t.title})` : id;
+                });
+                return {
+                    success: true,
+                    data: {
+                        id: f.id, title: f.title, moduleLabel: f.moduleLabel, moduleKey: f.moduleKey,
+                        priority: f.priority, targetVersion: f.targetVersion, owner: f.owner,
+                        status: `${f.statusEmoji} ${f.status}`, completion: f.completion,
+                        openQuestionCount: f.openQuestionCount, description: f.description,
+                        docPath: f.docPath, lastUpdated: f.lastUpdated,
+                        dependsOn: depTitles(targets), dependedBy: depTitles(sources),
+                    },
+                    summary: `${f.title}｜${f.moduleLabel || f.moduleKey || '-'}｜${f.priority || '-'}｜${f.targetVersion || '-'}｜${f.statusEmoji}${f.status}${typeof f.completion === 'number' ? `（完成 ${f.completion}%）` : ''}｜开放问题 ${f.openQuestionCount ?? 0}｜依赖 ${targets.length} 个、被 ${sources.length} 个依赖`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryPlanningModules',
+            description: '查询产品规划功能模块：模块 key/标签/描述/覆盖特性数及特性清单。适合"模块构成/有哪些模块/某模块下有哪些特性"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '模块 key/标签关键词' }, withFeatures: { type: 'boolean', description: '是否展开各模块下的特性 ID 列表，默认 true' }, limit: { type: 'number', description: '返回条数上限，默认30' } }, required: [] },
+            execute(args) {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const modules = DataSource.ctx.byType.modules || [];
+                let hit = modules;
+                if (args.keyword) hit = hit.filter((m) => String(m.key || '').toLowerCase().includes(String(args.keyword).toLowerCase()) || String(m.label || '').toLowerCase().includes(String(args.keyword).toLowerCase()));
+                const limit = Math.min(Number(args.limit) || 30, 60);
+                const result = hit.slice(0, limit).map((m) => ({
+                    key: m.key, label: m.label, description: m.description,
+                    featureCount: (m.featureIds || []).length,
+                    featureIds: args.withFeatures !== false ? m.featureIds : undefined,
+                }));
+                if (!result.length) return { success: false, error: '未找到匹配的模块' };
+                return { success: true, data: result, summary: `${result.length} 个模块（共 ${modules.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getPlanningFeatureDependencies',
+            description: '查询特性间依赖关系。传 id 查某特性的依赖(依赖了谁/被谁依赖)；不传则返回全部依赖边。适合"FT-005 依赖了哪些特性/被哪些特性依赖/特性依赖关系"',
+            parameters: { type: 'object', properties: { id: { type: 'string', description: '特性 ID（如 FT-001，可选）' }, limit: { type: 'number', description: '返回条数上限，默认100' } }, required: [] },
+            execute(args) {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const deps = DataSource.ctx.byType.dependencies || [];
+                const limit = Math.min(Number(args.limit) || 100, 300);
+                const label = (id) => {
+                    const t = DataSource.ctx.byId.get(id);
+                    return t ? `${t.title}` : id;
+                };
+                let out;
+                if (args.id) {
+                    const id = String(args.id).toUpperCase();
+                    const related = deps.filter((d) => (d.source === id || d.target === id) && d.source !== d.target);
+                    out = related.slice(0, limit).map((d) => ({
+                        direction: d.source === id ? 'depends_on' : 'depended_by',
+                        source: d.source, target: d.target, kind: d.kind || 'references',
+                    }));
+                    const targetIds = related.filter((d) => d.source === id).map((d) => d.target);
+                    const sourceIds = related.filter((d) => d.target === id).map((d) => d.source);
+                    return {
+                        success: true, data: out,
+                        summary: `${id} 依赖 ${targetIds.map(label).join('、') || '无'}；被 ${sourceIds.map(label).join('、') || '无'} 依赖`,
+                    };
+                }
+                const edgeCount = deps.length;
+                const uniq = deps.filter((d, i, a) => a.findIndex((x) => x.source === d.source && x.target === d.target) === i);
+                return { success: true, data: uniq.slice(0, limit), summary: `共 ${edgeCount} 条依赖（去重 ${uniq.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getPlanningReleasePlan',
+            description: '查询发布与迭代计划：发布 ID/名称/状态/迭代窗口/覆盖特性。适合"发布计划/本月发布/迭代安排/哪个版本包含哪些特性"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '发布/版本关键词（如 R03 / v1.2）' }, limit: { type: 'number', description: '返回条数上限，默认30' } }, required: [] },
+            execute(args) {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const releases = DataSource.ctx.byType.releases || [];
+                const milestones = DataSource.ctx.byType.milestones || [];
+                let rel = releases;
+                if (args.keyword) rel = rel.filter((r) => String(r.id || r.name || '').toLowerCase().includes(String(args.keyword).toLowerCase()) || String(r.status || '').toLowerCase().includes(String(args.keyword).toLowerCase()));
+                const limit = Math.min(Number(args.limit) || 30, 60);
+                const result = rel.slice(0, limit).map((r) => ({
+                    id: r.id, name: r.name, status: r.status,
+                    iterations: r.iterations || [], featureCount: (r.featureIds || []).length, featureIds: r.featureIds,
+                }));
+                return {
+                    success: true,
+                    data: {
+                        releases: result,
+                        milestones: milestones.slice(0, limit).map((m) => ({ version: m.version, window: m.window, status: m.status, features: m.features })),
+                    },
+                    summary: `${result.length} 个发布（共 ${releases.length}）／ ${milestones.length} 个里程碑`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getPlanningRoadmap',
+            description: '查询 Roadmap 战略主题与里程碑：主题 ID/标题/摘要/关联里程碑。适合"产品战略/路线图/未来规划/月度里程碑"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '主题标题关键词' }, limit: { type: 'number', description: '返回条数上限，默认30' } }, required: [] },
+            execute(args) {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const themes = DataSource.ctx.byType.themes || [];
+                let hit = themes;
+                if (args.keyword) hit = hit.filter((t) => String(t.title || '').includes(String(args.keyword)) || String(t.summary || '').includes(String(args.keyword)));
+                const limit = Math.min(Number(args.limit) || 30, 60);
+                const result = hit.slice(0, limit).map((t) => ({ id: t.id, title: t.title, summary: t.summary, kind: t.kind, milestones: t.milestones || [] }));
+                return { success: true, data: result, summary: `${result.length} 个战略主题（共 ${themes.length}）` };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'getPlanningHealthAudit',
+            description: '获取产品规划健康审计：综合评分/等级 + 覆盖完整性/状态健康/依赖风险/版本规划 四维评分 + 问题清单（各含维度/对象/原因）。适合"规划健康度如何/有哪些规划风险与问题"',
+            parameters: { type: 'object', properties: { dimension: { type: 'string', description: '按维度过滤问题（coverage/statusHealth/dependencyRisk/releasePlanning）' }, limit: { type: 'number', description: '问题条数上限，默认50' } }, required: [] },
+            execute(args) {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const audit = DataSource.ctx.byType.audit?.[0];
+                if (!audit) return { success: false, error: '快照中无审计数据（planning audit health 生成）' };
+                let issues = audit.issues || [];
+                if (args.dimension) issues = issues.filter((i) => i.dimension === args.dimension);
+                const limit = Math.min(Number(args.limit) || 50, 200);
+                return {
+                    success: true,
+                    data: {
+                        score: audit.score, level: audit.level,
+                        dimensions: (audit.dimensions || []).map((d) => ({ key: d.key, label: d.label, score: d.score, level: d.level, issueCount: (d.issues || []).length })),
+                        issues: issues.slice(0, limit),
+                    },
+                    summary: `规划健康分 ${audit.score}（${audit.level}）｜${(audit.dimensions || []).map((d) => `${d.label} ${d.score}`).join('｜')}`,
+                };
+            },
+        });
+
+        ToolRegistry.register({
+            name: 'queryPlanningDocs',
+            description: '在产品规划全量文档数据中做关键词搜索（特性/模块/发布/战略主题/里程碑）。适合"规划里提到 xxx 的内容/某关键词相关的特性"',
+            parameters: { type: 'object', properties: { keyword: { type: 'string', description: '搜索关键词' }, scope: { type: 'string', description: '范围：features/modules/themes/releases/all，默认 all' }, limit: { type: 'number', description: '返回条数上限，默认20' } }, required: ['keyword'] },
+            execute(args) {
+                const err = plNeedsData(); if (err) return { success: false, error: err };
+                const kw = String(args.keyword ?? '').trim().toLowerCase();
+                if (!kw) return { success: false, error: '请输入关键词' };
+                const scope = String(args.scope || 'all');
+                const limit = Math.min(Number(args.limit) || 20, 50);
+                const hitText = (o, fields) => fields.some((fi) => String(o[fi] || '').toLowerCase().includes(kw));
+                const out = [];
+                if (scope === 'all' || scope === 'features') {
+                    for (const f of DataSource.ctx.byType.features || []) {
+                        if (hitText(f, ['id', 'title', 'description', 'moduleLabel', 'owner'])) out.push({ type: 'feature', id: f.id, title: f.title, provider: f.moduleLabel || f.status, snippet: String(f.description || '').slice(0, 120) });
+                    }
+                }
+                if (scope === 'all' || scope === 'modules') {
+                    for (const m of DataSource.ctx.byType.modules || []) {
+                        if (hitText(m, ['key', 'label', 'description'])) out.push({ type: 'module', id: m.key, title: m.label, provider: `${(m.featureIds || []).length} 特性`, snippet: String(m.description || '').slice(0, 120) });
+                    }
+                }
+                if (scope === 'all' || scope === 'themes') {
+                    for (const t of DataSource.ctx.byType.themes || []) {
+                        if (hitText(t, ['id', 'title', 'summary'])) out.push({ type: 'theme', id: t.id, title: t.title, provider: t.kind || '战略', snippet: String(t.summary || '').slice(0, 120) });
+                    }
+                }
+                if (scope === 'all' || scope === 'releases') {
+                    for (const r of DataSource.ctx.byType.releases || []) {
+                        if (hitText(r, ['id', 'name', 'status'])) out.push({ type: 'release', id: r.id, title: r.name, provider: r.status, snippet: '' });
+                    }
+                }
+                return out.length
+                    ? { success: true, data: out.slice(0, limit), summary: `找到 ${out.length} 条与「${args.keyword}」相关` }
+                    : { success: false, error: `未在产品规划中找到「${args.keyword}」相关内容` };
+            },
+        });
+    }
+
+    // ============================================================
     //  Agent 引擎（多模型 + ReAct 工具循环 + 流式）
     // ============================================================
     let abortFlag = false;
@@ -1824,11 +2119,43 @@
                 'V2.1 版本有什么影响？风险高吗？',
             ],
         },
+
+        // 产品规划蓝图页：规划分析智能体
+        planning_overview: {
+            key: 'planning_overview',
+            label: '规划蓝图',
+            icon: 'chart',
+            description: '特性/模块/依赖/发布迭代/Roadmap 战略/规划健康审计',
+            pageType: 'planning',
+            systemPrompt: `你是「产品规划分析智能体」，运行在产品规划蓝图页（planning-overview）上。你的专长是基于 PRD/规划文档生成的特性模型做规划层面问答：特性清单、模块构成、特性间依赖、发布与迭代计划、里程碑、Roadmap 战略主题、以及规划健康审计。
+分析规划问题时：
+- 优先调用工具获取真实规划数据，禁止凭记忆编造；
+- 用清晰的中文 Markdown 输出，善用表格、列表、分级标题；
+- 涉及整体规模/分布时用 getPlanningStats；
+- 涉及"有哪些特性/按状态/优先级/版本/模块筛特性"时用 queryPlanningFeatures，涉及单个特性详情/开放问题时用 getPlanningFeatureDetail；
+- 涉及"模块构成/某模块覆盖哪些特性"时用 queryPlanningModules，涉及"特性依赖关系/某特性依赖谁/被谁依赖"时用 getPlanningFeatureDependencies；
+- 涉及"发布/迭代/版本计划"时用 getPlanningReleasePlan，涉及"Roadmap/战略/里程碑"时用 getPlanningRoadmap；
+- 涉及"规划健康度/风险问题"时用 getPlanningHealthAudit，涉及全文关键词搜相关内容时用 queryPlanningDocs；
+- 状态术语映射：implementing 实现中/designing 设计中/clarifying 澄清中/blocked 阻塞风险/done 已完成/unknown 未标注；
+- 给出评分时附带解读，给出问题时附带改进建议；工具返回 success:false 或找不到数据时，如实告知。
+注意：数据来自 nice-aos planning build/export 生成的产品规划蓝图快照。字段含义：features=特性（status 归一化+emoji、completion=完成度%、openQuestionCount=开放问题数、depIds=依赖特性）、modules=功能模块、milestones=版本里程碑、themes=Roadmap 战略主题、audit=四维规划健康审计（coverage/statusHealth/dependencyRisk/releasePlanning）。
+当前数据源：\${DataSource.ctx?.sourceLabel || '未加载'}。`,
+            suggestedQuestions: [
+                '产品规划整体如何？有多少特性、什么状态分布？',
+                '有哪些处于实现中的特性？',
+                'P1 优先级的有哪些？',
+                'FT-001 是什么？依赖了哪些特性？',
+                '模块构成如何？各模块覆盖哪些特性？',
+                '本版本发布计划如何？',
+                'Roadmap 战略是什么？有哪些里程碑？',
+                '产品规划健康度如何？有什么风险问题？',
+            ],
+        },
     };
 
     // 当前智能体状态
     const currentAgent = {
-        key: PAGE_TYPE === 'database' ? 'db_structure' : PAGE_TYPE === 'deploy' ? 'deploy_architecture' : PAGE_TYPE === 'service' ? 'service_blueprint' : 'code_ontology',
+        key: PAGE_TYPE === 'database' ? 'db_structure' : PAGE_TYPE === 'deploy' ? 'deploy_architecture' : PAGE_TYPE === 'service' ? 'service_blueprint' : PAGE_TYPE === 'planning' ? 'planning_overview' : 'code_ontology',
     };
 
     function getAgentList() {
@@ -2737,8 +3064,8 @@ ${ctxNote || '（无）'}
                     <div class="hint">ReAct 工具循环步数上限。回答一次复杂问题时 agent 可多次调用工具。</div>
                 </div>
                 <div class="ba-field">
-                    <label>${PAGE_TYPE === 'database' ? '本地数据库快照地址 (db-snapshot.json，可选)' : PAGE_TYPE === 'deploy' ? '本地部署快照地址 (deploy-snapshot.json，可选)' : PAGE_TYPE === 'service' ? '本地服务快照地址 (service-snapshot.json，可选)' : '本地快照地址 (snapshot.json，可选)'}</label>
-                    <input id="st-snap" value="${esc(s.snapshotUrl || '')}" placeholder="${PAGE_TYPE === 'database' ? 'http://127.0.0.1:8420/db-snapshot.json' : PAGE_TYPE === 'deploy' ? 'http://127.0.0.1:8420/deploy-snapshot.json' : PAGE_TYPE === 'service' ? 'http://127.0.0.1:8420/service-snapshot.json' : 'http://127.0.0.1:8420/snapshot.json（nice-aos serve）'}"/>
+                    <label>${PAGE_TYPE === 'database' ? '本地数据库快照地址 (db-snapshot.json，可选)' : PAGE_TYPE === 'deploy' ? '本地部署快照地址 (deploy-snapshot.json，可选)' : PAGE_TYPE === 'service' ? '本地服务快照地址 (service-snapshot.json，可选)' : PAGE_TYPE === 'planning' ? '本地产品规划快照地址 (planning-snapshot.json，可选)' : '本地快照地址 (snapshot.json，可选)'}</label>
+                    <input id="st-snap" value="${esc(s.snapshotUrl || '')}" placeholder="${PAGE_TYPE === 'database' ? 'http://127.0.0.1:8420/db-snapshot.json' : PAGE_TYPE === 'deploy' ? 'http://127.0.0.1:8420/deploy-snapshot.json' : PAGE_TYPE === 'service' ? 'http://127.0.0.1:8420/service-snapshot.json' : PAGE_TYPE === 'planning' ? 'http://127.0.0.1:8420/planning-snapshot.json' : 'http://127.0.0.1:8420/snapshot.json（nice-aos serve）'}"/>
                     <div class="hint">${PAGE_TYPE === 'database' ? '当蓝图页未内嵌 db-viewer-data 时，从此地址拉取数据库快照。' : PAGE_TYPE === 'deploy' ? '当蓝图页未内嵌 deploy-viewer-data 时，从此地址拉取部署快照。' : PAGE_TYPE === 'service' ? '当蓝图页未内嵌 service-viewer-data 时，从此地址拉取服务快照（service-snapshot.json，含 moduleGraph 图谱）。' : '当蓝图页未内嵌 viewer-data 时，从此地址拉取快照。可用 <code>nice-aos serve</code> 一行启动本地数据源（默认 127.0.0.1:8420，CORS 就绪）。'}</div>
                 </div>
                 <div class="ba-field">
@@ -2884,7 +3211,7 @@ ${ctxNote || '（无）'}
         $all('.ba-set-viewdrv', pane).forEach((b) => b.addEventListener('click', async () => {
             const idx = DataSource.readInjected();
             if (idx) { DataSource.ctx = idx; DataSource.status = 'ready'; toast('已重读页面内嵌数据', 'success'); }
-            else toast(PAGE_TYPE === 'database' ? '页面未发现内嵌 db-viewer-data' : PAGE_TYPE === 'deploy' ? '页面未发现内嵌 deploy-viewer-data' : PAGE_TYPE === 'service' ? '页面未发现内嵌 service-viewer-data' : '页面未发现内嵌 viewer-data', 'error');
+            else toast(PAGE_TYPE === 'database' ? '页面未发现内嵌 db-viewer-data' : PAGE_TYPE === 'deploy' ? '页面未发现内嵌 deploy-viewer-data' : PAGE_TYPE === 'service' ? '页面未发现内嵌 service-viewer-data' : PAGE_TYPE === 'planning' ? '页面未发现内嵌 planning-viewer-data' : '页面未发现内嵌 viewer-data', 'error');
         }));
     }
 
@@ -3020,8 +3347,8 @@ ${ctxNote || '（无）'}
     function createFab() {
         const fab = el('button', 'ba-fab ba-fab-pulse');
         fab.id = 'ba-fab';
-        fab.title = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析' : PAGE_TYPE === 'deploy' ? '部署蓝图 AI 分析' : PAGE_TYPE === 'service' ? '服务蓝图 AI 分析' : 'AOS 蓝图 AI 分析';
-        fab.innerHTML = getIcon(PAGE_TYPE === 'database' ? 'database' : PAGE_TYPE === 'deploy' ? 'server' : PAGE_TYPE === 'service' ? 'server' : 'chat', 24);
+        fab.title = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析' : PAGE_TYPE === 'deploy' ? '部署蓝图 AI 分析' : PAGE_TYPE === 'service' ? '服务蓝图 AI 分析' : PAGE_TYPE === 'planning' ? '产品规划蓝图 AI 分析' : 'AOS 蓝图 AI 分析';
+        fab.innerHTML = getIcon(PAGE_TYPE === 'database' ? 'database' : PAGE_TYPE === 'deploy' ? 'server' : PAGE_TYPE === 'service' ? 'server' : PAGE_TYPE === 'planning' ? 'chart' : 'chat', 24);
         fab.addEventListener('click', openPanel);
         document.body.appendChild(fab);
     }
@@ -3031,7 +3358,9 @@ ${ctxNote || '（无）'}
     // ============================================================
     function init() {
         ensureStyles();
-        if (PAGE_TYPE === 'database') {
+        if (PAGE_TYPE === 'planning') {
+            registerPlanningTools();
+        } else if (PAGE_TYPE === 'database') {
             registerDatabaseTools();
         } else if (PAGE_TYPE === 'deploy') {
             registerDeployTools();
@@ -3054,6 +3383,7 @@ ${ctxNote || '（无）'}
         const logMsg = PAGE_TYPE === 'database' ? '数据库蓝图 AI 分析助手已启动'
             : PAGE_TYPE === 'deploy' ? '部署蓝图 AI 分析助手已启动'
             : PAGE_TYPE === 'service' ? '后端服务蓝图 AI 分析助手已启动'
+            : PAGE_TYPE === 'planning' ? '产品规划蓝图 AI 分析助手已启动'
             : 'AOS 蓝图 AI 分析助手已启动';
         console.log('%c[BA-Agent] ' + logMsg, 'color:#8b5cf6;font-weight:bold');
     }

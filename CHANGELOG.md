@@ -2,6 +2,43 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.28.0] - 2026-08-24
+
+### 新增
+
+- **产品规划 / PRD 文档蓝图子系统**：扫描产品规划管理库（特性 PRD Markdown + Modules/ 目录 + 进展报告 + Roadmap 文档），产出**规划模型 `planning-snapshot.json`** 与自包含 **产品规划蓝图 HTML（7 Tab：总览 / 特性 / 模块 / 图谱 / 迭代与发布 / Roadmap 与战略 / 审计）**
+  - 数据流：planning-snapshot.json（PlanningModel）→ `buildPlanningViewerModel()`（视图模型）→ `renderPlanningBlueprintHtml()`（HTML）
+  - 实体类型（query 命令空间）：features / modules / releases / milestones / themes / dependencies
+  - 状态归一化：emoji → key（🟢→done / 🟡→implementing / 🟠→designing / 🟣→clarifying / 🔴→blocked）+ 关键词 fallback（"阻塞/风险/有问题"→blocked，"实现中/开发中/进行中"→implementing，"澄清中/待确认/评审中"→clarifying …）；未命中归 `unknown`
+  - 优先级归一化：P0/P1/P2/P3 + 高/中/低
+  - 模块解析：合并特性表「分类」+ Modules/ 目录文档，模块标签去数字前缀（`01-` `02-`）
+  - 迭代里程碑：扫描所有表，取首列形如 `v1.x` 的版本规划行
+  - 四维健康审计：`coverage` 覆盖完整性 / `statusHealth` 状态健康 / `dependencyRisk` 依赖风险 / `releasePlanning` 版本规划
+  - **CLI 命令组 `planning`**：`planning scan / snapshot / view / query / audit`
+- **`skills/nice-aos-planning-skill/`** 产品规划 Skill：编排产品规划文档扫描 + 规划蓝图生成 + 四维审计 + 蓝图 AI 助手适配 `planning-viewer-data`
+- **`contrib/blueprint-ai-agent` 适配产品规划蓝图**：页面类型检测新增 `planning-viewer-data` → 切换为"产品规划蓝图"智能体（10 个专属工具：概览/特性/模块/图谱/迭代与发布/Roadmap/审计/维度/状态分布/优先级分布），系统提示词、建议问题、FAB 与启动日志同步适配
+- **图谱 2.0**（参考 `src/deployment/deployViewer.js` 的依赖图实现）。`src/planning/docsViewer.js` 重写图谱渲染块，提供：
+  - **统一交互基础设施**：`graph-container` 包住 SVG 容器 + 右上 `graph-toolbar`（缩放 −/+/重置）+ 左下 `graph-legend`（状态色 dot + 边类型）+ 操作提示（"滚轮缩放 · 拖拽平移 · 点击节点高亮"）。所有交互通过修改 SVG `viewBox` 实现（缩放、平移、重置），无需第三方库
+  - **节点结构升级**：从 `<circle>` 升级为 `<g class="g-node" data-id="...">` 包裹，绑定 `mousedown`/`click`/`wheel` 事件——点击节点高亮关联边（其它边 + 节点 `.dim` 透明度 0.08/0.18），再点空白或节点本身取消高亮
+  - **`forceLayout` 改为确定性**：初始位置用 id FNV-1a 哈希替代 `Math.random()`——同输入恒出同位置，杜绝切 tab/重渲染时的"图谱抖动"
+  - **`特性 × 模块` 改用分层分列布局**（借鉴 deployViewer 的 `LAYER_ORDER` 思路）：左列每个模块一格 + 右列特性汇总 + 列背景框 + 列标签，连接线带箭头 `marker-end`；不再抖动，节点密度可读
+  - **图例 + 空状态**：`drawGraph` 支持 `legend: [{label,color,kind:'node'|'edge'}]` 与 `emptyMsg`，分情况渲染状态色 + 边类型图例
+- `src/themes/index.js` 注册 `planning` 主题（沿用 `deep-blue` 配色）
+
+### 修复
+
+- 模块卡片 `X 特性` 标签：`docsScanner.buildModules` 产出对象无 `featureCount` 字段导致前端显示 "undefined 特性"。改为从 `m.featureIds` 兜底计算，**未识别到特性时整段标签隐藏**（不显示 `0 特性` 冗余、不显示 `undefined` 字面值）
+- 发布卡片 `X 迭代 · Y 特性` 标签同步隐藏逻辑：迭代数与特性数都为 0 时整段 meta 标签隐藏
+
+### 新增测试
+
+- `图谱 HTML 模板含 toolbar / legend / viewBox 占位 + 脚本挂载交互`
+- `特性依赖图节点为 g.g-node + 边为 path.g-edge，数据属性可定位高亮`
+- `特性 × 模块图为分层分列布局：列背景 + 模块节点 + 特性节点`
+- `图例渲染：状态色节点 + 边类型`
+- `forceLayout 确定性：相同输入两次结果完全一致（同 id → 同坐标）`
+- `test/planning.test.mjs` 新增 12 项产品规划子系统测试：`statusKey 状态归一化 / parseMarkdownTables 解析表格 / extractOverview 提取功能概述 / scanPlanningModel 解析特性/模块/依赖/里程碑/发布/主题 / snapshot 往返 / buildPlanningViewerModel 视图模型字段齐全 / renderPlanningBlueprintHtml 含 planning-viewer-data 且可解析 / auditHealth 输出四维审计 / 蓝图浏览器脚本运行时冒烟 / 图谱无内容时隐藏图谱 Tab 与子视图 / 仅特性依赖无模块归属时隐藏「特性 × 模块」子视图并切换默认激活 / 仅模块归属无依赖时隐藏「特性依赖」子视图并默认激活「特性 × 模块」`
+
 ## [0.27.0] - 2026-08-24
 
 ### 新增

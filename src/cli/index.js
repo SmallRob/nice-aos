@@ -7,6 +7,7 @@ import { setSnapshotDir } from '../ontology/snapshot.js';
 import { setDbSnapshotDir } from '../database/dbSnapshot.js';
 import { setDeploySnapshotDir } from '../deployment/deploySnapshot.js';
 import { setServiceSnapshotDir } from '../service/serviceSnapshot.js';
+import { setPlanningSnapshotDir } from '../planning/docsSnapshot.js';
 import { queryCommand } from './commands/query.js';
 import { linkCommand } from './commands/link.js';
 import { actionCommand } from './commands/action.js';
@@ -16,6 +17,7 @@ import { updateCommand } from './commands/update.js';
 import { dbCommand } from './commands/db.js';
 import { deployCommand } from './commands/deploy.js';
 import { serviceCommand } from './commands/service.js';
+import { planningCommand } from './commands/planning.js';
 
 // 版本号取自 package.json，避免与发布版本脱节
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -30,6 +32,7 @@ program
   .option('--db-snapshot-dir <path>', '数据库快照目录（默认与代码快照同目录，文件名 db-snapshot.json）')
   .option('--deploy-snapshot-dir <path>', '部署快照目录（默认与代码快照同目录，文件名 deploy-snapshot.json）')
   .option('--service-snapshot-dir <path>', '后端服务快照目录（默认与代码快照同目录，文件名 service-snapshot.json）')
+  .option('--planning-snapshot-dir <path>', '产品规划快照目录（默认与代码快照同目录，文件名 planning-snapshot.json）')
   .hook('preAction', (thisCommand) => {
     const dir = thisCommand.opts().snapshotDir;
     if (dir) setSnapshotDir(dir);
@@ -39,6 +42,8 @@ program
     if (deployDir) setDeploySnapshotDir(deployDir);
     const serviceDir = thisCommand.opts().serviceSnapshotDir;
     if (serviceDir) setServiceSnapshotDir(serviceDir);
+    const planningDir = thisCommand.opts().planningSnapshotDir;
+    if (planningDir) setPlanningSnapshotDir(planningDir);
   });
 
 program.addCommand(queryCommand);
@@ -50,9 +55,10 @@ program.addCommand(updateCommand);
 program.addCommand(dbCommand);
 program.addCommand(deployCommand);
 program.addCommand(serviceCommand);
+program.addCommand(planningCommand);
 
 program.parseAsync().catch((err) => {
-  if (err.code === 'NO_SNAPSHOT' || err.code === 'NO_DB_SNAPSHOT' || err.code === 'NO_DEPLOY_SNAPSHOT' || err.code === 'NO_SERVICE_SNAPSHOT') {
+  if (err.code === 'NO_SNAPSHOT' || err.code === 'NO_DB_SNAPSHOT' || err.code === 'NO_DEPLOY_SNAPSHOT' || err.code === 'NO_SERVICE_SNAPSHOT' || err.code === 'NO_PLANNING_SNAPSHOT') {
     console.error(`\n⚠️  ${err.message}\n`);
   } else {
     console.error(`\n❌ ${err.message ?? err}\n`);
