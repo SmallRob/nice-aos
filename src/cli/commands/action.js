@@ -27,17 +27,47 @@ export const actionCommand = new Command('action')
       if (!fs.statSync(projectPath).isDirectory()) {
         fail(`路径不是目录: ${projectPath}`);
       }
-      const dataMap = await buildOntologyData(projectPath, params);
+      // 借鉴 asdm-aos 的 6 步流水线进度（action.ts doRefreshRepo）：
+      // scan:start → scan:done → parse:done → resolve:done → build:done → save:done
+      // silent=true（默认）时只输出最终 JSON；silent=false 时输出每步耗时。
+      const silent = params.silent !== false; // 默认 silent（保持 JSON 单一输出，向后兼容）
+      const stepLog = [];
+      const dataMap = await buildOntologyData(projectPath, {
+        ...params,
+        onProgress: silent ? null : (step, payload) => {
+          const ms = payload?.at ?? 0;
+          const line = `[${step}] ${ms}ms${payload?.fileCount != null ? ` files=${payload.fileCount}` : ''}${payload?.errorCount != null ? ` err=${payload.errorCount}` : ''}`;
+          stepLog.push(line);
+          console.error(line);
+        },
+      });
       const snapshotPath = saveSnapshot(dataMap);
       const meta = dataMap._meta;
+      const project = dataMap.Project[0];
+      if (!silent) {
+        // 步骤汇总（人类可读）
+        console.error('');
+        console.error('┌─────────────────────────────────────────────┐');
+        console.error('│  本体生成完成                                 │');
+        console.error('└─────────────────────────────────────────────┘');
+        console.error(`仓库: ${project.name}（${project.fileCount} 个源文件）`);
+        console.error(`分支: ${project.branch || 'unknown'}, commit: ${(project.commitHash ?? '').substring(0, 8) || 'unknown'}`);
+        console.error(`耗时: ${meta.durationMs}ms`);
+        console.error(`循环依赖: ${meta.cycles.length}, 死代码候选: ${meta.orphanCandidates.length + meta.deadExportCandidates.length}`);
+        if (project.analysisErrors?.length > 0) {
+          console.error(`⚠ 分析错误: ${project.analysisErrors.length} 个文件（建议查看 Project.analysisErrors[]）`);
+        }
+        console.error('');
+      }
       console.log(JSON.stringify({
         ok: true,
-        message: `已成功导入 ${dataMap.Project[0].name}（${dataMap.Project[0].fileCount} 个源文件，${meta.durationMs}ms）`,
+        message: `已成功导入 ${project.name}（${project.fileCount} 个源文件，${meta.durationMs}ms）`,
         snapshot: snapshotPath,
         stats: meta.objectCounts,
         cycles: meta.cycles.length,
         orphanCandidates: meta.orphanCandidates.length,
-        analysisErrors: dataMap.Project[0].analysisErrors.length,
+        analysisErrors: project.analysisErrors?.length ?? 0,
+        ...(silent ? {} : { steps: stepLog }),
       }, null, 2));
       return;
     }

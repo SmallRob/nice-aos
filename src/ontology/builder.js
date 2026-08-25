@@ -210,6 +210,9 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         methodIds: [],
         extendsIds: [],
         extendsNames: iface.extendsNames,
+        // 数据模型标识（借鉴 asdm-aos Class.isDataModel/dataModelType，适配前端启发式）
+        isDataModel: !!iface.isDataModel,
+        dataModelType: iface.dataModelType ?? null,
         deadCandidate: false, deadReason: null,
         reviewed: false, notes: null,
       };
@@ -223,6 +226,8 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
           isStatic: false, isAsync: false, isOverride: false, exported: false,
           signature: m.signature,
           overridesId: null, overriddenByIds: [],
+          // 接口方法无 body，health 已是 placeholder；其他来源兜底
+          health: m.health ?? { available: false, reason: 'no-body', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
           deadCandidate: false, deadReason: null, // 接口方法为契约声明，永不判死
           reviewed: false, notes: null,
         });
@@ -265,6 +270,9 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         implementsIds: [],
         implementsNames: cls.implementsNames,
         extendsId: null, extendsName: cls.extendsName,
+        // 数据模型标识（借鉴 asdm-aos Class.isDataModel/dataModelType）
+        isDataModel: !!cls.isDataModel,
+        dataModelType: cls.dataModelType ?? null,
         deadCandidate: false, deadReason: null,
         reviewed: false, notes: null,
       };
@@ -278,6 +286,10 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
           isStatic: m.isStatic, isAsync: m.isAsync, isOverride: m.isOverride, exported: false,
           signature: m.signature,
           overridesId: null, overriddenByIds: [],
+          // 方法级健康度（从 tsAnalyzer 传入；非 ts 来源兜底为 placeholder）
+          health: m.health ?? { available: false, reason: 'non-ts', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
+          // 外部调用（从 tsAnalyzer 传入）
+          externalCalls: m.externalCalls ?? [],
           deadCandidate: false, deadReason: null,
           reviewed: false, notes: null,
         };
@@ -308,6 +320,14 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         exported: fn.exported,
         signature: fn.signature,
         overridesId: null, overriddenByIds: [],
+        // 模块级函数健康度（从 tsAnalyzer 传入；非 ts 来源兜底为 placeholder）
+        health: fn.health ?? { available: false, reason: 'non-ts', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
+        // API 端点信息（借鉴 asdm-aos Method.endpointInfo,适配 Next.js App Router / Nuxt 3）
+        endpointInfo: fn.endpointInfo ?? null,
+        // SQL 表名提取（借鉴 asdm-aos mapperMapsTable,用于 mapsToTable 链接）
+        sqlQueries: fn.sqlQueries ?? [],
+        // 外部调用识别（借鉴 asdm-aos ext: 虚拟对象,React hooks / DOM / 状态管理 API）
+        externalCalls: fn.externalCalls ?? [],
         deadCandidate: false, deadReason: null,
         reviewed: false, notes: null,
       };
@@ -562,7 +582,13 @@ function buildUserScriptObjects(relPath, facts, fileObj) {
 
 export async function buildOntologyData(projectRoot, options = {}) {
   const startedAt = Date.now();
+  // 借鉴 asdm-aos 的 6 步进度机制：通过 onProgress(step, payload) 回调上报，action.js 消费
+  // 不传 onProgress 时静默运行（向后兼容 test/库调用）
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+  const report = (step, payload = {}) => { if (onProgress) onProgress(step, { ...payload, at: Date.now() - startedAt }); };
+  report('scan:start');
   const scan = scanProject(projectRoot, options);
+  report('scan:done', { fileCount: scan.fileCount, rootCount: (scan.roots ?? []).length });
   // 入口识别使用实际扫描根（显式 roots 或默认 src/）；根级入口名在每个根顶层均有效
   const entryRoots = scan.roots ?? ['src'];
   const htmlEntries = new Set(scan.htmlEntryFiles ?? []);
@@ -633,6 +659,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   };
   for (const file of scan.files) getFacts(file);
+  report('parse:done', { fileCount: scan.files.length, errorCount: analysisErrors.length });
 
   // Rust use 路径解析器（crate::a::b::Name → 目标 .rs 文件；serde::X → Rust 外部 crate，不进 npm 依赖体系）
   const resolveRustImport = (relPath, specifier) => resolveRustUse(relPath, specifier, rustFiles);
@@ -668,6 +695,12 @@ export async function buildOntologyData(projectRoot, options = {}) {
       }
     }
   }
+  // 借鉴 asdm-aos dependsOn 去噪：标记纯类型定义依赖（@types/*）
+  // @types/* 是类型声明包，运行时不存在，业务图谱中通常是噪音
+  // 不在 link 默认行为中隐藏（避免破坏向后兼容），改用 isTypeDefinition 字段让 query --where 过滤
+  function isTypeOnlyPackage(name) {
+    return name.startsWith('@types/') || name === 'typescript';
+  }
   const dependencies = [];
   for (const [name, info] of Object.entries(scan.dependencies)) {
     dependencies.push({
@@ -676,6 +709,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
       source: info.registry === 'pub' ? 'pub' : (info.registry === 'go' ? 'go' : (info.version.startsWith('file:') ? 'workspace' : 'npm')),
       importCount: depUsedCount.get(name) ?? 0,
       used: (depUsedCount.get(name) ?? 0) > 0,
+      // 类型定义包标记：@types/* / typescript（仅 devDependency；运行时 import 不影响）
+      isTypeDefinition: isTypeOnlyPackage(name) && (info.scope === 'dev' || !depUsedCount.has(name)),
     });
   }
   for (const [name, count] of depUsedCount) {
@@ -683,6 +718,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     dependencies.push({
       id: `dep:${name}`, name, version: null, scope: null,
       source: 'undeclared', importCount: count, used: true,
+      isTypeDefinition: isTypeOnlyPackage(name),
     });
   }
 
@@ -930,6 +966,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
           signature: om.signature,
           overridesId: null, overriddenByIds: [],
           callIds: [], calledByIds: [], compCallIds: [],
+          // Go 跨文件方法：health 不可用，placeholder
+          health: { available: false, reason: 'go-cross-file', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
           deadCandidate: false, deadReason: null,
           reviewed: false, notes: null,
         });
@@ -990,6 +1028,11 @@ export async function buildOntologyData(projectRoot, options = {}) {
 
   // 方法级 overrides：实现类方法与其实现接口/父类中的同名方法建立双向链接
   linkMethodOverrides(interfaces, classes, methods);
+  report('resolve:done', {
+    interfaceCount: interfaces.length,
+    classCount: classes.length,
+    methodCount: methods.length,
+  });
 
   // 5b-0b. Dart 方法调用链（dartAnalyzer 的 callEdges → Method.callIds / calledByIds / compCallIds）
   // self：本类方法或本文件顶层函数；static：owner 类方法（本文件优先，导入解析/全仓库唯一名兜底）；
@@ -2531,6 +2574,12 @@ export async function buildOntologyData(projectRoot, options = {}) {
     ScriptFunction: scriptFunctions,
     Domain: domains,
   };
+  report('build:done', {
+    methodCount: methods.length,
+    interfaceCount: interfaces.length,
+    classCount: classes.length,
+    cycles: cycles.length,
+  });
   return dataMap;
 }
 

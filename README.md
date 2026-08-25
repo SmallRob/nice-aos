@@ -246,14 +246,14 @@ nice-aos service export --snapshot /path/to/snapshot.json --format html \
 | Hook | `hook:` | L1 CodeUnit | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属）, **archLayer**, **domainIds** |
 | Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, **providerType**（zustand/pinia/vuex/riverpod 状态库类型）, location, **archLayer**, **domainIds** |
 | Service | `svc:` | L1 CodeUnit | pattern（singleton/class/functions）, exportsCount, **archLayer**, **domainIds** |
-| Interface | `iface:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/**go**）, methodIds, extendsIds/extendsNames（接口继承，跨文件解析；Rust trait 的 supertrait → extends）, **deadCandidate/deadReason** |
-| Class | `class:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/**go**）, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入；Rust struct/enum → kind 区分，含 fields/derives/variants；Dart Widget → **isWidget/widgetBase**，Dart Store → **isStore/withNames**；Vue 组件 → **`vclass:` kind=component**，props 为 fields、computed/methods 为 methods；**Go struct → kind=struct，字段含 json/yaml tag**）, **rendersIds**（组件组合）, **deadCandidate/deadReason** |
-| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, **callIds/calledByIds/compCallIds**（Dart 方法逻辑调用链：方法间双向 + Widget 构造渲染链；**Go 包级/跨包/方法调用同构映射**）, exported（Rust impl fn 与模块级 fn 同构映射；**Go 首字母大写 = 导出**）, **deadCandidate/deadReason**（函数级死代码候选） |
+| Interface | `iface:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/**go**）, methodIds, extendsIds/extendsNames（接口继承，跨文件解析；Rust trait 的 supertrait → extends）, **isDataModel/dataModelType**（借鉴 asdm-aos：DTO/Model/Entity/Schema/Request/Response/Params/Input/Output/Form/Payload 后缀启发式 + `@Entity/@ObjectType/@InputType` 装饰器识别 → `orm-decorated`）, **deadCandidate/deadReason** |
+| Class | `class:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/**go**）, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入；Rust struct/enum → kind 区分，含 fields/derives/variants；Dart Widget → **isWidget/widgetBase**，Dart Store → **isStore/withNames**；Vue 组件 → **`vclass:` kind=component**，props 为 fields、computed/methods 为 methods；**Go struct → kind=struct，字段含 json/yaml tag**）, **rendersIds**（组件组合）, **isDataModel/dataModelType**（同 Interface 的启发式 + 装饰器识别）, **deadCandidate/deadReason** |
+| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, **callIds/calledByIds/compCallIds**（Dart 方法逻辑调用链：方法间双向 + Widget 构造渲染链；**Go 包级/跨包/方法调用同构映射**）, exported（Rust impl fn 与模块级 fn 同构映射；**Go 首字母大写 = 导出**）, **deadCandidate/deadReason**（函数级死代码候选）, **health**（方法级健康度子对象：`complexity.cyclomatic/branches/maxNesting/throws/awaits/earlyReturns` + `lambdas.count/maxNesting/inJsx` + `testInfo.isTest/testType/testFramework/callsExpect/usesMock` + 派生 `risk` 评级 low/medium/high/critical —— 借鉴 asdm-aos 整合为统一画像）, **externalCalls**（识别函数体内 React Hooks / DOM API / 状态管理 API 的 `[{name, kind, framework, line}]`，不进 calls 链接）, **endpointInfo**（API 端点装饰器级识别 Next.js App Router / Pages Router / Nuxt 3：`{framework, method, path}`）, **sqlQueries**（从函数体提取的 SQL 表名 `[{kind, table, dynamic}]`，供 mapsToTable 链接） |
 | ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **deadCandidate/deadReason**（函数级死代码候选）, **archLayer=script** |
 | Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter/**next/next-api/go/go-cli**）, domain, **domainIds**, componentFileId, navigatesToIds, **rawPath/layoutFileIds/specialFiles/isDynamic/isClient/apiMethods**（Next.js App Router 路由）, **hasPropsFactory/factoryProps**（overlay 路由 props 工厂注入键）, **middlewares/frontendCalls**（Go HTTP 路由中间件链 + 前端调用方溯源；go-cli 命令链与 flags 复用 specialFiles） |
 | PropEdge | `prop:` | L1 CodeUnit | fromComponentId/toComponentId, fromFileId/toFileId, props（名称 + 来源分类 + valueText + storeHook）, renderCount（该组件对的渲染处数） |
 | UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **deadFunctionCount**, **archLayer=script**, **domainIds** |
-| Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared/pub/**go**）, importCount |
+| Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared/pub/**go**）, importCount, **isTypeDefinition**（`@types/*` / `typescript` 类型定义包标记，借鉴 asdm-aos dependsOn 去噪；仅标记不隐藏） |
 | GmApiUsage | `gm:` | L0 AuditFact | name, category（network/storage/style/…）, callCount, declared（与 @grant 比对） |
 | InjectionPoint | `inject:` | L0 AuditFact | kind（mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom）, target, interpolated（动态插值 XSS 面） |
 | NetworkEndpoint | `net:` | L0 AuditFact | kind（gm-xhr/fetch/xhr/websocket/beacon）, domain, urls, methods, allowedByConnect（与 @connect 比对） |
@@ -352,6 +352,7 @@ link contains --src "iface:src/types/storage.ts#IStorage"      # 接口下钻其
 
 ```bash
 action refreshRepo --params '{"repoPath":"."}'
+action refreshRepo --params '{"repoPath":".","silent":false}'   # 步骤化进度(scan:start/done / parse:done / resolve:done / build:done 5 步耗时,默认 silent=true 保持 JSON 单一输出)
 action analyzeFile --params '{"file":"Steam-License-Classifier.js"}'   # 单文件分析（不落盘，stdout 输出本体 JSON）
 action markReviewed --params '{"objectId":"comp:TalentResultPage"}'
 action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页面"}'
@@ -398,6 +399,7 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 | `GET /blueprint.html` | 蓝图页面（可直接浏览器打开） |
 | `GET /api/status` | 服务状态：目录解析结果、快照/蓝图就绪状态、端点清单 |
 | `GET /api/stats` | 快照统计摘要：项目名/框架/对象计数/循环依赖/死代码候选 |
+| `GET /api/schema` | 本体元模型：`OBJECT_TYPES`（19 个）/ `LINK_TYPES`（24 个）/ `ACTION_NAMES`（4 个）+ 概念范畴与抽象层级（abstractionLevels / categories）+ prefix → type 反查映射，供 agent 自动发现能力 |
 | `GET /` | 状态首页（HTML） |
 
 就绪状态**每次请求实时探测**——"先起服务、后 `refreshRepo` / `export`"的工作流无需重启；快照缺失返回 404（附生成指引）、JSON 损坏返回 500。目录解析链：`--dir` → 全局 `--snapshot-dir` → `NICE_AOS_SNAPSHOT_DIR` → `<root>/.nice-aos/data`。典型配套用法见 [contrib/blueprint-ai-agent](./contrib/blueprint-ai-agent)。

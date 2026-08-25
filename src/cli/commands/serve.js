@@ -4,6 +4,7 @@ import http from 'node:http';
 import { Command } from 'commander';
 import { fail } from '../shared.js';
 import { getSnapshotDirOverride } from '../../ontology/snapshot.js';
+import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META } from '../../ontology/blueprint.js';
 
 // serve —— 在本地启动数据源 HTTP 服务。
 // 作用：暴露本体快照 snapshot.json 与 blueprint.html，并带 CORS，
@@ -63,6 +64,7 @@ ${row('项目根目录', true, root)}
 ${row('快照目录', snapReady !== 'none', dataDir)}
 ${row('快照 snapshot.json', snapReady === 'ok', `<a href="/snapshot.json">/snapshot.json</a>`)}
 ${row('蓝图 blueprint.html', bpReady, bpReady ? '<a href="/blueprint.html">/blueprint.html</a>' : '' )}
+${row('本体元模型', true, `<a href="/api/schema">/api/schema</a> — ${OBJECT_TYPES.length} 对象 / ${LINK_TYPES.length} 链接`)}
 </table>
 <h3 style="margin-top:28px">可用端点</h3>
 <ul style="line-height:2">
@@ -70,6 +72,7 @@ ${row('蓝图 blueprint.html', bpReady, bpReady ? '<a href="/blueprint.html">/bl
 <li><code>GET /blueprint.html</code> — ${bpReady ? '蓝图页面' : '（未生成）'}</li>
 <li><code>GET /api/status</code> — 服务状态与端点清单</li>
 <li><code>GET /api/stats</code> — 快照对象统计摘要</li>
+<li><code>GET /api/schema</code> — 本体元模型（对象/链接/动作 schema,借鉴 asdm-aos）</li>
 <li><code>GET /</code> — 本页</li>
 </ul>
 <p style="color:#64748b;font-size:12px;margin-top:24px">提示：若快照缺失请先执行 <code>nice-aos action refreshRepo</code>；蓝图为 <code>nice-aos export --format html</code>。</p>
@@ -119,7 +122,7 @@ export const serveCommand = new Command('serve')
           root, snapshotDir: dataDir,
           snapshot: { ready: snapState === 'ok', path: snapPath, state: snapState },
           blueprint: { ready: bpReady, path: bpPath },
-          endpoints: ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/'],
+          endpoints: ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/'],
           cors: '*',
         }));
         return;
@@ -134,6 +137,25 @@ export const serveCommand = new Command('serve')
           generatedAt: snap._meta?.generatedAt, counts,
           cycles: snap._meta?.cycles || [], orphanCandidates: snap._meta?.orphanCandidates || [],
         }));
+        return;
+      }
+      // 本体元模型：暴露 OBJECT_TYPES / LINK_TYPES / ACTION_NAMES / 概念范畴
+      // 借鉴 asdm-aos 的 ObjectTypeDef / LinkTypeDef / ActionDef 设计，
+      // 让外部 agent 可自动发现能力（哪些对象可查、哪些链接可走、哪些动作可调）
+      if (url === '/api/schema') {
+        respond(res, 200, JSON.stringify({
+          ok: true,
+          meta: {
+            version: ONTOLOGY_META.version,
+            abstractionLevels: ONTOLOGY_META.abstractionLevels,
+            categories: ONTOLOGY_META.categories,
+          },
+          objectTypes: OBJECT_TYPES,
+          linkTypes: LINK_TYPES,
+          actionNames: ACTION_NAMES,
+          // 辅助方法：prefix → type(给 agent 反查 src id 前缀映射到对象类型)
+          prefixMap: Object.fromEntries(OBJECT_TYPES.map((t) => [t.prefix, t.type])),
+        }, null, 2), { 'Content-Type': 'application/json; charset=utf-8' });
         return;
       }
       respond(res, 404, JSON.stringify({ ok: false, error: `未支持路径: ${url}（可用端点见 /api/status）` }));
@@ -163,6 +185,7 @@ export const serveCommand = new Command('serve')
       if (bpReady) console.log(`    GET /blueprint.html    蓝图页面 http://${host}:${actualPort}/blueprint.html`);
       console.log('    GET /api/status         服务状态与端点清单');
       console.log('    GET /api/stats          快照对象统计摘要');
+      console.log('    GET /api/schema         本体元模型(对象/链接/动作 schema,借鉴 asdm-aos)');
       console.log('\n  按 Ctrl+C 停止\n');
     });
   });

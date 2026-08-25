@@ -72,6 +72,63 @@ function objectsForIds(index, ids) {
   return ids.map((id) => index.byId.get(id)).filter(Boolean);
 }
 
+/**
+ * 跨层链接：代码实体(Interface/Class/Store/Service/Method) → Table ID 集合
+ * 三通道匹配抽取(mapsToTable 与 mappedFromCode 共享):
+ *   1) obj.mappedTableIds 显式映射
+ *   2) sqlQueries:Method 直接读自己的;Class/Interface/Store/Service 聚合子方法 methodIds
+ *   3) 命名约定:entity.name 去后缀(Entity/Dto/Model/Schema/Table/Request/Response/Params/Input/Output/Form/Payload)→ table.name
+ * @param {Object} obj - 代码实体
+ * @param {Object} dataMap - 完整数据图谱
+ * @param {Object} index - createIndex() 产出
+ * @returns {Set<string>} 匹配的 table id 集合(如 'table:users')
+ */
+function collectTableIdsForEntity(obj, dataMap, index) {
+  const allTables = dataMap.Table ?? [];
+  const out = new Set();
+
+  // 通道 1:mappedTableIds 显式
+  for (const id of (obj.mappedTableIds ?? [])) out.add(id);
+
+  // 通道 2a:实体自身有 sqlQueries 字段(Method 形态)
+  if (obj.sqlQueries?.length) {
+    for (const q of obj.sqlQueries) {
+      if (q.dynamic) continue;
+      const hit = allTables.find((t) => t.id === `table:${q.table}` || t.name === q.table);
+      if (hit) out.add(hit.id);
+    }
+  }
+
+  // 通道 2b:Class/Interface/Store/Service → 聚合子方法 methodIds 的 sqlQueries
+  if (obj.methodIds) {
+    for (const mid of obj.methodIds) {
+      const m = getObject(index, mid);
+      if (!m?.sqlQueries) continue;
+      for (const q of m.sqlQueries) {
+        if (q.dynamic) continue;
+        const hit = allTables.find((t) => t.id === `table:${q.table}` || t.name === q.table);
+        if (hit) out.add(hit.id);
+      }
+    }
+  }
+
+  // 通道 3:命名约定(UserEntity → users / User → users)
+  const nameBase = (obj.name ?? '').replace(/(?:Entity|Dto|Model|Schema|Table|Request|Response|Params|Input|Output|Form|Payload)$/i, '');
+  if (nameBase) {
+    const candidates = [
+      nameBase.toLowerCase(),         // User → user
+      nameBase.toLowerCase() + 's',   // User → users
+      nameBase.toLowerCase() + 'es',  // Class → classes
+    ];
+    for (const c of candidates) {
+      const hit = allTables.find((t) => t.name === c);
+      if (hit) out.add(hit.id);
+    }
+  }
+
+  return out;
+}
+
 export function createBlueprint(dataMap) {
   const index = createIndex(dataMap);
   const files = dataMap.SourceFile ?? [];
@@ -351,23 +408,40 @@ export function createBlueprint(dataMap) {
     },
 
     // ---- 跨层链接：代码实体 ↔ 数据库表（借鉴 asdm-aos 的 mapperMapsTable/mapperMapsEntity）----
-    // mapsToTable: Interface/Class/Store → Table（代码实体映射到数据库表）
+    // 三通道匹配（向前兼容 + 向后兼容）：
+    //   1) mappedTableIds 显式映射（dbModel.matchTablesToCodeEntities 设置）
+    //   2) sqlQueries：Method 直接读自己的;Class/Interface/Store/Service 聚合子方法
+    //   3) 命名约定：entity.name（去 s 后缀）== table.name（如 UserEntity → users）
+    // 共享匹配逻辑抽取为 collectTableIdsForEntity()，mapsToTable 与 mappedFromCode 复用
     mapsToTable(srcId) {
       const obj = getObject(index, srcId);
       if (!obj) return [];
-      const tableIds = obj.mappedTableIds ?? [];
-      return objectsForIds(index, tableIds);
+      return objectsForIds(index, [...collectTableIdsForEntity(obj, dataMap, index)]);
     },
 
-    // mappedFromCode: Table → Interface/Class/Store（数据库表被哪些代码实体映射）
+    // mappedFromCode: Table → Interface/Class/Store/Service/Method（数据库表被哪些代码实体映射）
+    // 对称实现：扫描所有 codeEntity(含 Method,因 Method 也有 sqlQueries)找包含 srcId 的
+    // 注意:不递归调 mapsToTable(避免死循环),复用 collectTableIdsForEntity 内联同样的三通道
     mappedFromCode(srcId) {
       if (!srcId.startsWith('table:')) return [];
+      const allTables = dataMap.Table ?? [];
+      const table = allTables.find((t) => t.id === srcId);
+      if (!table) return [];
+      const tableName = table.name;
       const codeEntities = [
         ...(dataMap.Interface ?? []),
         ...(dataMap.Class ?? []),
         ...(dataMap.Store ?? []),
+        ...(dataMap.Service ?? []),
+        ...(dataMap.Method ?? []),
       ];
-      return codeEntities.filter((e) => (e.mappedTableIds ?? []).includes(srcId));
+      const out = [];
+      for (const e of codeEntities) {
+        const matchedIds = collectTableIdsForEntity(e, dataMap, index);
+        // mappedFromCode 是反向查询:该实体只要映射到 srcId 即可
+        if (matchedIds.has(srcId)) out.push(e);
+      }
+      return out;
     },
 
     // ---- 功能域归属（双向：dom: 列成员；mod:/comp:/store:/hook:/route: 反查所属域）----

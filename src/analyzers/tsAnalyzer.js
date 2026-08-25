@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { analyzeMethodHealth, placeholderHealth } from './methodHealth.js';
 
 let ts;
 // 解析顺序：宿主项目 → 当前工作目录 → nice-aos 自身依赖
@@ -61,6 +62,194 @@ function hasDefaultModifier(ts, node) {
   if (!ts.canHaveModifiers?.(node)) return false;
   const modifiers = ts.getModifiers(node);
   return !!modifiers?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
+}
+
+// 借鉴 asdm-aos 字节码二次扫描:把"框架调用 + 注解生成代码"虚拟化为 ext: 节点
+// 适配:React hooks / DOM API / 状态管理 API 标记为外部调用(不进入 Method.calls link 结果,避免破坏旧 viewer)
+// 标在 method.externalCalls[],用户用 query --where 过滤即可
+const REACT_HOOKS = new Set([
+  'useState', 'useEffect', 'useLayoutEffect', 'useInsertionEffect', 'useMemo', 'useCallback',
+  'useRef', 'useReducer', 'useContext', 'useDebugValue', 'useImperativeHandle', 'useSyncExternalStore',
+  'useTransition', 'useDeferredValue', 'useId', 'useOptimistic', 'useActionState', 'useFormState',
+  'useFormStatus',
+]);
+const DOM_APIS = new Set([
+  'fetch', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'requestAnimationFrame',
+  'localStorage', 'sessionStorage', 'document', 'window', 'navigator', 'history',
+  'console', 'alert', 'confirm', 'prompt',
+]);
+const STATE_MGMT_APIS = new Set([
+  // Zustand
+  'create', 'setState', 'getState', 'subscribe',
+  // Pinia / Vue Composition
+  'ref', 'reactive', 'computed', 'watch', 'watchEffect', 'onMounted', 'onUnmounted', 'onUpdated', 'onBeforeMount',
+]);
+
+/**
+ * 识别函数体内的"外部调用"——框架 API / DOM API / 状态管理 API
+ * 这些调用在源码中存在但没有对应 Method 实体,借鉴 aos 的 ext: 虚拟对象思路
+ * @param {Object} ts - TypeScript Compiler API
+ * @param {Object} node - 函数节点
+ * @param {Object} sourceFile - SourceFile
+ * @returns {Array<{ name: string, kind: string, framework: string, line: number }>}
+ */
+function extractExternalCalls(ts, node, sourceFile) {
+  if (!node || !node.body || !ts.isBlock(node.body)) return [];
+  const out = [];
+  const seen = new Set();
+  function walk(n) {
+    if (!n) return;
+    // 形式 1:直接调用 useState() / fetch() / ref()
+    if (ts.isCallExpression(n)) {
+      const expr = n.expression;
+      if (ts.isIdentifier(expr)) {
+        const name = expr.text;
+        if (REACT_HOOKS.has(name) || DOM_APIS.has(name) || STATE_MGMT_APIS.has(name)) {
+          const kind = REACT_HOOKS.has(name) ? 'react-hook' : (DOM_APIS.has(name) ? 'dom-api' : 'state-mgmt');
+          const framework = kind === 'react-hook' ? 'react'
+            : (kind === 'dom-api' ? 'browser' : 'state-management');
+          const key = `${kind}:${name}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            out.push({
+              name,
+              kind,
+              framework,
+              line: sourceFile.getLineAndCharacterOfPosition(n.getStart(sourceFile)).line + 1,
+            });
+          }
+        }
+      }
+    }
+    ts.forEachChild(n, walk);
+  }
+  walk(node.body);
+  return out;
+}
+
+// 借鉴 asdm-aos endpointInfo（@RestController + @RequestMapping/@GetMapping）
+// 适配前端域：Next.js App Router（export async function GET/POST）+ Nuxt 3 文件名后缀
+const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD']);
+
+/**
+ * 识别方法的 API 端点信息。
+ * @param {string} name - 方法名
+ * @param {string} relPath - 文件相对路径（用于推断路由）
+ * @returns {null | { framework: string, method: string, path: string }}
+ */
+// 借鉴 asdm-aos mapperMapsTable:在 Service / Store 函数体里识别 SQL 字符串,提取表名
+// 适配:SELECT/INSERT/UPDATE/DELETE + 模板字符串(`FROM ${tableName}`) + 字符串字面量
+// 设计:4 个独立、简单正则(避免 [\s\S]+? 在大字符串上回溯爆炸)
+// table 名接受 3 种形式:
+//   1) word chars:users / products
+//   2) 模板字符串:$\{name\} → 内部 name 提取,标 dynamic
+//   3) 拼接变量:["us","ers"].join("") 等无法识别,标 dynamic
+const SQL_PATTERNS = [
+  { kind: 'SELECT', regex: /\bSELECT\b[\s\S]+?\bFROM\s+(?:`?(\w+)`?|(\$\{[^}]+\}))/gi },
+  { kind: 'INSERT', regex: /\bINSERT\s+INTO\s+(?:`?(\w+)`?|(\$\{[^}]+\}))/gi },
+  { kind: 'UPDATE', regex: /\bUPDATE\s+(?:`?(\w+)`?|(\$\{[^}]+\}))/gi },
+  { kind: 'DELETE', regex: /\bDELETE\s+FROM\s+(?:`?(\w+)`?|(\$\{[^}]+\}))/gi },
+];
+
+/**
+ * 从函数体字符串中提取 SQL 表名。
+ * @param {string} bodyText - 函数体原文
+ * @returns {Array<{ kind: string, table: string, dynamic: boolean }>}
+ */
+function extractSqlTables(bodyText) {
+  if (!bodyText) return [];
+  const out = [];
+  const seen = new Set();
+  for (const { kind, regex } of SQL_PATTERNS) {
+    regex.lastIndex = 0;
+    let m;
+    while ((m = regex.exec(bodyText)) !== null) {
+      // 两个 capture group:group 1 是静态表名,group 2 是 ${...} 模板
+      const staticTable = m[1];
+      const dynamicTable = m[2];
+      const isDynamic = !!dynamicTable;
+      const table = isDynamic ? dynamicTable.slice(2, -1) : staticTable; // 去掉 ${ 和 }
+      if (!table) continue;
+      const key = `${kind}:${table}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ kind, table, dynamic: isDynamic });
+    }
+  }
+  return out;
+}
+
+function detectApiEndpoint(name, filePath) {
+  // 兼容绝对/相对路径:取框架根目录段(app|pages|server)
+  const normalized = filePath.replace(/\\/g, '/');
+  // 找到 app|pages|server 在路径中的位置(可能前面有 src/ 或绝对路径前缀)
+  const m = normalized.match(/(?:^|\/)(app|pages|server)\//);
+  if (!m) return null;
+  const rel = normalized.slice(m.index + m[0].indexOf(m[1]));
+  // 1. Next.js App Router: app/api/.../route.ts + 函数名是 HTTP method
+  if (HTTP_METHODS.has(name)) {
+    const appRouter = rel.match(/^app\/(?:\([^)]+\)\/)?(api\/.*?)\/route\.(?:ts|tsx|js|jsx|mjs)$/);
+    if (appRouter) {
+      const routePath = '/' + appRouter[1].replace(/\/\([^)]+\)\//g, '/');
+      return { framework: 'next-app-router', method: name, path: routePath };
+    }
+    // 2. Next.js Pages Router: pages/api/users.ts + 函数名是 HTTP method
+    const pagesApi = rel.match(/^pages\/api\/(.*?)\.(?:ts|tsx|js|jsx|mjs)$/);
+    if (pagesApi) {
+      return { framework: 'next-pages-router', method: name, path: '/api/' + pagesApi[1] };
+    }
+  }
+  // 2b. Pages Router 也接受 `export default function handler()` 形式(方法在 req.method 决定)
+  //     这里 method 标 'ANY' 提示用户查 req.method
+  if (name === 'default' || name === 'handler') {
+    const pagesApi2 = rel.match(/^pages\/api\/(.*?)\.(?:ts|tsx|js|jsx|mjs)$/);
+    if (pagesApi2) {
+      return { framework: 'next-pages-router', method: 'ANY', path: '/api/' + pagesApi2[1] };
+    }
+  }
+  // 3. Nuxt 3: server/api/users.get.ts (method 在文件名后缀,函数名可能是 default/handler)
+  //    仅当函数名匹配 default/handler/_default 时启用
+  if (name === 'default' || name === 'handler' || name === '_default') {
+    const nuxt = rel.match(/^server\/api\/(.*)\.(get|post|put|delete|patch|head|options)\.(?:ts|js|mjs)$/);
+    if (nuxt) {
+      return { framework: 'nuxt', method: nuxt[2].toUpperCase(), path: '/api/' + nuxt[1] };
+    }
+  }
+  return null;
+}
+
+// 借鉴 asdm-aos dataModelType（JPA Entity / Record / Lombok Data / MongoDB / Immutable）
+// 适配前端域：基于类/接口名后缀 + 装饰器启发式识别数据模型
+function detectDataModel(ts, name, node, sourceFile) {
+  // 1. 名字后缀启发式（DTO / Model / Entity / Schema / Request / Response / Form / Payload）
+  const SUFFIX_MAP = {
+    DTO: 'dto', Dto: 'dto',
+    Model: 'model',
+    Entity: 'entity',
+    Schema: 'schema',
+    Request: 'request', Response: 'response',
+    Params: 'params', Param: 'params',
+    Input: 'input', Output: 'output',
+    Form: 'form', Payload: 'payload',
+  };
+  for (const [suffix, type] of Object.entries(SUFFIX_MAP)) {
+    if (name.endsWith(suffix) && name.length > suffix.length) {
+      return { isDataModel: true, dataModelType: type };
+    }
+  }
+  // 2. 装饰器识别（TypeORM / NestJS GraphQL / 类验证器）
+  if (ts.canHaveDecorators?.(node)) {
+    const decs = ts.getDecorators(node);
+    if (decs) {
+      for (const d of decs) {
+        const text = d.getText(sourceFile);
+        if (/@(Entity|ObjectType|InputType|Model|ArgsType)\b/.test(text)) {
+          return { isDataModel: true, dataModelType: 'orm-decorated' };
+        }
+      }
+    }
+  }
+  return { isDataModel: false, dataModelType: null };
 }
 
 function extractJsdoc(ts, node, sourceText) {
@@ -619,6 +808,8 @@ export function analyzeFile(filePath, content, projectRoot) {
             signature: buildSignature(ts, m, sourceFile),
             pos: m.getStart(sourceFile),
             end: m.end,
+            // interface signature 无 body，health 不可计算
+            health: placeholderHealth(),
           });
         }
       }
@@ -630,6 +821,8 @@ export function analyzeFile(filePath, content, projectRoot) {
         methods,
         pos: node.getStart(sourceFile),
         end: node.end,
+        // 数据模型识别（借鉴 asdm-aos isDataModel/dataModelType,适配前端启发式）
+        ...detectDataModel(ts, node.name.text, node, sourceFile),
       });
     } else if (ts.isClassDeclaration(node) && node.name) {
       const exported = hasExportModifier(ts, node);
@@ -658,6 +851,10 @@ export function analyzeFile(filePath, content, projectRoot) {
           signature: buildSignature(ts, m, sourceFile),
           pos: m.getStart(sourceFile),
           end: m.end,
+          // 方法级健康度（借鉴 asdm-aos complexity/isTest/lambdaCount，整合为 health 画像）
+          health: analyzeMethodHealth({ ts, node: m, sourceFile, options: { language: 'ts' } }),
+          // 外部调用识别（借鉴 asdm-aos ext: 虚拟对象）
+          externalCalls: extractExternalCalls(ts, m, sourceFile),
         });
       }
       const isSingleton = node.members.some((m) => ts.isMethodDeclaration(m) && m.name?.getText(sourceFile) === 'getInstance');
@@ -672,6 +869,8 @@ export function analyzeFile(filePath, content, projectRoot) {
         methods,
         pos: node.getStart(sourceFile),
         end: node.end,
+        // 数据模型识别
+        ...detectDataModel(ts, node.name.text, node, sourceFile),
       });
     } else if (ts.isExportAssignment(node)) {
       const expr = node.expression;
@@ -777,9 +976,56 @@ export function analyzeFile(filePath, content, projectRoot) {
     }
   }
 
+  // 预扫：vitest/jest test 调用的 callback 箭头函数（让 health.testInfo.testType 能正确标记为 unit/suite/setup）
+  // 整棵 sourceFile 递归扫 testCallbacks（包括 describe 嵌套内的 it/beforeEach），顶层 test 调用额外记到 topLevelTestCalls
+  const TEST_CALLBACK_NAMES = new Set(['it', 'test', 'specify', 'describe', 'suite', 'context', 'beforeAll', 'beforeEach', 'afterAll', 'afterEach']);
+  const testCallbacks = new Map(); // arrowFn node → enclosingCallName
+  const topLevelTestCalls = [];    // 顶层 describe/it/test 调用（用于 moduleFunction 收录）
+  for (const stmt of sourceFile.statements) {
+    // 1) 顶层 test 调用（ExpressionStatement 形式）
+    if (ts.isExpressionStatement(stmt) && ts.isCallExpression(stmt.expression)
+        && ts.isIdentifier(stmt.expression.expression) && TEST_CALLBACK_NAMES.has(stmt.expression.expression.text)) {
+      const cb = stmt.expression.arguments?.[1];
+      if (cb && (ts.isArrowFunction(cb) || ts.isFunctionExpression(cb))) {
+        const callName = stmt.expression.expression.text;
+        testCallbacks.set(cb, callName);
+        topLevelTestCalls.push({ call: stmt.expression, callback: cb, name: callName });
+      }
+    }
+    // 2) 整棵子树递归（识别嵌套 it/beforeEach 等，不入 moduleFunction 但建 testCallbacks 映射）
+    (function collectNested(n) {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && TEST_CALLBACK_NAMES.has(n.expression.text)) {
+        const cb = n.arguments?.[1];
+        if (cb && (ts.isArrowFunction(cb) || ts.isFunctionExpression(cb))) {
+          testCallbacks.set(cb, n.expression.text);
+        }
+      }
+      ts.forEachChild(n, collectNested);
+    })(stmt);
+  }
+
   // 模块级函数：顶层函数声明 + 顶层 const/let 箭头函数/函数表达式（Method 实体的 module 归属来源）
   for (const stmt of sourceFile.statements) {
-    if (ts.isFunctionDeclaration(stmt) && stmt.name) {
+    if (ts.isFunctionDeclaration(stmt)) {
+      // export default function () {} 是 FunctionDeclaration with Default+Export modifiers,name 为空
+      // 借鉴 asdm-aos endpointInfo 适配:作为 name='default' 的 moduleFunction 收集
+      // 这样 Nuxt 3 `server/api/users.get.ts` + `export default function() {}` 能被识别为 GET /api/users
+      const isDefaultExport = !stmt.name && hasDefaultModifier(ts, stmt) && hasExportModifier(ts, stmt);
+      if (isDefaultExport) {
+        facts.moduleFunctions.push({
+          name: 'default',
+          line: sourceFile.getLineAndCharacterOfPosition(stmt.getStart(sourceFile)).line + 1,
+          exported: true,
+          isAsync: hasModifierKind(ts, stmt, ts.SyntaxKind.AsyncKeyword),
+          signature: buildSignature(ts, stmt, sourceFile),
+          pos: stmt.getStart(sourceFile),
+          end: stmt.end,
+          health: analyzeMethodHealth({ ts, node: stmt, sourceFile, options: { language: 'ts' } }),
+          endpointInfo: detectApiEndpoint('default', filePath),
+        });
+        continue;
+      }
+      if (!stmt.name) continue; // 跳过无名非 default export（理论不应出现）
       facts.moduleFunctions.push({
         name: stmt.name.text,
         line: sourceFile.getLineAndCharacterOfPosition(stmt.getStart(sourceFile)).line + 1,
@@ -788,6 +1034,14 @@ export function analyzeFile(filePath, content, projectRoot) {
         signature: buildSignature(ts, stmt, sourceFile),
         pos: stmt.getStart(sourceFile),
         end: stmt.end,
+        // 模块级函数：分析健康度
+        health: analyzeMethodHealth({ ts, node: stmt, sourceFile, options: { language: 'ts' } }),
+        // API 端点识别（借鉴 asdm-aos Method.endpointInfo,适配 Next.js/Nuxt）
+        endpointInfo: detectApiEndpoint(stmt.name.text, filePath),
+        // SQL 表名提取（借鉴 asdm-aos mapperMapsTable,适配 SELECT/INSERT/UPDATE/DELETE）
+        sqlQueries: extractSqlTables(stmt.body ? sourceFile.text.slice(stmt.body.getStart(sourceFile), stmt.body.end) : null),
+        // 外部调用识别（借鉴 asdm-aos ext: 虚拟对象,React/DOM/状态管理 API）
+        externalCalls: extractExternalCalls(ts, stmt, sourceFile),
       });
     } else if (ts.isVariableStatement(stmt)) {
       for (const decl of stmt.declarationList.declarations) {
@@ -802,9 +1056,38 @@ export function analyzeFile(filePath, content, projectRoot) {
           signature: buildSignature(ts, init, sourceFile),
           pos: stmt.getStart(sourceFile),
           end: stmt.end,
+          // 顶层箭头函数：分析健康度
+          // 如该箭头函数是 test call 的 callback，传递 enclosingCallName 让 testType 标记为 unit/suite/setup
+          health: analyzeMethodHealth({
+            ts, node: init, sourceFile,
+            options: { language: 'ts', enclosingCallName: testCallbacks.get(init) ?? null },
+          }),
         });
       }
+    } else if (ts.isExpressionStatement(stmt)) {
+      // 顶层 test 调用由下方 topLevelTestCalls 统一处理（保持 moduleFunction 列表不重复）
     }
+  }
+
+  // 顶层 test 调用的 callback：作为 moduleFunction 收录（name 用 it@testType 形式以便 query 区分）
+  // 嵌套的 it/beforeEach（describe 内部）暂不收录到 moduleFunction（避免双计），但 testCallbacks 已建立，
+  // 用户可单独扩展（如需"全部测试函数"清单）
+  for (const { call, callback, name } of topLevelTestCalls) {
+    const callStart = call.getStart(sourceFile);
+    facts.moduleFunctions.push({
+      name: `${name}@${sourceFile.getLineAndCharacterOfPosition(callStart).line + 1}`,
+      line: sourceFile.getLineAndCharacterOfPosition(callStart).line + 1,
+      exported: false,
+      isAsync: callback.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) ?? false,
+      signature: buildSignature(ts, callback, sourceFile),
+      pos: callStart,
+      end: call.end,
+      // 顶层 test 调用：直接传 enclosingCallName
+      health: analyzeMethodHealth({
+        ts, node: callback, sourceFile,
+        options: { language: 'ts', enclosingCallName: name },
+      }),
+    });
   }
 
   // vue-router 导航调用归属：callee 名与更早出现的 useRouter 声明匹配才计入 overlayOpens

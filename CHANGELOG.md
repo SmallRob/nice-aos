@@ -2,6 +2,48 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.30.0] - 2026-08-25
+
+借鉴 asdm-aos 0.0.12 的 4 大能力：方法健康度 / 外部调用 / API 端点 / 数据模型 → 表链接 + 步骤化进度 + 元模型端点。详见 `docs/adr/0001-asdm-aos-borrowed-capabilities.md`。
+
+### 新增
+
+- **Method.health 子对象**：方法级代码健康度画像（圈复杂度 / 最大嵌套 / 分支数 / throw 数 / await 数 / 早期 return 数 / lambda 计数与 JSX 内联回调 / 测试方法识别 / `vi.mock` vs `jest.mock` 框架来源 / 派生 risk 评级 low/medium/high/critical）。统一承载 aos 的 complexity / isTest / lambdaCount / endpointInfo 4 个零散字段，单一 query 取全。接口方法无 body / Go 跨文件方法 / 非 ts 来源均使用 `placeholderHealth()` 兜底（向后兼容旧快照）
+- **Method.externalCalls**：识别函数体里的 React Hooks（19 种）/ DOM API（14 种）/ 状态管理 API（11 种），输出 `[{ name, kind, framework, line }]`。不进入 `calls` 链接（旧 viewer 渲染契约不变），仅作 `query Method --where "externalCalls~useState"` 字段过滤
+- **Method.endpointInfo**：API 端点装饰器级识别，覆盖 Next.js App Router（`app/api/.../route.ts` + `export async function GET/POST`）/ Next.js Pages Router（`pages/api/*.ts` + `handler(req,res)`）/ Nuxt 3（`server/api/*.get.ts` + `export default function`）
+- **Method.sqlQueries**：从函数体字符串提取 SQL 表名（SELECT/INSERT/UPDATE/DELETE + 动态模板 `${name}`），4 个独立简单正则避免大字符串回溯爆炸；用作 mapsToTable 第二通道
+- **Interface/Class.isDataModel + dataModelType**：类/接口名后缀启发式（DTO/Model/Entity/Schema/Request/Response/Params/Input/Output/Form/Payload → 对应类型）+ 装饰器识别（`@Entity/@ObjectType/@InputType/@Model/@ArgsType` → `orm-decorated`）
+- **Interface/Class 链入 mapsToTable**：Class/Interface/Store/Service 作为 src 也能映射到 Table（之前仅 mappedTableIds 显式映射）
+- **Dependency.isTypeDefinition**：标记 `@types/*` / `typescript` 类型定义包（仅 devDependency 时）。标记而非隐藏 —— 不破坏旧 query/link 行为
+- **action 步骤化进度**：`refreshRepo --params '{"silent":false}'` 输出 5 步耗时（scan:start/done / parse:done / resolve:done / build:done）+ 人类可读汇总。默认 `silent=true` 保持 JSON 单一输出（向后兼容）
+- **`/api/schema` 端点**：`nice-aos serve` 新增本体元模型端点，暴露 `OBJECT_TYPES`（19 个）/ `LINK_TYPES`（24 个）/ `ACTION_NAMES`（4 个）+ 概念元模型（abstractionLevels / categories）。借鉴 asdm-aos `ObjectTypeDef / LinkTypeDef / ActionDef` 设计，让外部 agent 自动发现能力
+
+### 变更
+
+- **mapsToTable 三通道匹配**（`src/ontology/blueprint.js`）：
+  1. `mappedTableIds` 显式映射（dbModel.matchTablesToCodeEntities 设置）—— 兼容旧快照
+  2. 自身 sqlQueries + 子方法聚合（Method/Class/Interface/Store/Service 都能映射）
+  3. 命名约定：`UserEntity → users` / `Product → products` / `Class → classes`
+- **mapsToTable ↔ mappedFromCode 共享** `collectTableIdsForEntity()` 私有函数，消除内联重复
+- **asdm-aos 借鉴注释收敛**：24 处「借鉴 asdm-aos」注释统一指向 `docs/adr/0001-` ADR 文档（避免分散）
+
+### 验证
+
+- 全部 321 个测试通过（0.29.1 时 318 + methodHealth P1 修复回归 3 个）
+- 端到端：`/api/schema` 返回 19/24/4 元模型；`silent:false` 输出 5 步耗时；`Method.health` 真实反映复杂度（renderPlanningMarkdown 17 圈复杂 → high）
+
+### 升级指引
+
+```bash
+npm install -g nice-aos@0.30.0
+# 或:
+npx nice-aos@0.30.0 action refreshRepo --params '{"repoPath":"你的项目"}'
+# 查看方法健康度:
+nice-aos query Method --where "health.risk=critical"
+# 查看本体元模型:
+nice-aos serve  # 打开 http://127.0.0.1:8420/api/schema
+```
+
 ## [0.29.1] - 2026-08-25
 
 补 0.29.0 离线安装可用性：tgz 自带 `commander` / `typescript` / `yaml` 三个运行时依赖。
