@@ -2,6 +2,39 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.29.0] - 2026-08-25
+
+把"代码本体扫描"从 9 种主语言扩展为 **9 主语言 + 9 种配置/视图/SQL/部署文件**，并新增 `nice-aos-fullscan-skill` 一站式调度（代码 + 数据库 + 部署三套蓝图）。
+
+### 新增
+
+- **9 种配置/视图/SQL/部署文件纳入主本体扫描**（`src/analyzers/configAnalyzer.js`，200+ 行；与 `tsAnalyzer` / `vueAnalyzer` / `dartAnalyzer` / `goAnalyzer` / `rustAnalyzer` / `pythonAnalyzer` 平级）
+  - **`.css`**：提取 `@import` URL / `@keyframes` 名 / CSS 自定义变量（`--xxx`）/ 顶层选择器（`.class` / `#id` / `tag`）
+  - **`.html`**：提取 `<title>` / `<script src>` / `<link href>` / `<meta name|property>` / `id` 锚点
+  - **`.sql`**：提取 `CREATE TABLE/VIEW/INDEX/FUNCTION/PROCEDURE/TRIGGER/SEQUENCE` 与 `DROP` 对象名（含 schema 限定名）；字符串字面量内的伪关键字不被误识别
+  - **`.yml` / `.yaml`**：提取顶层 key + 二级 key + 强信号字段（`version` / `services` / `apiVersion` / `kind` / `image` / `metadata`）
+  - **`.conf`**：支持 `[section]` + nginx 风格 `section { ... }` + nginx 指令（`key value;`）
+  - **`.toml`**：`[section]` + `key = value`
+  - **`.ini`**：`[section]` + `key = value`
+  - **`.env` / `.env.development` / `.env.production` / `.env.local`**：仅提取 KEY 名（不取 value，敏感信息保护）；路径后追加 `#env` 标记供 builder 还原真实文件名
+- **`projectScanner.SOURCE_EXTENSIONS` 扩展**：在原 9 种主语言上增加 `.css .html .sql .yml .yaml .conf .toml .ini .env`
+- **`.env.*` 文件规范化**：`path.extname('.env.development')` 返回 `.development` 不在白名单 — 在 `walk` 阶段按文件名匹配并把扩展名规范化为 `env`，避免漏扫
+- **`resolveRoots` 自动双根**：项目有 `src/` 时返回 `['src', '.']`（之前只有 `['src']`），让顶层 `.env*` / `index.html` / `*.conf` / `nginx.conf` 不被遗漏；`walk` 阶段按 relPath 去重（`seen` Set）避免重复
+- **SourceFile 新增 3 字段**（蓝图展示用）：
+  - `configKind`：css / html / sql / yaml / config
+  - `configItems`：顶层 key / 标签 / 对象名 / 嵌套结构数组（最大 100 项 / 文件）
+  - `configTruncated`：文件 > 2MB 时跳过详细解析仍算行数
+- **`nice-aos-fullscan-skill`**（`skills/nice-aos-fullscan-skill/SKILL.md`）：一站式全栈扫描调度，标准工作流含 `_scan.sh` 批量模板
+
+### 安全
+
+- `.env` 文件分析**仅提取 KEY 名**（`parseEnv` 函数不取 value），避免把数据库密码 / API Key 写入 snapshot / 蓝图
+
+### 验证
+
+- 新增 `test/configAnalyzer.test.mjs`（11 个测试：CSS / HTML / SQL / YAML / INI / CONF / TOML / .env / 行数 / 大文件 / 磁盘 / 未识别 ext）
+- 全套测试 266/266 通过（`node --test test/*.test.mjs`）
+
 ## [0.28.1] - 2026-08-25
 
 补 0.28.0 周期内已存在但未发布的本地特性，并清理 release 副作用。

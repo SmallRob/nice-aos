@@ -11,10 +11,15 @@ import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { analyzeDartFile, analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
 import { analyzeGoFile, analyzeGoFileFromDisk } from '../analyzers/goAnalyzer.js';
 import { analyzePythonFile, analyzePythonFileFromDisk, checkPythonSyntaxBulk } from '../analyzers/pythonAnalyzer.js';
+import { analyzeConfigFileFromDisk, analyzeConfigFile } from '../analyzers/configAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
   summarizeModule, buildProjectProfile,
 } from './semantics.js';
+
+// 配置/视图/SQL/部署文件扩展名：这些文件由 configAnalyzer 轻量级处理（行数 + 顶层 key/标签/对象名）
+// 不参与主 analyzer 的 AST 解析、import 解析、类型实体提取
+const CONFIG_EXTS = new Set(['.css', '.html', '.sql', '.yml', '.yaml', '.conf', '.toml', '.ini', '.env']);
 
 const KIND_SUFFIXES = [
   ['Page', 'page'], ['Modal', 'modal'], ['Dialog', 'dialog'], ['Card', 'card'],
@@ -590,26 +595,33 @@ export async function buildOntologyData(projectRoot, options = {}) {
   }
   const getFacts = (relPath) => {
     if (factsMap.has(relPath)) return factsMap.get(relPath);
+    // .env.* 文件被 projectScanner 加了 "#env" 后缀还原真实磁盘路径（ext 从 path.extname 提取）
+    const diskPath = relPath.endsWith('#env') ? relPath.slice(0, -4) : relPath;
+    const diskExt = path.extname(diskPath).toLowerCase();
+    // 配置扩展名按规范化 ext 判定（.env.development 视为 .env）
+    const ext = relPath.endsWith('#env') ? '.env' : diskExt;
     try {
-      const facts = relPath.endsWith('.rs')
-        ? analyzeRustFileFromDisk(relPath, projectRoot)
-        : relPath.endsWith('.go')
-          ? analyzeGoFileFromDisk(relPath, projectRoot)
-          : relPath.endsWith('.dart')
-            ? analyzeDartFileFromDisk(relPath, projectRoot)
-            : relPath.endsWith('.py')
-              ? analyzePythonFileFromDisk(relPath, projectRoot)
-              : relPath.endsWith('.vue')
-                ? analyzeVueFileFromDisk(relPath, projectRoot)
-                : (scan.userScriptFiles?.has(relPath)
-                  ? analyzeUserScriptFromDisk(relPath, projectRoot)
-                  : analyzeFileFromDisk(relPath, projectRoot));
+      const facts = diskPath.endsWith('.rs')
+        ? analyzeRustFileFromDisk(diskPath, projectRoot)
+        : diskPath.endsWith('.go')
+          ? analyzeGoFileFromDisk(diskPath, projectRoot)
+          : diskPath.endsWith('.dart')
+            ? analyzeDartFileFromDisk(diskPath, projectRoot)
+            : diskPath.endsWith('.py')
+              ? analyzePythonFileFromDisk(diskPath, projectRoot)
+              : diskPath.endsWith('.vue')
+                ? analyzeVueFileFromDisk(diskPath, projectRoot)
+                : (scan.userScriptFiles?.has(diskPath)
+                  ? analyzeUserScriptFromDisk(diskPath, projectRoot)
+                  : CONFIG_EXTS.has(ext)
+                    ? analyzeConfigFileFromDisk(diskPath, projectRoot, ext)
+                    : analyzeFileFromDisk(diskPath, projectRoot));
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
       analysisErrors.push({ file: relPath, error: String(err.message ?? err) });
       const empty = {
-        path: relPath, ext: path.extname(relPath).slice(1), lineCount: 0,
+        path: relPath, ext: relPath.endsWith('#env') ? 'env' : path.extname(relPath).slice(1), lineCount: 0,
         imports: [], exportSymbols: [], exportNames: [], jsxTags: new Set(),
         useCalls: [], overlayOpens: [], stores: [], lazyWrappers: [], components: [],
         hooks: [], primaryComponentName: null, hasSingletonClass: false, hasClassExport: false,
@@ -744,10 +756,12 @@ export async function buildOntologyData(projectRoot, options = {}) {
       }
     }
     const stem = path.posix.basename(relPath).replace(/\.(tsx?|jsx?|dart)$/, '');
+    // .env.* 文件路径带 "#env" 标记，剥离后给用户显示真实文件名
+    const displayPath = relPath.endsWith('#env') ? relPath.slice(0, -4) : relPath;
     const obj = {
-      id: `file:${relPath}`,
-      name: path.posix.basename(relPath),
-      path: relPath,
+      id: `file:${displayPath}`,
+      name: path.posix.basename(displayPath),
+      path: displayPath,
       ext: facts.ext,
       module: dir,
       moduleId,
@@ -762,6 +776,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
       unresolvedImports,
       exportNames: facts.exportNames,
       opensOverlayIds: facts.overlayOpens.map((o) => o.target),
+      // 配置文件轻量级语义提取（仅 css/html/sql/yaml/conf/toml/ini/env 会有）
+      configKind: facts.configKind ?? null,
+      configItems: facts.configItems ?? [],
+      configTruncated: !!facts.configTruncated,
       reviewed: false,
       notes: null,
     };

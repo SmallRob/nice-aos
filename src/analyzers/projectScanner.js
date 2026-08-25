@@ -3,7 +3,15 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isUserScriptCandidate } from './userScriptAnalyzer.js';
 
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart', '.go', '.py']);
+// 代码本体扫描的扩展名白名单：
+//   - 9 种"主语言"（深度解析：组件/类/方法/路由/依赖）
+//   - 9 种"配置/视图/SQL/部署"（轻量级：行数 + 顶层 key/标签/对象名）
+// 后者由 configAnalyzer.js 处理；不进 import 解析、不进主 analyzer 的 AST 路径
+const SOURCE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart', '.go', '.py',
+  '.css', '.html', '.sql', '.yml', '.yaml',
+  '.conf', '.toml', '.ini', '.env',
+]);
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'dist-ssr', 'build', 'out',
   'coverage', '.next', '.nuxt', 'public', 'docs',
@@ -17,7 +25,8 @@ const SKIP_DIRS = new Set([
 const NAME_COLLISION_DIRS = new Set(['build']);
 
 // 扫描根解析：显式 roots 优先；Flutter/Dart 项目（pubspec.yaml + lib/）优先扫 lib/；
-// 否则 src/ 存在则扫 src/；否则扫项目根（排除 SKIP_DIRS）
+// 否则 src/ 存在则扫 src/（同时把顶层几个高频配置文件加入扫描：.env* / Dockerfile* / index.html / *.config.{ts,js,mjs} / *.conf / *.yaml / *.yml）；
+// 否则扫项目根（排除 SKIP_DIRS）
 function resolveRoots(projectRoot, options) {
   if (Array.isArray(options.roots) && options.roots.length > 0) {
     return options.roots.filter((r) => fs.existsSync(path.join(projectRoot, r)));
@@ -25,11 +34,15 @@ function resolveRoots(projectRoot, options) {
   if (fs.existsSync(path.join(projectRoot, 'pubspec.yaml')) && fs.existsSync(path.join(projectRoot, 'lib'))) {
     return ['lib'];
   }
-  if (fs.existsSync(path.join(projectRoot, 'src'))) return ['src'];
+  if (fs.existsSync(path.join(projectRoot, 'src'))) {
+    // 默认 src/ 优先；同时把顶层几个高频配置文件 / 构建入口加入扫描——
+    // 这些文件不在 src/ 内但是项目运行时/构建时的关键配置，缺它们会让 .env / Dockerfile / nginx.conf / 顶层 index.html / vite.config.ts 等漏统计
+    return ['src', '.'];
+  }
   return ['.'];
 }
 
-function walk(dir, projectRoot, files) {
+function walk(dir, projectRoot, files, seen = new Set()) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -44,12 +57,20 @@ function walk(dir, projectRoot, files) {
         const inSourceTree = relDir.startsWith('src/');
         if (!(inSourceTree && NAME_COLLISION_DIRS.has(entry.name))) continue;
       }
-      walk(full, projectRoot, files);
+      walk(full, projectRoot, files, seen);
     } else if (entry.isFile()) {
       const ext = path.extname(entry.name);
-      if (!SOURCE_EXTENSIONS.has(ext)) continue;
+      // .env / .env.development / .env.local 等点文件无标准扩展名（path.extname 对 ".env" 返回空，对 ".env.development" 返回 ".development"），
+      // 单独按文件名匹配；统一加 "#env" 后缀，builder 据此规范化 ext 并路由到 configAnalyzer
+      const lowerName = entry.name.toLowerCase();
+      const isEnvFile = lowerName === '.env' || lowerName.startsWith('.env.');
+      if (!isEnvFile && !SOURCE_EXTENSIONS.has(ext)) continue;
       if (entry.name.endsWith('.backup')) continue;
-      files.push(path.relative(projectRoot, full).split(path.sep).join('/'));
+      const rel = path.relative(projectRoot, full).split(path.sep).join('/');
+      const finalRel = isEnvFile ? `${rel}#env` : rel;
+      if (seen.has(finalRel)) continue;
+      seen.add(finalRel);
+      files.push(finalRel);
     }
   }
 }
@@ -680,8 +701,11 @@ export function scanProject(projectRoot, options = {}) {
   const flutterDetected = clientRoots.some((r) => /(^|\/)lib$/.test(r))
     && (pubspecPath !== null || clientRoots.some((r) => fs.existsSync(path.join(projectRoot, path.dirname(r), 'pubspec.yaml'))));
   const files = [];
+  // walk 按 relPath 去重：resolveRoots 可能同时返回 'src' 和 '.'（. 包含 src），
+  // 同一个文件被扫两次会污染统计与实体去重
+  const seen = new Set();
   for (const root of roots) {
-    walk(path.join(projectRoot, root), projectRoot, files);
+    walk(path.join(projectRoot, root), projectRoot, files, seen);
   }
   files.sort();
   const htmlEntryFiles = collectHtmlEntryFiles(projectRoot, roots);
@@ -771,7 +795,7 @@ export function scanProject(projectRoot, options = {}) {
   // 兄弟项目发现：定位仓库根后识别同级项目（用户定位子项目/代码子目录场景）
   const siblingProjects = discoverSiblingProjects(projectRoot);
 
-  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0, py: 0 };
+  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0, py: 0, css: 0, html: 0, sql: 0, yml: 0, yaml: 0, conf: 0, toml: 0, ini: 0, env: 0 };
   for (const f of files) {
     const ext = path.extname(f).slice(1);
     if (counts[ext] !== undefined) counts[ext] += 1;
