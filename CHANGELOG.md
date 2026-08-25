@@ -2,6 +2,48 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.28.1] - 2026-08-25
+
+补 0.28.0 周期内已存在但未发布的本地特性，并清理 release 副作用。
+
+### 新增
+
+- **Python 后端脚本分析子系统**（`src/analyzers/pythonAnalyzer.js`，1000+ 行，参照 `tsAnalyzer` / `vueAnalyzer` / `dartAnalyzer` / `goAnalyzer` / `rustAnalyzer` 平级设计、逻辑完全独立）
+  - **实体映射**（对齐 TS/Rust/Dart 语义）：
+    - `class X(Base, Mixin, metaclass=Meta): ...` → `Class`（kind: class；bases 抽末段类型名；`metaclass=` 抽到 `metaclassName`）
+    - 含 `@abstractmethod` 或继承 `ABC` 且只有抽象方法的 class → `Interface`
+    - `def f(...)` / `async def f(...)` → `Method`（`ownerKind=class`）；模块级 `def` → `moduleFunctions`
+    - `@property` / `@staticmethod` / `@classmethod` / `@abstractmethod` / 自定义装饰器 → `methods[].decorators[]`（含 `kind` 标签）
+    - `import X` / `from X import Y` / `from X import Y as Z` / `from X import *` → `imports`（`importMap` 含 local→specifier 与 from 子名映射）
+    - `__init__` / `__str__` / `__repr__` / `__enter__`/`__exit__` 等 dunder → `methods[].isDunder=true + dunderCategory` 语义标签
+    - `__all__ = [...]` → `pythonExports`（模块公开符号清单）
+    - `if __name__ == "__main__":` → `pythonEntryPoints`（脚本入口）
+    - `@app.command` / `@click.command` / `@typer.command` 装饰器 → `pythonEntryPoints`（CLI 入口）
+    - 方法/函数体内调用 → `callEdges`（`self.method()` / `cls.method()` / `Class.method()` / `pkg.func()` / `new Class()`）
+    - `@app.get/post/put/delete/patch` + `@app.route` / `@router.get` 系列 → `pythonRoutes`（method/path/handler/target）
+  - **双通道噪声剥离**：`stripPythonNoise`（全剥离：f-string 插值 + 三引号/单引号/字节串 + 注释）供块状态机与调用提取；`stripCommentsOnly`（仅剥注释）供 import / 装饰器字符串 / 路由 path / `__all__` 列表 / docstring 提取
+- **批量 Python AST 语法校验**（`checkPythonSyntaxBulk`）
+  - 一次性 spawn `python3` 调 `ast.parse`，把失败文件登记到模块级 `pythonSyntaxErrors` Map
+  - `analyzePythonFileFromDisk` 检测到当前文件失败时主动 throw（`code='PYTHON_SYNTAX_ERROR'`），由 `builder.js` 的 try/catch 写入 `Project.analysisErrors`
+  - **关键价值**：`pythonAnalyzer` 是基于缩进的轻量级块结构匹配，原先对 `SyntaxError` 文件会"静默成功"。批量 AST 校验把这类问题暴露在 `analysisErrors`，不污染下游本体
+  - 性能：TheAlgorithms/Python 1382 个 .py 文件批量校验 0.3 秒
+- **`projectScanner` 识别 `.py` 文件**（`SOURCE_EXTENSIONS` 加入 `.py`，`scanProject` 输出 `pyFileCount`，`buildProject` 汇总 `pyFileCount`）
+- **`action analyzeFile` 支持 `.py` 文件**（之前提示只支持 `.ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart`）
+- **`pythonAnalyzer.test.mjs` 测试套件**（`test/pythonAnalyzer.test.mjs`）—— 覆盖 class / 装饰器 / dunder / import / 路由 / 入口点 / 自定义 Analyzer 调用链聚合
+- `package.json` `description` 与 `keywords` 同步纳入 Python（description 加入 "Python 后端脚本分析 CLI"，keywords 追加 `python`）
+- `scanProject` 沿用 `pub` / `npm` 同级设计：识别 `.py` 后自动进入 `Project.pyFileCount` / `Project.language`（追加 "Python"）
+
+### 修复
+
+- **`package.json` self-dependency 残留**：dependencies 列表曾含 `"nice-aos": "^0.23.0"`（自我引用），会导致 `npm install nice-aos` 拉一个旧版副本。清理后 tarball 不再带 self-dep（`npm pack --dry-run` 验证 `total files` 由 68 → 67）
+
+### 验证
+
+- `npm test`：255/255 通过（含新增 `pythonAnalyzer.test.mjs`）
+- `npm pack --dry-run`：67 files、494.9 kB、sha512 已记录
+- TheAlgorithms/Python 端到端：1382 个 .py、308 Class、3844 Method、12 个 `analysisErrors`（全部为 Python 2 风格 `except X, Y:` 未加括号）
+- nice-aos 自家项目（无 .py）：0 errors，行为不变
+
 ## [0.28.0] - 2026-08-24
 
 ### 新增

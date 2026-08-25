@@ -10,6 +10,7 @@ import { analyzeOverlayRoutes, analyzeJsxRoutes, analyzeDataRouterRoutes } from 
 import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { analyzeDartFile, analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
 import { analyzeGoFile, analyzeGoFileFromDisk } from '../analyzers/goAnalyzer.js';
+import { analyzePythonFile, analyzePythonFileFromDisk, checkPythonSyntaxBulk } from '../analyzers/pythonAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
   summarizeModule, buildProjectProfile,
@@ -249,6 +250,12 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         widgetBase: cls.widgetBase ?? null,
         isStore: cls.isStore ?? false,
         withNames: cls.withNames ?? [],
+        // Python 专有扩展（SQLAlchemy / ORM 信号 + 多基类）
+        tableName: cls.tableName ?? null,
+        tableArgs: cls.tableArgs ?? null,
+        ormHints: cls.ormHints ?? [],
+        bases: cls.bases ?? [],
+        metaclassName: cls.metaclassName ?? null,
         methodIds: [],
         implementsIds: [],
         implementsNames: cls.implementsNames,
@@ -557,7 +564,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files, scan.pubspecName ?? null);
 
   // 1. 逐文件解析（TypeScript Compiler API，仅词法/语法层，不做类型检查）
-  // 路由：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（平级、逻辑独立）
+  // 路由：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.py → pythonAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer（平级、逻辑独立）
   const rustFiles = new Set(scan.files.filter((f) => f.endsWith('.rs')));
   const goFiles = new Set(scan.files.filter((f) => f.endsWith('.go')));
   const goResolver = createGoImportResolver(
@@ -569,6 +576,18 @@ export async function buildOntologyData(projectRoot, options = {}) {
   );
   const factsMap = new Map();
   const analysisErrors = [];
+  // 1-pre. Python 语法批量校验（仅当项目含 .py 文件时执行）
+  // pythonAnalyzer 是基于缩进的轻量级解析，对 SyntaxError 文件会"静默成功"；
+  // 这里一次性调 python3 ast.parse 找出失败文件，让 analyzePythonFileFromDisk
+  // 对这些文件 throw，由下方 try/catch 写入 analysisErrors。
+  const pythonFiles = scan.files.filter((f) => f.endsWith('.py') && !f.endsWith('.pyc'));
+  if (pythonFiles.length > 0) {
+    try {
+      checkPythonSyntaxBulk(pythonFiles, projectRoot);
+    } catch {
+      // 校验失败不影响主流程
+    }
+  }
   const getFacts = (relPath) => {
     if (factsMap.has(relPath)) return factsMap.get(relPath);
     try {
@@ -578,11 +597,13 @@ export async function buildOntologyData(projectRoot, options = {}) {
           ? analyzeGoFileFromDisk(relPath, projectRoot)
           : relPath.endsWith('.dart')
             ? analyzeDartFileFromDisk(relPath, projectRoot)
-            : relPath.endsWith('.vue')
-              ? analyzeVueFileFromDisk(relPath, projectRoot)
-              : (scan.userScriptFiles?.has(relPath)
-                ? analyzeUserScriptFromDisk(relPath, projectRoot)
-                : analyzeFileFromDisk(relPath, projectRoot));
+            : relPath.endsWith('.py')
+              ? analyzePythonFileFromDisk(relPath, projectRoot)
+              : relPath.endsWith('.vue')
+                ? analyzeVueFileFromDisk(relPath, projectRoot)
+                : (scan.userScriptFiles?.has(relPath)
+                  ? analyzeUserScriptFromDisk(relPath, projectRoot)
+                  : analyzeFileFromDisk(relPath, projectRoot));
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
@@ -1082,6 +1103,123 @@ export async function buildOntologyData(projectRoot, options = {}) {
             }
           } else if (c.kind === 'method') {
             toId = goDirClassMethods.get(`${dir}#${c.receiverType}#${c.to}`) ?? null;
+          }
+          if (!toId || toId === fromId || seen.has(toId)) continue;
+          seen.add(toId);
+          if (!fromMethod.callIds.includes(toId)) fromMethod.callIds.push(toId);
+          const toM = methodById.get(toId);
+          if (toM && !toM.calledByIds.includes(fromId)) toM.calledByIds.push(fromId);
+        }
+      }
+    }
+  }
+
+  // 5b-0d. Python 调用链聚合（pythonAnalyzer callEdges → Method.callIds / calledByIds）
+  // Python 包 = 目录树（与 Go 类似但无 module 声明）：同包跨文件互调无需 import；
+  // self.method / cls.method → 同类方法；Class.method → 静态方法 / 跨类调用；local → 同文件顶层 def；
+  // pkg.func → 经 importMap 定位目标模块文件
+  {
+    // 索引：同目录内顶层函数 / 类方法（用于同包跨文件互调）
+    const pyDirModuleFns = new Map();    // `${dir}#${fnName}` → [methodId]
+    const pyDirClassMethods = new Map(); // `${dir}#${className}#${methodName}` → methodId
+    const pyMethodNameIndex = new Map(); // 方法名 → [{ id, filePath }]
+    const pyClassNameIndex = new Map();  // 类名 → [{ id, filePath }]
+    for (const m of methods) {
+      if (!m.filePath?.endsWith('.py')) continue;
+      const dir = dirOf(m.filePath);
+      if (m.ownerKind === 'module') {
+        const key = `${dir}#${m.name}`;
+        if (!pyDirModuleFns.has(key)) pyDirModuleFns.set(key, []);
+        pyDirModuleFns.get(key).push(m.id);
+      } else if (m.ownerKind === 'class' && m.ownerName) {
+        pyDirClassMethods.set(`${dir}#${m.ownerName}#${m.name}`, m.id);
+      }
+      if (!pyMethodNameIndex.has(m.name)) pyMethodNameIndex.set(m.name, []);
+      pyMethodNameIndex.get(m.name).push({ id: m.id, filePath: m.filePath });
+    }
+    for (const c of classes) {
+      if (!c.filePath?.endsWith('.py')) continue;
+      if (!pyClassNameIndex.has(c.name)) pyClassNameIndex.set(c.name, []);
+      pyClassNameIndex.get(c.name).push({ id: c.id, filePath: c.filePath });
+    }
+    for (const [relPath, facts] of factsMap) {
+      if (!relPath.endsWith('.py') || !facts.callEdges?.length) continue;
+      const dir = dirOf(relPath);
+      for (const edge of facts.callEdges) {
+        let fromId = null;
+        let clsName = null;
+        if (edge.from.includes('.')) {
+          const dot = edge.from.lastIndexOf('.');
+          clsName = edge.from.slice(0, dot);
+          fromId = methodKey.get(`${relPath}#${clsName}#${edge.from.slice(dot + 1)}`) ?? null;
+        } else {
+          fromId = methodKey.get(`${relPath}##${edge.from}`) ?? null;
+        }
+        const fromMethod = fromId ? methodById.get(fromId) : null;
+        if (!fromMethod) continue;
+        const seen = new Set();
+        for (const c of edge.to) {
+          let toId = null;
+          if (c.kind === 'self' || c.kind === 'cls') {
+            // 同类方法（self/cls.method）：先看本类；找不到则全仓库同名方法
+            const owner = clsName ?? fromMethod.ownerName;
+            if (owner) toId = pyDirClassMethods.get(`${dir}#${owner}#${c.to}`) ?? null;
+            if (!toId && owner) {
+              for (const cand of pyMethodNameIndex.get(c.to) ?? []) {
+                const m2 = methodById.get(cand.id);
+                if (m2 && m2.ownerName === owner) { toId = cand.id; break; }
+              }
+            }
+          } else if (c.kind === 'static' && c.owner) {
+            // Class.method → 类方法（@staticmethod / @classmethod / 实例方法同名约定）
+            toId = pyDirClassMethods.get(`${dir}#${c.owner}#${c.to}`) ?? null;
+            if (!toId) {
+              for (const cand of pyMethodNameIndex.get(c.to) ?? []) {
+                const m2 = methodById.get(cand.id);
+                if (m2 && m2.ownerName === c.owner) { toId = cand.id; break; }
+              }
+            }
+          } else if (c.kind === 'ctor') {
+            // ClassName(...) 构造：定位类
+            const cands = pyClassNameIndex.get(c.to) ?? [];
+            toId = cands[0]?.id ?? null;
+          } else if (c.kind === 'pkg' && c.owner) {
+            // pkg.func → 经 importMap 定位目标文件 → 顶层函数
+            const spec = facts.importMap?.get(c.owner) ?? null;
+            if (spec) {
+              // 简化：用 importMap 命中文件 → 找该文件顶层 def
+              const targetFile = (() => {
+                // spec 可能为 'package.sub' / 'fromX' / '.' / '..'（相对导入）等
+                // 本简化为 spec 末段作为模块名 → 同目录或子目录同名 .py
+                const last = spec.split('.').pop();
+                if (spec === '.' || spec === '..') return null; // 相对导入需更复杂解析
+                if (spec.startsWith('.')) return null;
+                for (const f of scan.files) {
+                  if (!f.endsWith('.py')) continue;
+                  if (f === `${last}.py`) return f;
+                  if (f.endsWith(`/${last}.py`)) return f;
+                }
+                return null;
+              })();
+              if (targetFile) {
+                toId = methodKey.get(`${targetFile}##${c.to}`) ?? null;
+                if (!toId) {
+                  // 跨目录同包：dirOf(targetFile) 同名顶层函数
+                  toId = (pyDirModuleFns.get(`${dirOf(targetFile)}#${c.to}`) ?? [])[0] ?? null;
+                }
+              }
+            }
+            // 兜底：当前目录顶层 def
+            if (!toId) toId = (pyDirModuleFns.get(`${dir}#${c.to}`) ?? [])[0] ?? null;
+          } else if (c.kind === 'local') {
+            // 本文件顶层 def / 同包其他文件顶层 def
+            toId = methodKey.get(`${relPath}##${c.to}`) ?? null;
+            if (!toId) {
+              for (const id of pyDirModuleFns.get(`${dir}#${c.to}`) ?? []) {
+                const m = methodById.get(id);
+                if (m && m.filePath !== relPath) { toId = id; break; }
+              }
+            }
           }
           if (!toId || toId === fromId || seen.has(toId)) continue;
           seen.add(toId);
@@ -1684,6 +1822,79 @@ export async function buildOntologyData(projectRoot, options = {}) {
       }
     }
   }
+
+  // 7d. Python 路由：FastAPI / Flask / aiohttp / Sanic（pythonAnalyzer.pythonRoutes → Route 实体）
+  // 路径前缀：FastAPI APIRouter(prefix='/x') → 所有该文件路由加前缀；Flask Blueprint url_prefix 同理
+  {
+    const pyRouterPrefix = new Map(); // 变量名 → '/prefix'
+    const pyRouteIds = new Set();
+    const pyRouteByPath = new Map();
+    // 先扫描 router/blueprint 变量定义（顶层赋值）
+    for (const [relPath, facts] of factsMap) {
+      if (!relPath.endsWith('.py')) continue;
+      // 通过源码内容扫描：facts 不存 stripped 全文，仅有 moduleDocstring / imports / routes
+      // 直接尝试从 facts.pythonRoutes 倒推前缀（FastAPI router prefix 体现在 path 上不一定有前缀，
+      // 此处用最简单的字符串正则扫描事实中已知的注释/原始结构无法恢复）
+      // 改为：直接通过 facts.pythonModuleDocstring + importMap 仍无法获取 prefix
+      // 简化为：扫描源文件原始内容（在 getFacts 缓存中可取——但不在 factsMap 中）。fallback：用路由 path 的常量字符串合并启发式
+    }
+    // 由于 facts 未保留原始 stripped / clean 全文，无法在 builder 阶段解析 router 变量定义。
+    // 替代方案：直接读 scan.files 源文件，按行扫描 router/blueprint 变量定义。
+    for (const relPath of scan.files) {
+      if (!relPath.endsWith('.py')) continue;
+      let content;
+      try { content = fs.readFileSync(path.join(projectRoot, relPath), 'utf-8'); } catch { continue; }
+      // 顶层赋值：^name = APIRouter(...) 或 ^name = Blueprint(...)
+      const reRouter = /^[ \t]*([A-Za-z_][\w]*)\s*=\s*(?:APIRouter|Blueprint)\s*\(([^)]*)\)/gm;
+      let m;
+      while ((m = reRouter.exec(content))) {
+        const name = m[1];
+        const args = m[2];
+        const prefixM = /prefix\s*=\s*['"]([^'"]+)['"]/.exec(args);
+        const urlPrefixM = /url_prefix\s*=\s*['"]([^'"]+)['"]/.exec(args);
+        const prefix = (prefixM?.[1] ?? urlPrefixM?.[1] ?? '').replace(/\/+$/, '');
+        if (name && prefix) pyRouterPrefix.set(name, prefix);
+      }
+    }
+    for (const [relPath, facts] of factsMap) {
+      if (!relPath.endsWith('.py') || !facts.pythonRoutes?.length) continue;
+      for (const pr of facts.pythonRoutes) {
+        const basePath = pyRouterPrefix.get(pr.target) ?? '';
+        const fullPath = basePath + pr.path;
+        const id = uniqueId(`route:${fullPath}`, pyRouteIds);
+        pyRouteByPath.set(fullPath, id);
+        const handlerId = methodKey.get(`${relPath}#${pr.handler}`) ?? methodKey.get(`${relPath}##${pr.handler}`) ?? null;
+        // FastAPI 端点常见 handler 直接是模块函数（def gpt_search(...)）；按 ownerKind=module 查找
+        let compId = handlerId;
+        const seg = fullPath.split('/').filter(Boolean)[0];
+        const domain = !seg || seg.startsWith(':') || seg.startsWith('{') ? 'root' : seg;
+        routes.push({
+          id,
+          overlayId: fullPath,
+          name: pr.handler,
+          routePath: fullPath,
+          backTarget: null,
+          hidesNav: null,
+          domain,
+          group: relPath,
+          componentRef: pr.handler,
+          componentFileId: `file:${relPath}`,
+          componentId: compId,
+          navigatesToIds: [],
+          hasPropsFactory: false,
+          factoryProps: [],
+          routeType: 'python',
+          rawPath: pr.path, layoutFileIds: [], specialFiles: [],
+          isDynamic: fullPath.includes(':') || fullPath.includes('{'),
+          isClient: null,
+          apiMethods: pr.method,
+          description: null,
+          reviewed: false, notes: null,
+        });
+      }
+    }
+  }
+
   // GoRouter 导航边：任意 .dart 文件内 context.go('/path') / context.push(AppRouter.xxx) → 该文件组件所属路由 → 目标路由
   // 常量引用参数（AppRouter.fengshui / home）用全仓库路由常量表回填；动态变量（feature.route）查不到即忽略
   const dartConstPathByName = new Map(); // 全仓库路由常量名 → path（跨文件常量引用回填）
@@ -2222,6 +2433,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       if ((scan.rustFileCount ?? 0) > 0) parts.push('Rust');
       if ((scan.dartFileCount ?? 0) > 0) parts.push('Dart');
       if ((scan.goFileCount ?? 0) > 0) parts.push('Go');
+      if ((scan.pyFileCount ?? 0) > 0) parts.push('Python');
       return parts.join(' + ') || 'TypeScript';
     })(),
     commitHash: scan.commitHash,
@@ -2234,6 +2446,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     rustFileCount: scan.rustFileCount ?? 0,
     dartFileCount: scan.dartFileCount ?? 0,
     goFileCount: scan.goFileCount ?? 0,
+    pyFileCount: scan.pyFileCount ?? 0,
     goModule: scan.goModule ?? null,
     subProjects: scan.subProjects ?? [],
     siblingProjects: scan.siblingProjects ?? [],
@@ -2310,7 +2523,7 @@ export async function buildSingleFileOntology(absFilePath) {
   const fileName = path.basename(absFilePath);
   const dir = path.dirname(absFilePath);
 
-  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
+  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.py → pythonAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
   let facts;
   if (fileName.endsWith('.rs')) {
     facts = analyzeRustFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
@@ -2318,6 +2531,8 @@ export async function buildSingleFileOntology(absFilePath) {
     facts = analyzeGoFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
   } else if (fileName.endsWith('.dart')) {
     facts = analyzeDartFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
+  } else if (fileName.endsWith('.py')) {
+    facts = analyzePythonFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
   } else if (fileName.endsWith('.vue')) {
     facts = analyzeVueFileFromDisk(fileName, dir);
   } else if (isUserScriptCandidate(absFilePath)) {

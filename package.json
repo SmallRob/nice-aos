@@ -1,7 +1,7 @@
 {
   "name": "nice-aos",
-  "version": "0.28.0",
-  "description": "nice-aos —— 通用前端代码本体 / 数据库脚本 / 部署配置 / Java 后端服务蓝图 / 产品规划PRD文档蓝图分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本 / MySQL 迁移脚本 / Dockerfile+Compose+K8s+nginx / asdm-aos Java 本体快照 / 规划管理库 PRD 文档）：扫描 React/TypeScript、Vue 2 Options API / Vue 3 SFC、Flutter/Dart、Go 与 Tampermonkey UserScript 源码生成结构化本体快照；支持 MySQL 迁移脚本目录分析（Flyway 标准 / Sprint 非标准布局、多数据库、mysqldump 兼容），产出数据库模型（表/列/主键/外键/索引/迁移历史/领域分组/模式特征）和自包含数据蓝图 dataoverview HTML（SVG ER 关系图）；支持部署配置目录分析（docker-compose / K8s manifest / Dockerfile / nginx.conf / .env / shell），产出部署架构模型（服务/镜像/路由/依赖/中间件/环境/分层）和自包含部署蓝图 deployoverview HTML（分层拓扑 + SVG 依赖图 + 5 大审计场景）；支持基于 asdm-aos Java 后端本体快照生成后端服务蓝图（模块/分层/API 面/数据层/技术栈/代码质量/五维健康审计，8 Tab HTML，模块规则动态推导可配置）；支持产品规划/PRD 文档蓝图（扫描规划管理库特性 PRD/模块/发布/Roadmap，产出规划模型 planning-snapshot.json 与自包含 planning-overview HTML：特性/模块/依赖图谱/发布/战略/四维规划健康审计，内嵌 planning-viewer-data 供油猴脚本蓝图文案问答）；支持增量扫描；供 AI agent 与开发者毫秒级查询",
+  "version": "0.28.1",
+  "description": "nice-aos —— 通用前端代码本体 / 数据库脚本 / 部署配置 / Java 后端服务蓝图 / 产品规划PRD文档蓝图 / Python 后端脚本分析 CLI（React / Vue 2+3 / Flutter / Go / Python / 油猴脚本 / MySQL 迁移脚本 / Dockerfile+Compose+K8s+nginx / asdm-aos Java 本体快照 / 规划管理库 PRD 文档）：扫描 React/TypeScript、Vue 2 Options API / Vue 3 SFC、Flutter/Dart、Go、Python 与 Tampermonkey UserScript 源码生成结构化本体快照；支持 MySQL 迁移脚本目录分析（Flyway 标准 / Sprint 非标准布局、多数据库、mysqldump 兼容），产出数据库模型（表/列/主键/外键/索引/迁移历史/领域分组/模式特征）和自包含数据蓝图 dataoverview HTML（SVG ER 关系图）；支持部署配置目录分析（docker-compose / K8s manifest / Dockerfile / nginx.conf / .env / shell），产出部署架构模型（服务/镜像/路由/依赖/中间件/环境/分层）和自包含部署蓝图 deployoverview HTML（分层拓扑 + SVG 依赖图 + 5 大审计场景）；支持基于 asdm-aos Java 后端本体快照生成后端服务蓝图（模块/分层/API 面/数据层/技术栈/代码质量/五维健康审计，8 Tab HTML，模块规则动态推导可配置）；支持产品规划/PRD 文档蓝图（扫描规划管理库特性 PRD/模块/发布/Roadmap，产出规划模型 planning-snapshot.json 与自包含 planning-overview HTML：特性/模块/依赖图谱/发布/战略/四维规划健康审计，内嵌 planning-viewer-data 供油猴脚本蓝图文案问答）；支持 Python 脚本/包实体分析（class/dataclass/abstract/继承/元类、def/async/装饰器/dunder/属性注解、import/from/as/wildcard、FastAPI/Flask/aiohttp/Sanic 路由、__all__/__main__ 入口/CLI 入口）；支持增量扫描；供 AI agent 与开发者毫秒级查询",
   "type": "module",
   "bin": {
     "nice-aos": "src/cli/index.js"
@@ -48,7 +48,12 @@
     "roadmap",
     "feature",
     "blueprint",
-    "planning-blueprint"
+    "planning-blueprint",
+    "python",
+    "fastapi",
+    "flask",
+    "django",
+    "chaquopy"
   ],
   "license": "MIT",
   "repository": {
@@ -64,7 +69,6 @@
   },
   "dependencies": {
     "commander": "^11.1.0",
-    "nice-aos": "^0.23.0",
     "typescript": "^5.8.0",
     "yaml": "^2.9.0"
   },

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isUserScriptCandidate } from './userScriptAnalyzer.js';
 
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart', '.go']);
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart', '.go', '.py']);
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'dist-ssr', 'build', 'out',
   'coverage', '.next', '.nuxt', 'public', 'docs',
@@ -771,7 +771,7 @@ export function scanProject(projectRoot, options = {}) {
   // 兄弟项目发现：定位仓库根后识别同级项目（用户定位子项目/代码子目录场景）
   const siblingProjects = discoverSiblingProjects(projectRoot);
 
-  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0 };
+  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0, py: 0 };
   for (const f of files) {
     const ext = path.extname(f).slice(1);
     if (counts[ext] !== undefined) counts[ext] += 1;
@@ -845,6 +845,7 @@ export function scanProject(projectRoot, options = {}) {
     goDetected: goModule !== null && counts.go > 0,
     goModule: goModule ? { name: goModule.name, goVersion: goModule.goVersion, dir: goModule.dir } : null,
     goModuleDirs: goModuleDirs,
+    pyFileCount: counts.py,
     subProjects,
     siblingProjects,
     tauriDetected,
