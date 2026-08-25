@@ -2,6 +2,30 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.29.1] - 2026-08-25
+
+补 0.29.0 离线安装可用性：tgz 自带 `commander` / `typescript` / `yaml` 三个运行时依赖。
+
+### 变更
+
+- **`bundledDependencies` 加入 `commander` / `typescript` / `yaml`**：tgz 从 507 KB 增长到 4.8 MB，但安装时无需访问 npm registry
+- **严格离线测试通过**：清空 npm cache + 阻断 registry 后 `npm install nice-aos-0.29.1.tgz` 880ms 完成，跑 `asdm-portal` 烟囱扫描正常
+
+### 验证
+
+- `npm install --offline` + `nice-aos --version` → 0.29.1
+- asdm-portal 烟囱扫描：65 源文件 / 498ms / 0 错误
+
+### 升级指引
+
+```bash
+# 已用 0.29.0 的用户：升级到 0.29.1 获得离线安装能力
+npm install -g nice-aos@0.29.1
+# 或用 tgz 离线装（无需网络）
+scp nice-aos-0.29.1.tgz remote-host:~
+ssh remote-host "npm install -g ./nice-aos-0.29.1.tgz"
+```
+
 ## [0.29.0] - 2026-08-25
 
 把"代码本体扫描"从 9 种主语言扩展为 **9 主语言 + 9 种配置/视图/SQL/部署文件**，并新增 `nice-aos-fullscan-skill` 一站式调度（代码 + 数据库 + 部署三套蓝图）。
