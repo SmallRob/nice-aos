@@ -6,7 +6,7 @@ function table(headers, rows) {
   return [head, sep, body].join('\n');
 }
 
-export function exportToMarkdown(dataMap) {
+export function exportToMarkdown(dataMap, opts = {}) {
   const meta = dataMap._meta ?? {};
   const counts = meta.objectCounts ?? {};
   const proj = dataMap.Project?.[0] ?? {};
@@ -532,6 +532,51 @@ export function exportToMarkdown(dataMap) {
     heading('解析错误');
     for (const e of errors.slice(0, 50)) out.push(`- ${e.file}: ${e.error}`);
     out.push('');
+  }
+
+  // 增量变更摘要（--since 模式）：列出 git diff 涉及的文件 + 涉及的对象（按类型分组）
+  if (opts.since) {
+    const { spec, staged, files, byType } = opts.since;
+    const totalObjects = Object.values(byType).reduce((s, a) => s + a.length, 0);
+    heading(`增量变更摘要（since ${spec}${staged ? ' [staged]' : ''}）`);
+    out.push(`- 范围: \`${spec}\`${staged ? ' (仅已暂存)' : ' ..HEAD（含未跟踪）'}`);
+    out.push(`- 涉及文件: **${files.length}** 个`);
+    out.push(`- 涉及对象: **${totalObjects}** 个（按类型见下）`);
+    out.push('');
+
+    if (files.length === 0) {
+      out.push('> 无变更文件（spec 可能与 HEAD 重合 / 仓库无新变更）');
+      out.push('');
+    } else {
+      // 变更文件清单
+      out.push('### 变更文件');
+      for (const f of files.slice(0, 200)) out.push(`- \`${f}\``);
+      if (files.length > 200) out.push(`> 仅显示前 200 个，共 ${files.length} 个。`);
+      out.push('');
+
+      // 涉及对象（按类型）
+      if (totalObjects > 0) {
+        out.push('### 涉及对象（按类型）');
+        const types = Object.keys(byType).sort();
+        for (const t of types) {
+          out.push(`- **${t}** (${byType[t].length})`);
+          for (const o of byType[t].slice(0, 30)) {
+            // id 优先（用户能直接复制到 query / link 命令），name 兜底人类可读
+            const id = o.id ?? '-';
+            const name = o.name ?? o.id ?? '-';
+            const fp = o.filePath ?? o.path ?? o.relPath ?? '';
+            const nameLabel = name !== id && name !== '-' ? ` (${name})` : '';
+            out.push(`  - \`${id}\`${nameLabel}${fp ? ` @ \`${fp}\`` : ''}${o.deadCandidate ? ' ⚠️ 死代码候选' : ''}`);
+          }
+          if (byType[t].length > 30) out.push(`  > 仅显示前 30 个，共 ${byType[t].length} 个。`);
+        }
+        out.push('');
+      } else {
+        out.push('### 涉及对象');
+        out.push('> 变更文件未匹配到任何本体对象（可能文件不在扫描范围 / 解析失败）');
+        out.push('');
+      }
+    }
   }
 
   return out.join('\n');

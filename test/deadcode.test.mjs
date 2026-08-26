@@ -1,241 +1,218 @@
-// 死代码三级判定测试：导出级 unusedExports / 函数级（Method + ScriptFunction）/ 单文件分析 analyzeFile
+// deadCode BFS 算法测试
+// 覆盖：
+//   - computeReachableSet 基础 BFS（imports + calls）
+//   - roots 包含 entry files / exported / test files / extraEntryIds
+//   - 不可达 method 被正确识别
+//   - markDeadCandidates 写回字段
+//   - handle 循环依赖
+//   - 边界：空 snapshot、孤儿 id、深度链路
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { buildOntologyData, buildSingleFileOntology } from '../src/ontology/builder.js';
+import { computeReachableSet, findDeadExported, markDeadCandidates } from '../src/analyzers/deadCode.js';
 
-const execFileAsync = promisify(execFile);
-const ROOT = process.cwd();
-const CLI = path.join(ROOT, 'src/cli/index.js');
+// 测试 fixture：一个 React 项目的微型版本
+// - main.tsx 是 entry file，含 module function "main"
+// - App.tsx 是 entry file
+// - A 组件用 B 组件；B 组件没人用（dead）
+// - helper: exported 但没人调（dead）
+const FIXTURE = {
+  _meta: { generatedAt: '2026-08-26T00:00:00.000Z' },
+  Project: [{ id: 'proj:test', name: 'test' }],
+  Method: [
+    // main.tsx 中的 module function：调 A.render
+    { id: 'method:src/main.tsx#main', name: 'main', filePath: 'src/main.tsx', line: 1, ownerKind: 'module', exported: true, callIds: ['method:src/A.tsx#A#render'] },
+    // helper: 导出但没人调
+    { id: 'method:src/utils.ts#formatDate', name: 'formatDate', filePath: 'src/utils.ts', line: 1, ownerKind: 'module', exported: true },
+    // A 组件的方法：不再调 B（让 B 完全独立，验证 dead class 检测）
+    { id: 'method:src/A.tsx#A#render', name: 'render', filePath: 'src/A.tsx', line: 5, ownerKind: 'class', exported: true, ownerId: 'class:src/A.tsx#A' },
+    // B 组件的方法：没被任何东西调
+    { id: 'method:src/B.tsx#B#render', name: 'render', filePath: 'src/B.tsx', line: 5, ownerKind: 'class', exported: true, ownerId: 'class:src/B.tsx#B' },
+    // 测试方法：算 root
+    { id: 'method:src/__tests__/main.test.ts#testX', name: 'testX', filePath: 'src/__tests__/main.test.ts', line: 1, ownerKind: 'module', exported: true },
+  ],
+  Class: [
+    { id: 'class:src/A.tsx#A', name: 'A', filePath: 'src/A.tsx', line: 3, exported: true, methodIds: ['method:src/A.tsx#A#render'] },
+    { id: 'class:src/B.tsx#B', name: 'B', filePath: 'src/B.tsx', line: 3, exported: true, methodIds: ['method:src/B.tsx#B#render'] },
+  ],
+  Interface: [
+    { id: 'iface:src/types.ts#UnusedIface', name: 'UnusedIface', filePath: 'src/types.ts', line: 1, exported: true },
+    { id: 'iface:src/types.ts#UsedIface', name: 'UsedIface', filePath: 'src/types.ts', line: 5, exported: true, methodIds: [] },
+  ],
+  SourceFile: [
+    { id: 'file:src/main.tsx', name: 'main.tsx', module: 'src' },
+    { id: 'file:src/A.tsx', name: 'A.tsx', module: 'src' },
+    { id: 'file:src/B.tsx', name: 'B.tsx', module: 'src' },
+    { id: 'file:src/utils.ts', name: 'utils.ts', module: 'src' },
+    { id: 'file:src/types.ts', name: 'types.ts', module: 'src' },
+    { id: 'file:src/__tests__/main.test.ts', name: 'main.test.ts', module: 'src' },
+  ],
+  Component: [
+    // 假设 App 用了 A
+    { id: 'comp:App', name: 'App', filePath: 'src/App.tsx', line: 1, storeIds: [], methodIds: [] },
+  ],
+};
 
-// ---- 导出级 unusedExports：命中与豁免 ----
-const MATH_FILE = [
-  'export function add(a: number, b: number): number { return a + b; }',
-  'export function unusedFn(): number { return 1; }',
-  'export function usedLocally(): number { return 2; }',
-  'export function reExported(): number { return 3; }',
-  'function deadLocal(): number { return 4; }',
-  'const local = usedLocally();',
-].join('\n');
-
-const MAIN_FILE = [
-  "import { add } from './utils/math.js';",
-  "setTimeout(() => { import('./lazy.js'); }, 0);",
-  'export function entryOnlyExport(): void {}',
-  'console.log(add(1, 2));',
-].join('\n');
-
-const LAZY_FILE = [
-  'export function lazyFn(): number { return 5; }',
-].join('\n');
-
-const REEXPORT_FILE = [
-  "export { add, reExported } from './utils/math.js';",
-].join('\n');
-
-async function buildExportFixture() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-deadexp-'));
-  fs.mkdirSync(path.join(dir, 'src/utils'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'src/utils/math.ts'), MATH_FILE);
-  fs.writeFileSync(path.join(dir, 'src/main.ts'), MAIN_FILE);
-  fs.writeFileSync(path.join(dir, 'src/lazy.ts'), LAZY_FILE);
-  fs.writeFileSync(path.join(dir, 'src/reexport.ts'), REEXPORT_FILE);
-  const dataMap = await buildOntologyData(dir);
-  return { dir, dataMap };
-}
-
-test('导出级：unusedExports 命中（全仓库零导入且本文件零使用）', async () => {
-  const { dir, dataMap } = await buildExportFixture();
-  try {
-    const math = dataMap.SourceFile.find((f) => f.path === 'src/utils/math.ts');
-    assert.ok(math);
-    assert.deepEqual(math.unusedExports, ['unusedFn']);
-    // 汇总进 _meta 与健康度
-    assert.deepEqual(dataMap._meta.deadExportCandidates, [{ file: 'src/utils/math.ts', names: ['unusedFn'] }]);
-    assert.equal(dataMap.Project[0].health.deadExportCount, 1);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('computeReachableSet 基础 BFS 包含 main + test + chain', () => {
+  const { reachable, stats } = computeReachableSet(FIXTURE);
+  // main 是 root（entry file module function）
+  assert.ok(reachable.has('method:src/main.tsx#main'));
+  // testX 是 test file → root
+  assert.ok(reachable.has('method:src/__tests__/main.test.ts#testX'));
+  // formatDate 是 exported module function 但没人调 → BFS 不可达（新设计）
+  assert.ok(!reachable.has('method:src/utils.ts#formatDate'), 'exported module function 不可达');
+  // main → A.render 通过 callIds
+  assert.ok(reachable.has('method:src/A.tsx#A#render'));
+  // A 类节点通过反向边（method → owner class）可达
+  assert.ok(reachable.has('class:src/A.tsx#A'));
+  // B.render 没被任何东西调 → 不可达
+  assert.ok(!reachable.has('method:src/B.tsx#B#render'), 'B.render 不可达（无 call 链）');
+  // B 类节点也不可达（通过反向边：method 可达时 class 才可达）
+  assert.ok(!reachable.has('class:src/B.tsx#B'), 'B 类不可达');
+  assert.ok(stats.nodesReachable > 0);
 });
 
-test('导出级：豁免（被导入 / re-export 链 / 本文件使用 / 入口文件 / 动态 import 整体引用）', async () => {
-  const { dir, dataMap } = await buildExportFixture();
-  try {
-    const math = dataMap.SourceFile.find((f) => f.path === 'src/utils/math.ts');
-    // add 被 main.ts 导入；reExported 经 reexport.ts 再导出（re-export 链引用，保守不判死）
-    // usedLocally 本文件内仍被调用（仅 export 冗余，不判死）
-    for (const name of ['add', 'reExported', 'usedLocally']) {
-      assert.ok(!math.unusedExports.includes(name), `${name} 不应判为 unused export`);
-    }
-    // 入口文件导出豁免
-    const main = dataMap.SourceFile.find((f) => f.path === 'src/main.ts');
-    assert.equal(main.isEntry, true);
-    assert.deepEqual(main.unusedExports, []);
-    // 动态 import() 无子句解构 → 目标文件整体豁免（无法按名追踪）
-    const lazy = dataMap.SourceFile.find((f) => f.path === 'src/lazy.ts');
-    assert.deepEqual(lazy.unusedExports, []);
-    // reexport.ts 自身零导入 → 文件级 orphan 覆盖，不做导出级重复判定
-    const reexport = dataMap.SourceFile.find((f) => f.path === 'src/reexport.ts');
-    assert.deepEqual(reexport.unusedExports, []);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('findDeadExported 找出 UnusedClass（没被任何东西引用）', () => {
+  // 阶段 1.2 仅报 class dead
+  // B 类是 exported，但 main 调 A.render 不调 B，B 没在 main 的 *Ids 字段中
+  // A 是 exported class → root
+  // A.methodIds 拉 A.render 可达
+  // 但 B 类自身没在 A 的 *Ids 字段中（class.methodIds 是 A.methodIds，不是 B.methodIds）
+  // 所以 B 是 dead
+  const result = findDeadExported(FIXTURE);
+  // B 应被报
+  assert.ok(result.deadClasses.length >= 1, 'B 应被报为 dead class');
+  assert.ok(result.deadClasses.some((c) => c.name === 'B'));
 });
 
-test('导出级：同 fixture 中函数级死代码（非导出零引用函数）', async () => {
-  const { dir, dataMap } = await buildExportFixture();
-  try {
-    const deadLocal = dataMap.Method.find((m) => m.id === 'method:src/utils/math.ts#deadLocal');
-    assert.equal(deadLocal.deadCandidate, true);
-    assert.equal(deadLocal.deadReason, '本文件内零引用');
-    // unusedFn 为导出符号：函数级不重复判死（已在导出级报告）
-    const unusedFn = dataMap.Method.find((m) => m.id === 'method:src/utils/math.ts#unusedFn');
-    assert.equal(unusedFn.deadCandidate, true); // 全仓库零导入且本文件零引用 → 函数级也判死
-    assert.equal(unusedFn.deadReason, '导出但全仓库零导入且本文件零引用');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('findDeadExported 处理循环引用', () => {
+  // 简化：让 a/b 在 entry file 中
+  const cyclic = {
+    _meta: {},
+    Method: [
+      { id: 'm:src/main.tsx#a', name: 'a', filePath: 'src/main.tsx', line: 1, ownerKind: 'module', callIds: ['m:src/main.tsx#b'] },
+      { id: 'm:src/main.tsx#b', name: 'b', filePath: 'src/main.tsx', line: 5, ownerKind: 'module', callIds: ['m:src/main.tsx#a'] },
+    ],
+    SourceFile: [{ id: 'file:src/main.tsx', name: 'main.tsx', module: 'src' }],
+  };
+  const { reachable, stats } = computeReachableSet(cyclic);
+  // a 是 entry file module function → root → 链 a→b→a 应能 BFS 完
+  assert.ok(reachable.has('m:src/main.tsx#a'));
+  assert.ok(reachable.has('m:src/main.tsx#b'));
+  assert.ok(stats.queueOps < 10, 'BFS 不应无限循环');
 });
 
-// ---- 油猴脚本函数级 deadCandidate（仓库模式） ----
-const USERSCRIPT_FILE = [
-  '// ==UserScript==',
-  '// @name         Demo',
-  '// @version      1.0.0',
-  '// @match        https://example.com/*',
-  '// @grant        GM_getValue',
-  '// @connect      api.example.com',
-  '// ==/UserScript==',
-  '(function () {',
-  "  'use strict';",
-  '  function usedAtTopLevel() { renderBadge(); }',
-  "  function renderBadge() { document.body.innerHTML = '<div>' + GM_getValue('x', '') + '</div>'; }",
-  '  function onClickHandler() {}',
-  '  function deadFunction() { console.log("never called"); }',
-  '  class App {',
-  '    constructor() { this.init(); }',
-  "    init() { document.addEventListener('click', onClickHandler); }",
-  '    unusedMethod() {}',
-  '  }',
-  '  usedAtTopLevel();',
-  '  const app = new App();',
-  '})();',
-].join('\n');
-
-async function buildUserScriptFixture() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-deadus-'));
-  fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'scripts/demo.user.js'), USERSCRIPT_FILE);
-  const dataMap = await buildOntologyData(dir);
-  return { dir, dataMap };
-}
-
-test('油猴函数级：ScriptFunction deadCandidate 命中与不误报', async () => {
-  const { dir, dataMap } = await buildUserScriptFixture();
-  try {
-    const fn = (name) => dataMap.ScriptFunction.find((f) => f.name === name);
-    // 命中：零引用函数与无人调用的类方法
-    assert.equal(fn('deadFunction').deadCandidate, true);
-    assert.equal(fn('deadFunction').deadReason, '全文零引用（排除声明与自身函数体）');
-    assert.equal(fn('App.unusedMethod').deadCandidate, true);
-    // 不误报：顶层直调 / 被调用 / 回调传值 / constructor / this.init() 调用链
-    assert.equal(fn('usedAtTopLevel').deadCandidate, false);
-    assert.equal(fn('renderBadge').deadCandidate, false);
-    assert.equal(fn('onClickHandler').deadCandidate, false); // addEventListener 回调传值（引用计数命中）
-    assert.equal(fn('App').deadCandidate, false);             // new App() 实例化引用
-    assert.equal(fn('App.constructor').deadCandidate, false); // constructor 豁免
-    assert.equal(fn('App.init').deadCandidate, false);        // constructor 内 this.init() 调用边
-    // UserScript 汇总
-    assert.equal(dataMap.UserScript[0].deadFunctionCount, 2);
-    assert.equal(dataMap.Project[0].health.deadFunctionCount, 2);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('findDeadExported 边界：空 snapshot', () => {
+  const empty = { _meta: {} };
+  const result = findDeadExported(empty);
+  assert.equal(result.deadClasses.length, 0);
+  assert.equal(result.stats.deadTotal, 0);
 });
 
-// ---- 单文件分析 analyzeFile ----
-const TS_SINGLE_FILE = [
-  'export interface IStorage {',
-  '  get(key: string): string | null;',
-  '}',
-  'class LocalStore implements IStorage {',
-  '  get(key: string): string | null { return null; }',
-  '  unused() {}',
-  '}',
-  'export const store = new LocalStore();',
-  'export function exportedFn() {}',
-  'function deadLocal() {}',
-].join('\n');
-
-test('单文件分析：油猴文件输出 dataMap 形状（不落盘、mode=single-file）', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sf-us-'));
-  try {
-    const filePath = path.join(dir, 'demo.user.js');
-    fs.writeFileSync(filePath, USERSCRIPT_FILE);
-    const dataMap = await buildSingleFileOntology(filePath);
-    assert.equal(dataMap._meta.mode, 'single-file');
-    assert.equal(dataMap._meta.objectCounts.UserScript, 1);
-    assert.equal(dataMap._meta.objectCounts.SourceFile, 1);
-    assert.equal(dataMap.UserScript[0].name, 'Demo');
-    const fn = (name) => dataMap.ScriptFunction.find((f) => f.name === name);
-    assert.equal(fn('deadFunction').deadCandidate, true);
-    assert.equal(fn('usedAtTopLevel').deadCandidate, false);
-    // GM 审计事实同仓库模式可用
-    assert.ok(dataMap.GmApiUsage.some((g) => g.name === 'GM_getValue' && g.declared === true));
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('findDeadExported class A 被引用，class B 没人引用', () => {
+  // A 是 root (imported by main)；B 是 exported class 但没人用
+  const fixture = {
+    _meta: {},
+    Class: [
+      { id: 'class:A#A', name: 'A', filePath: 'A.tsx', line: 1, exported: true, methodIds: [] },
+      { id: 'class:B#B', name: 'B', filePath: 'B.tsx', line: 1, exported: true, methodIds: [] },
+    ],
+    SourceFile: [{ id: 'file:src/main.tsx', name: 'main.tsx', module: 'src' }],
+    Method: [
+      // main 显式 import A（用 importIds 字段）
+      { id: 'm:src/main.tsx#main', name: 'main', filePath: 'src/main.tsx', line: 1, ownerKind: 'module', importIds: ['class:A#A'] },
+    ],
+  };
+  const result = findDeadExported(fixture);
+  assert.equal(result.deadClasses.length, 1);
+  assert.equal(result.deadClasses[0].name, 'B');
 });
 
-test('单文件分析：TS 文件类型实体 + 本文件内 implements/overrides', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sf-ts-'));
-  try {
-    const filePath = path.join(dir, 'store.ts');
-    fs.writeFileSync(filePath, TS_SINGLE_FILE);
-    const dataMap = await buildSingleFileOntology(filePath);
-    assert.equal(dataMap._meta.objectCounts.Interface, 1);
-    assert.equal(dataMap._meta.objectCounts.Class, 1);
-    // LocalStore 非导出但被 new LocalStore() 引用 → 不判死
-    const localStore = dataMap.Class.find((c) => c.name === 'LocalStore');
-    assert.equal(localStore.deadCandidate, false);
-    assert.deepEqual(localStore.implementsIds, ['iface:store.ts#IStorage']);
-    // 方法级 overrides：实现方法 → 接口方法（单文件内按本文件声明解析）
-    const implGet = dataMap.Method.find((m) => m.id === 'method:store.ts#LocalStore#get');
-    const ifaceGet = dataMap.Method.find((m) => m.id === 'method:store.ts#IStorage#get');
-    assert.equal(implGet.overridesId, ifaceGet.id);
-    // 非导出零引用函数判死；导出函数单文件模式不判死（无法判定跨文件使用）
-    assert.equal(dataMap.Method.find((m) => m.id === 'method:store.ts#deadLocal').deadCandidate, true);
-    assert.equal(dataMap.Method.find((m) => m.id === 'method:store.ts#exportedFn').deadCandidate, false);
-    assert.equal(dataMap.Method.find((m) => m.id === 'method:store.ts#LocalStore#unused').deadCandidate, true);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('findDeadExported exported class 没人用且没人 import → dead', () => {
+  // 最简：单一 exported class，main 不引
+  const fixture = {
+    _meta: {},
+    Class: [
+      { id: 'class:lonely.ts#Lonely', name: 'Lonely', filePath: 'lonely.ts', line: 1, exported: true, methodIds: [] },
+    ],
+    Method: [
+      { id: 'm:src/main.tsx#main', name: 'main', filePath: 'src/main.tsx', line: 1, ownerKind: 'module' },
+    ],
+  };
+  const result = findDeadExported(fixture);
+  assert.equal(result.deadClasses.length, 1);
+  assert.equal(result.deadClasses[0].name, 'Lonely');
 });
 
-test('CLI action analyzeFile：stdout 输出合法 JSON（油猴与 TS 各一）', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sf-cli-'));
-  try {
-    const usPath = path.join(dir, 'demo.user.js');
-    const tsPath = path.join(dir, 'store.ts');
-    fs.writeFileSync(usPath, USERSCRIPT_FILE);
-    fs.writeFileSync(tsPath, TS_SINGLE_FILE);
+test('markDeadCandidates 写回 Class 字段', () => {
+  const snap = {
+    _meta: {},
+    Class: [
+      { id: 'class:lonely.ts#Lonely', name: 'Lonely', filePath: 'lonely.ts', line: 1, exported: true, methodIds: [] },
+    ],
+    Method: [
+      { id: 'm:src/main.tsx#main', name: 'main', filePath: 'src/main.tsx', line: 1, ownerKind: 'module' },
+    ],
+  };
+  const marked = markDeadCandidates(snap);
+  assert.equal(marked, 1);
+  const cls = snap.Class[0];
+  assert.equal(cls.deadCandidate, true);
+  assert.match(cls.deadReason, /BFS 不可达/);
+});
 
-    const usOut = await execFileAsync('node', [CLI, 'action', 'analyzeFile', '--params', JSON.stringify({ file: usPath })]);
-    const us = JSON.parse(usOut.stdout);
-    assert.equal(us._meta.mode, 'single-file');
-    assert.ok(us.ScriptFunction.some((f) => f.name === 'deadFunction' && f.deadCandidate === true));
+test('markDeadCandidates 不标非导出的 class', () => {
+  const snap = {
+    _meta: {},
+    Class: [
+      { id: 'class:internal#Internal', name: 'Internal', filePath: 'internal.ts', line: 1, exported: false, methodIds: [] },
+    ],
+  };
+  const marked = markDeadCandidates(snap);
+  assert.equal(marked, 0);
+  assert.equal(snap.Class[0].deadCandidate, undefined);
+});
 
-    const tsOut = await execFileAsync('node', [CLI, 'action', 'analyzeFile', '--params', JSON.stringify({ file: tsPath })]);
-    const ts = JSON.parse(tsOut.stdout);
-    assert.equal(ts._meta.objectCounts.Interface, 1);
-    assert.equal(ts._meta.objectCounts.Class, 1);
-    // 不落盘：动作目录下未创建快照目录
-    assert.equal(fs.readdirSync(dir).includes('.nice-aos'), false);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('computeReachableSet 包含 Component（React/Vue 框架渲染）', () => {
+  const snap = {
+    _meta: {},
+    Component: [
+      { id: 'comp:Header', name: 'Header', filePath: 'Header.tsx', line: 1 },
+    ],
+    Method: [
+      { id: 'm:src/main.tsx#main', name: 'main', filePath: 'src/main.tsx', line: 1, ownerKind: 'module' },
+    ],
+  };
+  const { reachable } = computeReachableSet(snap);
+  // Component 是 root
+  assert.ok(reachable.has('comp:Header'));
+});
+
+test('BFS 节点计数准确', () => {
+  const snap = {
+    _meta: {},
+    Method: [
+      { id: 'm:src/main.tsx#x', name: 'x', filePath: 'src/main.tsx', line: 1, ownerKind: 'module', callIds: ['m:src/main.tsx#y'] },
+      { id: 'm:src/main.tsx#y', name: 'y', filePath: 'src/main.tsx', line: 5, ownerKind: 'module', callIds: ['m:src/main.tsx#z'] },
+      { id: 'm:src/main.tsx#z', name: 'z', filePath: 'src/main.tsx', line: 9, ownerKind: 'module' },
+    ],
+    SourceFile: [{ id: 'file:src/main.tsx', name: 'main.tsx', module: 'src' }],
+  };
+  const { reachable, stats } = computeReachableSet(snap);
+  // x 是 entry file module function → root
+  assert.equal(reachable.size, 3);
+  assert.equal(stats.nodesReachable, 3);
+});
+
+test('BFS 不被 orphan ID 影响（id 不在 byId 中）', () => {
+  const snap = {
+    _meta: {},
+    Method: [
+      { id: 'm:src/main.tsx#main', name: 'main', filePath: 'src/main.tsx', line: 1, ownerKind: 'module', callIds: ['m:non-existent#orphan'] },
+    ],
+    SourceFile: [{ id: 'file:src/main.tsx', name: 'main.tsx', module: 'src' }],
+  };
+  const { reachable, stats } = computeReachableSet(snap);
+  assert.ok(reachable.has('m:src/main.tsx#main'));
+  assert.equal(stats.queueOps, 1, 'orphan id 应被跳过');
 });

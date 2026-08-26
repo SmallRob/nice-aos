@@ -3,15 +3,32 @@ import path from 'node:path';
 import http from 'node:http';
 import { Command } from 'commander';
 import { fail, parseWhere, matchesWhere } from '../shared.js';
+import { checkAuth } from './serveAuth.js';
 import { getSnapshotDirOverride, setSnapshotDir } from '../../paths.js';
 import { loadType, buildAskContextFromSql } from '../../storage/index.js';
 import { buildAskContext } from './askContext.js';
 import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META } from '../../ontology/blueprint.js';
+import {
+  buildHandshakeResponse,
+  parseFrame,
+  buildTextFrame,
+  buildPongFrame,
+  buildCloseFrame,
+  attachWebSocketUpgrade,
+} from './serveWebSocket.js';
 
 // serve —— 在本地启动数据源 HTTP 服务。
 // 作用：暴露本体快照 snapshot.json 与 blueprint.html，并带 CORS，
 //       方便 AI agent（油猴脚本 / 网页 / curl）跨源拉取快照作为知识数据源。
 // 默认 root = 当前项目目录，自动到 <root>/.nice-aos/data 找 snapshot.json，<root>/blueprint.html 找蓝图。
+//
+// 鉴权（v0.34.0，参考 0002-code-review-report.md P0 安全债 + code-graph-rag 范式 6 "MCP server bearer"）：
+//   - --token <secret> 启用 Bearer 鉴权；不传则鉴权关闭（向后兼容现有调用）
+//   - /api/* 端点受保护：缺少/错误 Authorization header 返回 401 + JSON 提示
+//   - 静态端点（/snapshot.json / /blueprint.html / /）豁免：只读 + 信息页
+//   - 支持 Authorization: Bearer <token> 标准头 + ?token=<secret> query 参数（curl/油猴脚本方便）
+//   - token 比较走 crypto.timingSafeEqual 防 timing attack
+//   - 环境变量 NICE_AOS_SERVE_TOKEN 覆盖 --token（CI 场景）
 
 function corsHeaders() {
   return {
@@ -20,6 +37,9 @@ function corsHeaders() {
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
 }
+
+// 鉴权实现已抽到 ./serveAuth.js（v0.33.0+ 拆分）。
+// checkAuth / timingSafeEqualStr 单独可单测；serve.js 不再含 security-sensitive 代码。
 
 function resolveDirs(opts) {
   const root = path.resolve(opts.root || process.cwd());
@@ -89,6 +109,8 @@ export const serveCommand = new Command('serve')
   .option('--dir <path>', '数据源目录（含 snapshot.json；默认 <root>/.nice-aos/data；等价于全局 --snapshot-dir，亦可用 NICE_AOS_SNAPSHOT_DIR 覆盖）')
   .option('--host <host>', '监听地址（默认 127.0.0.1，仅本机可访问）', '127.0.0.1')
   .option('--port <n>', '监听端口（默认 8420；传 0 自动分配可用端口）', '8420')
+  .option('--token <secret>', '启用 Bearer 鉴权（保护 /api/* 端点 + WebSocket /ws/snapshot；静态端点 /snapshot.json / /blueprint.html / / 豁免）。Authorization: Bearer <token> 头或 ?token=<secret> query 都可；NICE_AOS_SERVE_TOKEN 环境变量覆盖 --token')
+  .option('--ws-interval <ms>', 'WebSocket 推送：mtime 轮询间隔（毫秒；默认 2000；设 0 关闭）', '2000')
   .action((opts) => {
     const { root, dataDir } = resolveDirs(opts);
     const snapPath = path.join(dataDir, 'snapshot.json');
@@ -96,6 +118,8 @@ export const serveCommand = new Command('serve')
     const port = Number(opts.port);
     const host = opts.host;
     if (!Number.isInteger(port) || port < 0 || port > 65535) fail(`无效端口: ${opts.port}`);
+    // 鉴权 token：NICE_AOS_SERVE_TOKEN 覆盖 --token（CI 场景优先）
+    const authToken = process.env.NICE_AOS_SERVE_TOKEN?.trim() || opts.token?.trim() || null;
 
     // SQL 端点数据目录对齐：storage 层 getSqlitePath 走 paths.js 的覆盖链，
     // 不设的话会用 cwd/.nice-aos/data 而非 serve 解析出的 --dir/--root 目录
@@ -104,6 +128,16 @@ export const serveCommand = new Command('serve')
     const server = http.createServer((req, res) => {
       const url = (req.url || '/').split('?')[0];
       if (req.method === 'OPTIONS') { respond(res, 204, ''); return; }
+
+      // 鉴权：仅 /api/* 端点受保护；静态端点（/snapshot.json / /blueprint.html / /）豁免
+      if (authToken && url.startsWith('/api/')) {
+        const auth = checkAuth(req, authToken);
+        if (!auth.ok) {
+          res.setHeader('WWW-Authenticate', 'Bearer realm="aos"');
+          respond(res, 401, JSON.stringify({ ok: false, error: auth.reason }), { 'Content-Type': 'application/json; charset=utf-8' });
+          return;
+        }
+      }
 
       // 就绪状态实时探测（服务运行期间 refreshRepo / export 生成的文件可被立即读取）
       const { state: snapState, snap } = probeSnapshot(snapPath);
@@ -130,8 +164,10 @@ export const serveCommand = new Command('serve')
           root, snapshotDir: dataDir,
           snapshot: { ready: snapState === 'ok', path: snapPath, state: snapState },
           blueprint: { ready: bpReady, path: bpPath },
-          endpoints: ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/api/objects/:type', '/api/ask/context', '/'],
+          endpoints: ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/api/objects/:type', '/api/ask/context', '/ws/snapshot', '/'],
           cors: '*',
+          auth: { enabled: !!authToken, protected: ['/api/*', '/ws/snapshot'], public: ['/snapshot.json', '/blueprint.html', '/'] },
+          ws: { enabled: wsIntervalMs > 0, intervalMs: wsIntervalMs, clients: wsClients.size },
         }));
         return;
       }
@@ -241,6 +277,19 @@ export const serveCommand = new Command('serve')
       else fail(`服务启动失败: ${err.message}`);
     });
 
+    // ---- WebSocket：/ws/snapshot 推送（mtime 轮询）----
+    // 整段 upgrade handler + 轮询定时器抽到 serveWebSocket.js 的 attachWebSocketUpgrade
+    // （v0.33.0 精简：serve.js 不再混合 WS 实现细节，只传 authToken / 路径给模块）
+    const wsIntervalMs = Math.max(0, parseInt(opts.wsInterval, 10) || 0);
+    const wsState = attachWebSocketUpgrade(server, {
+      snapPath,
+      bpPath,
+      intervalMs: wsIntervalMs,
+      authToken,
+      checkAuth,
+    });
+    const wsClients = wsState.clients;
+
     server.listen(port, host, () => {
       const actualPort = server.address()?.port ?? port; // --port 0 时为实际分配端口
       const line = (label, ok, note) => `  ${ok ? '✓' : '✗'}  ${label.padEnd(18)} ${note || ''}`;
@@ -250,6 +299,16 @@ export const serveCommand = new Command('serve')
       console.log('  --- 数据源目录 ---');
       console.log(`  root        ${root}`);
       console.log(`  snapshot    ${dataDir}`);
+      if (authToken) {
+        console.log(`  auth        Bearer 鉴权启用（/api/* + /ws/snapshot 需 token；长度 ${authToken.length}）`);
+      } else {
+        console.log(`  auth        关闭（不传 --token 时所有端点公开；生产请加 --token <secret> 或 NICE_AOS_SERVE_TOKEN）`);
+      }
+      if (wsIntervalMs > 0) {
+        console.log(`  ws          /ws/snapshot 推送启用（mtime 轮询 ${wsIntervalMs}ms）`);
+      } else {
+        console.log(`  ws          关闭（--ws-interval 0）`);
+      }
       console.log(line('snapshot.json', snapState === 'ok', snapPath));
       console.log(line('blueprint.html', bpReady, bpPath));
       if (snapState === 'none') console.log('  （未找到快照，可先执行: nice-aos action refreshRepo）');

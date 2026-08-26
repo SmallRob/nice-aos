@@ -16,6 +16,10 @@ import { linkCommand } from './commands/link.js';
 import { actionCommand } from './commands/action.js';
 import { exportCommand } from './commands/export.js';
 import { serveCommand } from './commands/serve.js';
+import { mcpCommand } from './commands/mcp.js';
+import { duplicatesCommand } from './commands/duplicates.js';
+import { deadcodeCommand } from './commands/deadcode.js';
+import { ioCommand } from './commands/io.js';
 import { updateCommand } from './commands/update.js';
 import { dbCommand } from './commands/db.js';
 import { deployCommand } from './commands/deploy.js';
@@ -37,6 +41,18 @@ program
   .name('nice-aos')
   .description('nice-aos —— 通用前端代码本体分析 CLI：扫描 React/TypeScript、Vue 3 SFC 与油猴脚本（Tampermonkey UserScript）生成结构化本体快照（模块/文件/组件/Hook/Store/Service/路由/依赖 + import/render/导航关系图谱；油猴脚本含 GM API/DOM 注入/网络端点/函数调用图），供 AI agent 与开发者毫秒级查询')
   .version(VERSION)
+  // 三大核心命令提示（顶层 --help 顶部显示，让 ask / output / serve 显眼）
+  .addHelpText('beforeAll', () => {
+    return [
+      '★ 三大核心命令（输入 / 输出 / 服务）',
+      '  ask       基于本体快照向 AI CLI 或模型服务提问（上下文 SQLite 预过滤，CLI 超时自动降级到模型）',
+      '  output    导出项目报告与蓝图（Markdown / JSON / HTML 蓝图 / viewmodel；output = export 别名）',
+      '  serve     启动本地数据源 HTTP 服务（CORS *），暴露快照与 7 个 /api/* 端点给 agent 跨源拉取',
+      '',
+      '详细定位见 README "三大核心命令" 区块；升级路线见 docs/plan/aos-three-core-roadmap.md。',
+      '',
+    ].join('\n');
+  })
   .option('--snapshot-dir <path>', '快照目录（默认 ./.nice-aos/data 或环境变量 NICE_AOS_SNAPSHOT_DIR）')
   .option('--db-snapshot-dir <path>', '数据库快照目录（默认与代码快照同目录，文件名 db-snapshot.json）')
   .option('--deploy-snapshot-dir <path>', '部署快照目录（默认与代码快照同目录，文件名 deploy-snapshot.json）')
@@ -67,7 +83,12 @@ program.addCommand(queryCommand);
 program.addCommand(linkCommand);
 program.addCommand(actionCommand);
 program.addCommand(exportCommand);
+exportCommand.alias('output'); // 三大核心命令：output 是 export 的顶层别名（用户视角"产出报告"）
 program.addCommand(serveCommand);
+program.addCommand(mcpCommand);
+program.addCommand(duplicatesCommand);
+program.addCommand(deadcodeCommand);
+program.addCommand(ioCommand);
 program.addCommand(updateCommand);
 program.addCommand(dbCommand);
 program.addCommand(deployCommand);

@@ -16,6 +16,7 @@ import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
   summarizeModule, buildProjectProfile,
 } from './semantics.js';
+import { computeFingerprint } from './fingerprint.js';
 
 // 配置/视图/SQL/部署文件扩展名：这些文件由 configAnalyzer 轻量级处理（行数 + 顶层 key/标签/对象名）
 // 不参与主 analyzer 的 AST 解析、import 解析、类型实体提取
@@ -285,6 +286,8 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
           line: m.line,
           isStatic: m.isStatic, isAsync: m.isAsync, isOverride: m.isOverride, exported: false,
           signature: m.signature,
+          // AST 位置（v0.32.0 用于挂 fingerprint + 后续 IDE 跳转）
+          pos: m.pos ?? null, end: m.end ?? null,
           overridesId: null, overriddenByIds: [],
           // 方法级健康度（从 tsAnalyzer 传入；非 ts 来源兜底为 placeholder）
           health: m.health ?? { available: false, reason: 'non-ts', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
@@ -319,6 +322,8 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         isStatic: false, isAsync: fn.isAsync, isOverride: false,
         exported: fn.exported,
         signature: fn.signature,
+        // AST 位置（v0.32.0 用于挂 fingerprint + 后续 IDE 跳转）
+        pos: fn.pos ?? null, end: fn.end ?? null,
         overridesId: null, overriddenByIds: [],
         // 模块级函数健康度（从 tsAnalyzer 传入；非 ts 来源兜底为 placeholder）
         health: fn.health ?? { available: false, reason: 'non-ts', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
@@ -938,6 +943,45 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const {
     interfaces, classes, methods, localTypesByFile, typeSpanById, refsOutsideSpan,
   } = collectTypeEntities(scan.files, factsMap, fileObjectByPath);
+
+  // 5b-0b. AST fingerprint 后处理（v0.32.0+）：给每个有 pos/end 的 method 挂整树 hash
+  // 借鉴 code-graph-rag 的去标识符/去字面量/去注释 → SHA-256 算法（src/ontology/fingerprint.js）
+  // 用于阶段 1.3 重复代码检测（`nice-aos duplicates` 子命令）。
+  //
+  // v0.33.0+ 性能门：默认开启（保持 v0.32.0 行为，向后兼容 duplicates 输出）；
+  // 大仓库可用 `NICE_AOS_FINGERPRINT=0` 显式关闭以节省 ~5% 扫描时间。
+  {
+    const fpEnabled = process.env.NICE_AOS_FINGERPRINT !== '0' && process.env.NICE_AOS_FINGERPRINT !== 'false';
+    if (fpEnabled) {
+      const fileContentCache = new Map(); // relPath -> source text（避免重复 IO）
+      const getFileContent = (relPath) => {
+        if (fileContentCache.has(relPath)) return fileContentCache.get(relPath);
+        try {
+          const text = fs.readFileSync(path.join(projectRoot, relPath), 'utf-8');
+          fileContentCache.set(relPath, text);
+          return text;
+        } catch {
+          fileContentCache.set(relPath, null);
+          return null;
+        }
+      };
+      for (const m of methods) {
+        if (m.pos == null || m.end == null || m.end <= m.pos) continue;
+        const content = getFileContent(m.filePath);
+        if (!content) continue;
+        // 只对有 body 的方法计算 fingerprint（class method 有 body,interface signature 无 body 但仍有 pos）
+        // 简化：trust pos/end，对 module functions 必有效，对 class methods 99% 有效
+        const body = content.slice(m.pos, m.end);
+        // 跳过 interface signature 那种没有 body 的（end-pos < 50 表示基本是空）
+        if (m.end - m.pos < 30) continue;
+        const fp = computeFingerprint(body);
+        if (fp.fingerprint) {
+          m.astFingerprint = fp.fingerprint;
+          m.astFingerprintNodes = fp.nodes;
+        }
+      }
+    }
+  }
 
   // 5b-0a. Go 同包跨文件方法合并：goOrphanMethods（接收者类型声明在同目录其他文件——Go 允许同包跨文件定义方法）
   {

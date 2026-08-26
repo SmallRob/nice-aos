@@ -2,6 +2,89 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+## [0.33.0] - 2026-08-26
+
+三大核心命令升级（输入 / 输出 / 服务）+ code-graph-rag 范式落地（MCP / 重复代码 / 死代码 BFS / IO 注册表 / 模板），详见 `docs/plan/aos-three-core-roadmap.md` 与 `docs/adr/0004-code-graph-rag-reusable-patterns.md`。本节为 v0.32.0 → v0.33.0 的统一变更记录（原 [0.32.0] release commit `68070d2` 中未含 CHANGELOG 条目，本次合并为单节）。
+
+### 新增
+
+借鉴 [code-graph-rag](https://github.com/vitali87/code-graph-rag) 的 2 大工程模式（MCP server + AST fingerprint 重复代码检测），把 nice-aos 从"扫描器"扩展为"AI agent 友好的开发工具"。
+
+#### ask 流式 + 多轮会话
+
+- **`ask --stream`** 流式输出（仅 `--agent api`）：OpenAI 兼容 SSE token 透传；CLI agent（codebuddy / opencode）不支持流式自动降级到同步路径
+- **`ask --session <id>` 多轮会话**：JSONL 存储于 `$NICE_AOS_CONFIG_DIR/sessions/<id>.jsonl`；`--session-max-turns N` 限制 prompt 携带的历史轮数
+- 新增 `src/cli/commands/openaiCompat.js` 的 `invokeApiChatStream`（response.body.getReader + SSE `data:` 解析 + `[DONE]` 终止）
+- 新增 `src/cli/commands/askSession.js`（loadSession / appendTurn / formatHistory；损坏行容错 + 路径穿越防护）
+
+#### output 别名 + 增量 + 模板
+
+- **`output`** 作为 `export` 的 commander 顶层别名；`src/cli/index.js` `exportCommand.alias('output')`
+- **`export --since <ref>`** 增量导出（`src/cli/commands/export.js`）：git diff 解析 → 末尾追加"增量变更摘要"节（变更文件清单 + 按类型分组的涉及对象）
+- **`export --since --staged`** 仅列已暂存变更（pre-commit 体检）
+- **`export --template <path>`** 自定义 Markdown 模板（`src/ontology/template.js`）：`{{Project.name}}` / `{{stats.Component}}` / `{{ObjectCounts.Module}}` / `{{Health.complexity.avg}}` 占位符
+
+#### serve 鉴权 + WebSocket 推送
+
+- **`serve --token <secret>`** Bearer 鉴权（`src/cli/commands/serve.js`）：保护 `/api/*` + `/ws/snapshot`；`Authorization: Bearer` 头或 `?token=` query 都可；`timingSafeEqual` SHA-256 防 timing attack
+- **`serve --ws-interval <ms>`** WebSocket 推送（`src/cli/commands/serveWebSocket.js`）：`/ws/snapshot` 单定时器 mtime 轮询；事件含 `hello` / `snapshot:changed` / `blueprint:changed` / `pong`
+- **`NICE_AOS_SERVE_TOKEN` 环境变量覆盖 `--token`**（CI 场景）
+- Auth 实现抽到 `src/cli/commands/serveAuth.js`（checkAuth + timingSafeEqualStr 单独可单测）
+
+#### MCP server + tool 工具集（精简后 7 个）
+
+- **`nice-aos mcp`** 子命令（`src/cli/commands/mcp.js`）：stdio 传输，启动 fail-fast（快照缺失立即报错）；优雅关闭 SIGTERM / SIGINT；启动日志走 stderr 不污染 JSON-RPC stdout
+- **`nice-aos mcp --root /abs/path`** 接入 Claude Code：`claude mcp add nice-aos -- npx nice-aos mcp --root /abs/path`
+- 工具注册表（`src/ontology/toolRegistry.js`）：`get_stats` / `get_schema` / `list_types` / `query_objects` / `get_node` / `traverse_links` / `get_health`（v0.33.0 精简 `detect_dead_code` / `query_graph`——前者与 deadcode CLI 子命令重叠，后者深度 ≤ 3 + 节点 ≤ 1000 价值密度低，由 traverse_links + deadcode 子命令替代）
+- byId 索引（O(1) 查询）；handler try/catch 包装，错误用 `{ok: false, error}` 返回值表达
+- 低层 `Server` + `setRequestHandler`（避开 McpServer.tool() 强制 zod 依赖；inputSchema 用 JSON Schema 形态）
+
+#### 重复代码 + 死代码 + IO 注册表
+
+- **`duplicates` 子命令**（`src/cli/commands/duplicates.js`）：text-based 规范化（去注释/字面量/标识符，保留关键字 + this/super/literal + JSX 组件 □C）→ SHA-256 → group-by（O(n)）
+- **`deadcode` 子命令**（`src/cli/commands/deadcode.js`）：entry-point BFS 算法（roots = entry files / Component / test methods / 显式 --entry-point）+ 反向边（method → owner / file → 内含组件）；仅报 exported class（method / interface 留 v0.34.0）
+- **`deadcode --write-back`** 把 dead 信息写回 snapshot 的 `deadCandidate` 字段（深拷贝保护 readonly JSON 结果）
+- **`io` 子命令**（`src/cli/commands/io.js`）：数据驱动 IO_SINKS 注册表 + 静态文本匹配（regex）+ shadow check（local var 不污染全局）
+- IO 注册表（`src/ontology/ioRegistry.js`）：30+ 油猴 GM_* / 10+ 浏览器 JS（fetch / localStorage / cookie / eval / innerHTML …）；5 种 ResourceKind（STORAGE/NETWORK/DOM/STDOUT/SCRIPT）+ 5 种 DANGER_LEVELS
+- 边界保护：`myFetch(...)` / `consoleFetch(...)` 不误匹配 `fetch`
+
+#### builder 集成
+
+- **method entity 新增 `pos` / `end` 字段**（v0.33.0）：用于死代码 BFS 定位 + IO 扫描定位；向后兼容
+- **method entity 挂 `astFingerprint` / `astFingerprintNodes`**（默认开启，性能门 `NICE_AOS_FINGERPRINT=0` 显式关闭以节省扫描时间）
+
+### 依赖
+
+- `@modelcontextprotocol/sdk@^1.30.0` 加入 `dependencies` 与 `bundledDependencies`（同时支持 `bundledDependencies`，已移除拼错的 `bundleDependencies` 字段）
+
+### 测试
+
+- **69 个新测试**（25 fingerprint + 4 duplicates + 24 toolRegistry + 4 mcpCli + 11 deadCode + 9 deadcodeCli + 16 ioRegistry + 7 ioCli - 5 个 query_graph 相关 + 6/6 session）
+- **684 总测试**（既有 615 + 新 69，全部通过；当前 v0.33.0 精简后净删 5 个 query_graph 测试和 1 个过时 mcp 断言）
+
+### 升级指引
+
+```bash
+npm install -g nice-aos@0.33.0
+# 或:
+npx nice-aos@0.33.0 action refreshRepo --root /abs/path/to/your/project
+# 三核心增强：
+npx nice-aos@0.33.0 ask "组件依赖" --stream --session r1
+npx nice-aos@0.33.0 output --format markdown --since HEAD~1 --output diff.md
+npx nice-aos@0.33.0 serve --token s3cret --ws-interval 5000
+# 检测：
+npx nice-aos@0.33.0 duplicates --dir /abs/path/to/data --min-size 20
+npx nice-aos@0.33.0 deadcode --root /abs/path
+npx nice-aos@0.33.0 io --root /abs/path --min-danger medium
+# Claude Code 集成：
+claude mcp add nice-aos -- npx nice-aos@0.33.0 mcp --root /abs/path
+```
+
+> 原 [0.32.0a] 节（合并入此）含：MCP tool 9 个（v0.33.0 减到 7 个）；builder 默认开启 fingerprint 但支持 `NICE_AOS_FINGERPRINT=0` 关闭；duplicate/deadcode/io 子命令原始描述。
+
+
 ## [0.31.0] - 2026-08-26
 
 借鉴 asdm-aos 0.0.12 的 4 大工程模式：BlueprintRuntime + createEngine 元模型 / projectDetector 项目根自动检测 / ActionPanel 蓝图交互控件 / IncrementalParser 缓存式增量解析。详见 `docs/adr/0002-blueprint-engine-borrowed-from-aos.md`。

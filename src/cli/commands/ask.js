@@ -29,8 +29,9 @@ import { buildOntologyData } from '../../ontology/builder.js';
 import { fail, succeed } from '../shared.js';
 import { resolveAgent, invokeAgent, listAvailableAgents } from './agentRunner.js';
 import { buildAskContext } from './askContext.js';
-import { invokeApiChat } from './openaiCompat.js';
+import { invokeApiChat, invokeApiChatStream } from './openaiCompat.js';
 import { PROVIDERS, loadAskConfig, saveAskConfig, clearAskConfig, describeAskConfig } from './askConfig.js';
+import { loadSession, appendTurn, formatHistory, isValidSessionId } from './askSession.js';
 
 // 后台启动 serve（--port 0 自动分配），从 stdout 解析实际端口
 // 失败/超时返回 null（不阻塞 ask 主流程）
@@ -62,7 +63,10 @@ export const askCommand = new Command('ask')
   .option('--serve', '同时后台启动 serve，把 HTTP URL 拼进 prompt 供 AI CLI 深查完整快照')
   .option('--no-auto-refresh', '跳过空数据自动快照（无快照/空项目时不自动 refreshRepo，直接按现状处理）')
   .option('--timeout <ms>', 'agent / 模型服务调用超时（默认 120000）', '120000')
-  .option('--json', 'JSON 结构化输出 {ok, agent, contextSource, durationMs, answer}')
+  .option('--stream', '流式输出（仅 --agent api 有效：token 逐字打到 stdout；CLI agent 不支持流式，自动降级到非流式）')
+  .option('--json', 'JSON 结构化输出 {ok, agent, contextSource, durationMs, answer, streamed}')
+  .option('--session <id>', '多轮会话：把历史 turn 折进 prompt，回答后 append 到 ~/.nice-aos/sessions/<id>.jsonl；同 id 续聊可保持上下文')
+  .option('--session-max-turns <n>', '多轮会话：prompt 中只带最近 N 轮（默认全带；防止 token 击穿）', (v) => parseInt(v, 10))
   .action(async (question, opts) => {
     if (question === undefined) {
       fail('缺少问题文本。用法: nice-aos ask "<问题>"（配置模型服务: nice-aos ask config set --provider deepseek --api-key <key>）');
@@ -141,11 +145,32 @@ export const askCommand = new Command('ask')
     }
 
     try {
+      // 2.5) 多轮会话：读历史 → 折进 prompt；回答后 append
+      let sessionTurns = [];
+      let sessionId = null;
+      if (opts.session) {
+        if (!isValidSessionId(opts.session)) {
+          fail(`非法的 session id（仅允许字母数字 _-.，长度 1-64）: ${opts.session}`);
+        }
+        sessionId = opts.session;
+        const loaded = loadSession(sessionId);
+        sessionTurns = loaded.turns;
+        if (loaded.corrupted > 0 && !opts.json) {
+          console.error(`⚠️  session ${sessionId} 含 ${loaded.corrupted} 行损坏 JSON，已跳过`);
+        }
+        if (sessionTurns.length > 0 && !opts.json) {
+          console.error(`ℹ️  session ${sessionId} 续聊：已 ${sessionTurns.length} 轮历史`);
+        }
+      }
+
       // 3) 拼 prompt（"## 问题"节统一在此拼接，构建器不负责）
       const serveNote = serve
         ? `\n\n完整快照与对象级查询可通过 HTTP 访问:\n- http://127.0.0.1:${serve.port}/snapshot.json\n- http://127.0.0.1:${serve.port}/api/objects/<type>?where=k=v\n- http://127.0.0.1:${serve.port}/api/ask/context`
         : '';
-      const fullPrompt = `${context}${serveNote}\n\n## 问题\n${question}`;
+      const questionPart = sessionId
+        ? formatHistory({ sessionId, turns: sessionTurns, question, maxTurns: opts.sessionMaxTurns })
+        : `## 问题\n${question}`;
+      const fullPrompt = `${context}${serveNote}\n\n${questionPart}`;
 
       // 4) 解析降级链：CLI agent（按序）+ 已配置模型服务兜底；--agent api 直连
       const apiConfig = loadAskConfig();
@@ -170,15 +195,40 @@ export const askCommand = new Command('ask')
       const timeoutMs = parseInt(opts.timeout, 10);
       let answer;
       let answeredBy;
+      let streamed = false;
       let failedAgents = [];
       let lastErr = null;
       for (let i = 0; i < chain.length; i++) {
         const agent = chain[i];
         const isLast = i === chain.length - 1;
         try {
-          answer = agent.kind === 'api'
-            ? await invokeApiChat({ ...apiConfig, prompt: fullPrompt, timeout: timeoutMs })
-            : invokeAgent(agent, fullPrompt, { timeout: timeoutMs });
+          if (agent.kind === 'api') {
+            if (opts.stream) {
+              // 流式：边收边打 token；最终 answer 仍是完整文本
+              streamed = true;
+              if (!opts.json) {
+                process.stdout.write('\n'); // 流式开始前换行，与降级提示分行
+              }
+              answer = await invokeApiChatStream({
+                ...apiConfig,
+                prompt: fullPrompt,
+                timeout: timeoutMs,
+                onToken: opts.json ? () => {} : (token) => process.stdout.write(token),
+              });
+              if (!opts.json) {
+                process.stdout.write('\n'); // 流式结束换行
+              }
+            } else {
+              answer = await invokeApiChat({ ...apiConfig, prompt: fullPrompt, timeout: timeoutMs });
+            }
+          } else {
+            // CLI agent（codebuddy / opencode）：目前是 execFileSync 同步阻塞，不支持 token-by-token
+            // 若用户同时指定 --stream + CLI agent，给一次温和提示后走同步路径
+            if (opts.stream && !opts.json) {
+              console.error(`ℹ️  ${agent.name} 走 CLI agent 路径暂不支持流式，同步等待完整回答...`);
+            }
+            answer = invokeAgent(agent, fullPrompt, { timeout: timeoutMs });
+          }
           answeredBy = agent.name;
           break;
         } catch (err) {
@@ -194,7 +244,26 @@ export const askCommand = new Command('ask')
         fail(`所有 agent 调用失败。最后错误: ${lastErr?.message ?? '未知'}`);
       }
 
+      // 5.5) 多轮会话：把这一轮 append 到 session jsonl
+      let sessionTurnCount = null;
+      if (sessionId) {
+        try {
+          sessionTurnCount = appendTurn(sessionId, {
+            question,
+            answer,
+            agent: answeredBy,
+            ...(answeredBy === 'api' && apiConfig?.model ? { model: apiConfig.model } : {}),
+            durationMs: Date.now() - started,
+          });
+        } catch (err) {
+          // append 失败不应阻塞输出（用户已经拿到答案）
+          if (!opts.json) console.error(`⚠️  session 写入失败: ${err.message}`);
+        }
+      }
+
       // 6) 输出
+      // 流式 + 非 JSON 模式：token 已在 invokeApiChatStream 的 onToken 中实时打到 stdout，
+      // 此处不再重复 console.log（避免重复输出）
       if (opts.json) {
         console.log(JSON.stringify({
           ok: true,
@@ -203,14 +272,27 @@ export const askCommand = new Command('ask')
           ...(failedAgents.length > 0 && { fallbackFrom: failedAgents }),
           contextSource,
           durationMs: Date.now() - started,
+          streamed,
+          ...(sessionId ? { session: { id: sessionId, turnCount: sessionTurnCount } } : {}),
           answer,
         }, null, 2));
+      } else if (streamed) {
+        // 流式已写到 stdout，stderr 补充降级/状态信息
+        if (failedAgents.length > 0) {
+          const target = answeredBy === 'api' ? `模型服务（${apiConfig.model}）` : answeredBy;
+          console.error(`ℹ️  ${failedAgents.join(' → ')} 调用失败，已由 ${target} 流式回答`);
+        }
+        if (sessionId) {
+          console.error(`ℹ️  session ${sessionId} 已 append（第 ${sessionTurnCount} 轮）`);
+        }
       } else if (failedAgents.length > 0) {
         const target = answeredBy === 'api' ? `模型服务（${apiConfig.model}）` : answeredBy;
         console.error(`ℹ️  ${failedAgents.join(' → ')} 调用失败，已由 ${target} 回答`);
         console.log(answer);
+        if (sessionId) console.error(`ℹ️  session ${sessionId} 已 append（第 ${sessionTurnCount} 轮）`);
       } else {
         console.log(answer);
+        if (sessionId) console.error(`ℹ️  session ${sessionId} 已 append（第 ${sessionTurnCount} 轮）`);
       }
     } finally {
       if (serve?.child) {
@@ -277,3 +359,6 @@ configCmd
     clearAskConfig();
     succeed({ ok: true, cleared: true });
   });
+
+// 多轮会话：仅保留核心 --session <id> 读写；session 列表 / 清理走 askSession.js 模块 API，
+// 不在 CLI 暴露（用户脚本可直接调用 `import { listSessions } from '.../askSession.js'`）。

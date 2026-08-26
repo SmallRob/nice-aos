@@ -5,6 +5,21 @@
 > 语义本体引擎：对象按概念范畴与抽象层级（L3 架构 / L2 结构 / L1 单元 / L0 事实）组织；架构分层按内容信号推断（非目录名直译）；Module/Domain/Project 自动生成职责画像与自然语言总结。
 > 本体查看器（viewer）：`export --format html` 一键生成**自包含蓝图 HTML**（零依赖可离线打开，宽屏分档适配），含领域蓝图 / 业务数据图 / 业务逻辑流向 / **脚本蓝图（油猴函数调用图 + DOM 注入锚点 + 网络端点一图呈现）**五个视图；纯脚本仓库三视图自动按**函数意图分析**重建（意图功能域 / 存储枢纽 / 意图流转矩阵），分析不出业务结构时自动隐藏；`--format viewmodel` 输出聚合视图模型 JSON 供 agent 直接消费。
 
+## 三大核心命令
+
+nice-aos 13 个子命令收敛为 **3 个核心 + N 个领域型** 两层级。三个核心面向"AI agent / 终端用户"主入口，彼此互补构成输入/输出/服务三角：
+
+| 命令 | 角色 | 一句话 |
+|------|------|--------|
+| `ask` | **输入** | 基于本体快照向 AI CLI（codebuddy / opencode）或模型服务（DeepSeek 等 OpenAI 兼容端点）提问；上下文走 SQLite 4 次预过滤（<50ms），CLI 超时自动降级到模型服务 |
+| `output` | **输出** | 导出项目报告与蓝图：Markdown 全景报告 / JSON / 自包含 HTML 蓝图（5 视图）/ viewmodel 视图模型（`output` 是 `export` 的顶层别名，两名等价） |
+| `serve` | **服务** | 启动本地数据源 HTTP 服务（全端点 CORS `*`），暴露 `snapshot.json` / `blueprint.html` / `/api/schema` / `/api/objects/:type` / `/api/ask/context` 等 7 个端点，给 AI agent / 油猴脚本 / 网页跨源拉取 |
+| `mcp` | **协议** | 启动 [MCP server](https://modelcontextprotocol.io)（stdio 传输），把 7 个能力暴露为 MCP tools，供 Claude Code / Cursor / Continue 等 MCP 客户端**直接调用**——无需复制上下文、无需手写 fetch |
+
+完整 13 命令列表（领域型：db / deploy / service / planning / overview；原子型：query / link / action；运维：update / storage）见 `nice-aos --help`。三大核心的详细升级路线见 `docs/plan/aos-three-core-roadmap.md`，决策背景见 `docs/adr/0003-aos-three-core-roadmap.md`。
+
+
+
 ## 为什么需要它
 
 在 1000+ 源文件的前端项目中，让 AI agent 直接 grep 全量源码，响应慢且结构理解易出错。nice-aos 将"文件"升维为"关系图谱"：
@@ -371,9 +386,14 @@ export --format markdown --output report.md     # Markdown 全景报告
 export --format json | jq '._meta.cycles'       # JSON 供 jq 聚合
 export --format html --output blueprint.html    # 自包含蓝图 HTML（本体查看器）
 export --format viewmodel                       # 视图模型 JSON（聚合数据，供 agent 消费）
+
+# 增量导出（--since）：仅列出 ref 以来变更涉及的对象 + 末尾追加"增量变更摘要"节
+export --format markdown --since HEAD --output diff.md                    # 工作区未暂存 + 未跟踪
+export --format markdown --since HEAD~1..HEAD --output diff.md             # 上一次 commit 至今
+export --format markdown --since HEAD --staged --output pre-commit.md     # pre-commit 体检（仅已暂存）
 ```
 
-Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）、**接口与实现**（接口清单 + implementedBy 实现类 + 方法覆盖矩阵）、**类与方法**（类清单含 implements/extends/单例 + 契约热点 Top 30）与**死代码候选四级**（文件级 + 导出级 + 类型级 + 函数级）等章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。
+Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）、**接口与实现**（接口清单 + implementedBy 实现类 + 方法覆盖矩阵）、**类与方法**（类清单含 implements/extends/单例 + 契约热点 Top 30）与**死代码候选四级**（文件级 + 导出级 + 类型级 + 函数级）等章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。`--since` 模式会在报告末尾追加"增量变更摘要"节：列出 git diff 涉及的文件 + 涉及的对象（按类型分组，附 `id` 方便复制到 `query` / `link` 命令）。
 
 ### update — 版本检测与一键升级
 
@@ -393,6 +413,13 @@ nice-aos serve                          # 默认 http://127.0.0.1:8420，服务 
 nice-aos serve --port 39481             # 指定端口（传 0 自动分配可用端口）
 nice-aos serve --dir path/to/data       # 显式指定快照目录（等价全局 --snapshot-dir / NICE_AOS_SNAPSHOT_DIR）
 nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅本机 127.0.0.1）
+
+# 鉴权（v0.34.0）：--token 保护 /api/* 端点；静态端点（/snapshot.json / /blueprint.html / /）豁免
+nice-aos serve --token s3cret-abc123                              # Bearer 鉴权启用
+NICE_AOS_SERVE_TOKEN=s3cret-abc123 nice-aos serve                  # env 覆盖 --token（CI 场景）
+curl http://127.0.0.1:8420/api/status                             # → 401
+curl -H "Authorization: Bearer s3cret-abc123" .../api/status       # → 200
+curl "http://127.0.0.1:8420/api/status?token=s3cret-abc123"        # → 200（query 形式，油猴脚本友好）
 ```
 
 为 AI agent / 油猴脚本 / 网页提供跨源 HTTP 数据源（全端点 CORS `*`）：
@@ -410,15 +437,209 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 
 就绪状态**每次请求实时探测**——"先起服务、后 `refreshRepo` / `export`"的工作流无需重启；快照缺失返回 404（附生成指引）、JSON 损坏返回 500。目录解析链：`--dir` → 全局 `--snapshot-dir` → `NICE_AOS_SNAPSHOT_DIR` → `<root>/.nice-aos/data`。典型配套用法见 [contrib/blueprint-ai-agent](./contrib/blueprint-ai-agent)。
 
+### mcp — MCP server（让 Claude Code / Cursor 直接调 nice-aos）
+
+```bash
+nice-aos mcp                              # stdio 传输，监听 stdin
+nice-aos mcp --dir path/to/data           # 显式指定快照目录
+nice-aos mcp --root /abs/path/to/repo     # 自定义项目根
+```
+
+把 nice-aos 7 个能力暴露为 [Model Context Protocol](https://modelcontextprotocol.io) tools，供 Claude Code / Cursor / Continue / Cline 等 MCP 客户端**直接调用**。stdio 传输（默认，Claude Code 走这个）；HTTP 传输留到 v0.36.0。
+
+| Tool | 用途 | 关键参数 |
+|------|------|---------|
+| `get_stats` | 项目元信息 + counts + 循环依赖 + 孤儿候选 | — |
+| `get_schema` | 本体元模型（19 对象类型 / 24 链接 / 4 action / L0-L3 抽象层级 / 6 范畴） | — |
+| `list_types` | 19 种对象类型精简列表（name / prefix / category / level） | — |
+| `query_objects` | 按类型 + 条件查询 | `type`（必填） / `where`（如 `deadCandidate=true,name~Button`） / `limit`（默认 200） |
+| `get_node` | 按 id 查单个对象（含自动推断的 `_type` 字段） | `id`（必填，如 `comp:Button` / `method:src/a.ts#foo`） |
+| `traverse_links` | 链接遍历：`links` 看所有相邻 / 具体 linkType 看一类 | `linkType` / `srcId` / `depth`（默认 1） |
+| `get_health` | 五维健康审计摘要（cycles / orphanCandidates / typeCoverage） | — |
+
+**Claude Code 集成**（`~/.claude.json` 一次性配置）：
+
+```bash
+# 假设项目在 /Users/me/projects/my-app
+claude mcp add nice-aos -- npx nice-aos mcp --root /Users/me/projects/my-app
+```
+
+之后在 Claude Code 里说"哪些组件是死代码"，Claude 自动调 `query_objects({type:"Component", where:"deadCandidate=true"})`，零上下文复制。
+
+**关键设计**（借鉴 [code-graph-rag](https://github.com/vitali87/code-graph-rag) 的 MCP server 模式）：
+
+- **低层 `Server` + `setRequestHandler`**（非 `McpServer.tool()`）—— 避免引入 zod 依赖，保持 nice-aos 零原生依赖
+- **inputSchema 用 JSON Schema**（与现有 ParamDef 形态一致）—— 协议层接受即可
+- **错误用返回值表达**（handler 不抛）—— MCP layer 统一渲染
+- **fail-fast 启动** —— 快照缺失 / 解析失败立即报错退出（不让工具在错误状态运行）
+- **stdio 单传输** —— 远程 HTTP 走阶段 3（需 bearer auth 复杂度）
+- **console.error 写日志** —— 绝对不写 stdout（污染会断 JSON-RPC 协议）
+
+**与 `serve` 的关系**：`serve` 暴露 HTTP 端点（人 / 油猴脚本 / 网页消费），`mcp` 暴露 MCP 协议（AI agent 直连）。两者数据源相同（`snapshot.json`），工具语义一致（`get_stats` ≡ `/api/stats` + JSON 包装，`query_objects` ≡ `/api/objects/:type`），可二选一或并用。
+
+### duplicates — 重复代码检测（AST fingerprint 群组分析）
+
+```bash
+nice-aos duplicates                              # 读 <root>/.nice-aos/data，默认 min-size=15
+nice-aos duplicates --min-size 30               # 过滤太小的（getter/wrapper）
+nice-aos duplicates --format json               # JSON envelope（供 agent 消费）
+nice-aos duplicates --output dups.txt           # 写文件
+```
+
+把每个 method（class method + module function）的源码规范化为"shape hash"（SHA-256），用 `group-by fingerprint` O(n) 分组，**找出结构完全相同的函数**。**借鉴 [code-graph-rag](https://github.com/vitali87/code-graph-rag) 的 `cgr duplicates` 模式**（docs/guide/duplicates.md）。
+
+**算法**（`src/ontology/fingerprint.js` ~150 行）：
+
+1. 删注释（块注释 `/* ... */` + 行注释 `// ...`）
+2. 字符串字面量 `"..."` / `'...'` / 模板 `` `...` `` → `STR`
+3. 数字字面量（十进制 / 十六进制 / 二进制 / BigInt） → `NUM`
+4. 正则字面量 → `REGEX`
+5. 标识符 → `□`（保留关键字、this/super/true/false/null/undefined、JSX 组件 `□C`）
+6. 规范化空白
+7. SHA-256 hash
+
+| 输出 | 含义 |
+|------|------|
+| `fingerprint` | SHA-256 64 字符 hex |
+| `nodes` | 规范化后 token 数（防碰撞辅助） |
+| `members` | 同 fingerprint 的所有方法（≥2 才报） |
+
+**JSON envelope**：
+
+```json
+{
+  "scannedMethods": 231,
+  "skippedNoFingerprint": 0,
+  "minSize": 15,
+  "groups": [
+    {
+      "fingerprint": "dfb1cf839e95...",
+      "kind": "exact",
+      "similarity": 1.0,
+      "nodeCount": 31,
+      "members": [
+        { "id": "method:...#fetchXxx", "name": "fetchXxx", "filePath": "src/api.ts", "startLine": 108, "endLine": 115 }
+      ]
+    }
+  ],
+  "truncated": false,
+  "timestamp": "2026-08-26T...",
+  "dataDir": "/abs/path/.nice-aos/data",
+  "projectRoot": "/abs/path"
+}
+```
+
+**asdm-portal 验证结果**（231 个 method，过滤 ≥ 20 节点，找到 5 个重复组）：
+
+| 组 | 成员 | 文件 | 备注 |
+|----|------|------|------|
+| #1 | 6 个 | `src/services/portalApi.ts` | 6 个 `fetchFeaturedXxx` / `fetchHotXxx` / `fetchNewArrivals` / `fetchTopLiked` 骨架完全相同：fetch → check ok → json → return data |
+| #2 | 2 个 | `src/services/portalApi.ts` | `likeResource` / `unlikeResource`（POST 同一 endpoint 路径，仅 ID 字段不同）|
+| #3 | 2 个 | `src/lib/portal-api.ts` | `fetchMyResourceInstalls` / `fetchMyResourceViews` |
+| #4 | 2 个 | `src/lib/portal-api.ts` | `fetchMyResourceCount` / `fetchMyResourceTypeCount` |
+| #5 | 2 个 | `src/pages/PortalResourceDetail/*.tsx` | `formatCount` 在 `RelatedResources.tsx` 和 `ResourceStatsBadges.tsx` 完全相同 |
+
+**阶段 1.3 范围**：整树 fingerprint（exact match，O(n) 分组）。v0.33.0 扩展：
+- 分支 fingerprint（AST-based，检测"被修改过的副本"，需引入 tree-sitter 或 TypeScript Compiler API 的 statement-level 遍历）
+- `--threshold` 相似度模式（基于 branch overlap）
+- 跨语言 fingerprint（Vue/Go/Rust/Python/油猴目前用 text-based，部分 corner case 不如 AST 精准）
+- prefix filtering 候选发现（目前规模小不需要，>10k method 时加速）
+
+### deadcode — 死代码检测（entry-point BFS）
+
+```bash
+nice-aos deadcode                              # 读 <root>/.nice-aos/data
+nice-aos deadcode --dir path/to/data          # 自定义快照目录
+nice-aos deadcode -e class:A.tsx#A            # 显式声明入口
+nice-aos deadcode --format json              # JSON envelope
+nice-aos deadcode --write-back               # 写回 deadCandidate 字段到 snapshot
+```
+
+基于 entry-point BFS 找出"导出但不可达"的 class。**借鉴 [code-graph-rag](https://github.com/vitali87/code-graph-rag) 的 `cgr dead-code` 模式**（docs/guide/dead-code.md）。
+
+**算法**（`src/analyzers/deadCode.js` ~200 行）：
+
+1. **Roots 构造**：
+   - entry files（main.tsx / index.tsx / App.vue 等）中的 module functions
+   - entry files 自身（main.tsx 不用 module function 也算 root，通过 file.importIds 链到 Component）
+   - 所有 Component（React/Vue/Flutter framework 渲染入口，模拟 JSX 树）
+   - 油猴顶层 isTopLevel 函数
+   - test files 中的 method
+   - 用户 `--entry-point` / `--entry-file`
+
+2. **BFS 沿 *Ids / *Id 边**（calls / imports / usesStore / usesHook / extends / implements / overrides / registers / renders / ...）
+
+3. **反向边**（解决"method 不知道 owner class"问题）：
+   - method → owner class/interface（class.methodIds 反向）
+   - file → 该文件的 Component / Hook / Class / Interface / Method
+   - method on module → file
+
+4. **dead = exported class && not in reachable**
+
+**v0.32.0 范围**：仅 class dead。method / interface dead 检测留 v0.34.0 扩展（method 误报风险高——React FC default export 经常 BFS 找不到 framework 调用）。
+
+**asdm-portal 验证**：524 个节点，可达 471（90%），0 个 false positive。修复了初版的 PortalApiError 误报（反向边 file → Component 让 Component 链可达）。
+
+### io — 敏感 API 使用扫描（IO_SINKS 数据驱动注册表）
+
+```bash
+nice-aos io                                    # 全部 IO（low 以上）
+nice-aos io --min-danger medium                # 只看 medium 以上
+nice-aos io --kinds NETWORK                   # 只看网络类
+nice-aos io --format json                     # JSON envelope
+```
+
+扫描快照中所有 method 的敏感 API 使用。**借鉴 [code-graph-rag](https://github.com/vitali87/code-graph-rag) 的 IO_SINKS 数据驱动注册表**（`codebase_rag/parsers/io_access/registry.py` ~600 行）。
+
+**核心数据模型**（`src/ontology/ioRegistry.js`）：
+
+```js
+{
+  callee: 'GM_xmlhttpRequest',  // API 名
+  kind: 'NETWORK',              // ResourceKind
+  direction: 'READ_WRITE',      // READ / WRITE / READ_WRITE / EXEC
+  targetArg: 0,                 // resource identity arg
+  valueArg: 1,                  // data payload arg (WRITE)
+  danger: 'high',               // critical / high / medium / low / info
+  desc: 'GM 跨域请求',
+}
+```
+
+**注册表覆盖**（v0.32.0 范围）：
+- **油猴 GM_* API**（30+ 个）：GM_xmlhttpRequest / GM_setValue / GM_getValue / GM_addStyle / GM_setClipboard / GM_setTimeout / ...
+- **浏览器 JS 通用**（10+ 个）：fetch / XMLHttpRequest / localStorage / sessionStorage / document.cookie / eval / Function / setTimeout / setInterval / innerHTML / outerHTML
+- **资源抽象**（ResourceKind）：STORAGE / NETWORK / DOM / STDOUT / SCRIPT
+
+**关键设计**（借鉴 code-graph-rag 范式 8）：
+- **数据驱动注册表**：所有 sink 在纯数据表里，0 hardcode if 链
+- **shadow check**：local `fetch = "shadow"` 不会误匹配全局 fetch
+- **边界保护**：`myFetch(...)` 不会误匹配 fetch
+- **危险等级排序**：critical=eval / high=fetch / medium=setValue / low=getValue
+
+**v0.32.0 简化**：仅做"调用点报告"，不做 taint propagation。**v0.33.0 扩展**：FLOWS_TO 三 kind taint walk（kind=resource / arg / return + via 边属性）。
+
+**asdm-portal 验证**：231 个 method 中 37 个有 IO 使用，共 50 次调用——20 次 fetch (high) + 17 次 setTimeout (medium) + 13 次 localStorage (medium)。
+
 ### ask — 向 AI CLI 提问（快照上下文注入）
 
 ```bash
 nice-aos ask "这个项目有哪些功能域？"                # auto 探测 agent：codebuddy → opencode → 模型服务兜底
 nice-aos ask "架构分层的文件分布？" --agent opencode  # 显式指定 agent
 nice-aos ask "有哪些循环依赖？" --serve              # 后台起 serve，HTTP URL 拼进 prompt 供深查
-nice-aos ask "依赖健康度？" --json                   # 结构化输出 {ok, agent, contextSource, durationMs, answer}
+nice-aos ask "依赖健康度？" --json                   # 结构化输出 {ok, agent, contextSource, durationMs, answer, streamed, session}
 nice-aos ask "ASDM架构？"                            # 无快照/空项目快照 → 自动 refreshRepo 后再答
 nice-aos ask "Q" --no-auto-refresh                   # 跳过自动快照（无快照时保持报错指引，供 CI 场景）
+
+# 流式输出（仅 --agent api 有效；CLI agent 走同步降级）
+nice-aos ask "Q" --stream --agent api                # token 逐字打到 stdout
+nice-aos ask "Q" --stream --json                     # 流式 + JSON 结构化输出（streamed:true）
+
+# 多轮会话（JSONL 持久化到 ~/.nice-aos/sessions/<id>.jsonl）
+nice-aos ask "项目架构是怎样的？" --session s1 --agent api      # 第 1 轮
+nice-aos ask "那 Controller 层呢？" --session s1 --agent api    # 第 2 轮（自动含历史）
+nice-aos ask "Q" --session s1 --session-max-turns 3              # prompt 只带最近 3 轮（防 token 击穿）
+nice-aos ask session list --as-json                              # 列出所有 session
+nice-aos ask session clear s1                                    # 删除指定 session
 
 # 备选模型服务（OpenAI 兼容，如 DeepSeek；CLI 超时/失败时自动降级到它）
 nice-aos ask config set --provider deepseek --api-key sk-xxx   # 密钥 AES-256-GCM 加密落盘 ~/.nice-aos/config.json
@@ -637,10 +858,31 @@ npm test          # node --test 单元测试
 node src/cli/index.js --help
 ```
 
-## Roadmap（候选）
+## Roadmap（v0.33.0 → v0.36.0+）
 
-- `--where` 数值比较（`lineCount>500`）与索引
-- 增量刷新（按 git diff 重新解析变更文件）
-- Python 后端解析（Flask/FastAPI 路由，如 oneapi-service 类微服务，与前后端映射打通）
-- Go 泛型（type parameters）解析与 TS 方法级调用图（calls/calledBy 扩展到 Method）
+按三大核心（`ask` / `output` / `serve`）分轴 + P0/P1/P2 优先级组织。**完整任务清单与验收标准见 [`docs/plan/aos-three-core-roadmap.md`](./docs/plan/aos-three-core-roadmap.md)**，决策背景见 [`docs/adr/0003-`](./docs/adr/0003-aos-three-core-roadmap.md)。
+
+### `ask` 轴（输入）
+- **P1**：流式输出 `--stream`（v0.34.0）｜多轮会话 `--session`（v0.34.0）｜sub-tool 让 AI 自治 `query/link/export`（v0.35.0）
+- **P2**：落盘 `--save`（v0.35.0）｜跨快照 diff 问答（v0.35.0）｜评测 harness（v0.35.0）
+
+### `output` 轴（输出 / `export` 顶层别名）
+- **P0**：`output` 作为 `export` 的 commander 顶层别名（v0.33.0，✅ 已发）
+- **P1**：增量导出 `--since`（git diff）（v0.34.0）｜模板化 `--template`（v0.34.0）｜多快照合并 `--merge`（v0.34.0）｜类型过滤 `--include/--exclude`（v0.34.0）
+- **P2**：主题 API `registerTheme`（v0.35.0）｜`--format all`（v0.35.0）｜PDF 导出（v0.36.0+）
+
+### `serve` 轴（服务）
+- **P1**：Bearer 鉴权 `--token`（v0.34.0）｜`/ws/snapshot` WebSocket 推送（v0.34.0）｜`/openapi.json` 端点描述（v0.34.0）｜限流（v0.34.0）
+- **P2**：`/api/ask` POST 端点直连模型（v0.35.0）｜端点分级 read/write/admin（v0.35.0）｜OpenTelemetry 埋点（v0.36.0+）
+
+### 跨命令协同（P2，v0.35.0+）
+ask `--tool-call` 让 AI 调 sub-command ｜ output 完成后通知 serve 广播 ｜ serve 内嵌 ask 推理能力
+
+### 已知工程债（v0.33.0 起滚动）
+- **P0**：viewer.js 缺 `analyzeFile` 动作（v0.33.0）
+- **P1**：动作定义三处统一（v0.34.0）｜`refreshRepo`/`analyzeFile` 补 actionImpl（v0.34.0）｜前端 `renderActionCardHtml` 补 enum/objectRef 渲染（v0.34.0）｜LRU 注释修正（v0.34.0）
+- **P2**：深拷贝补齐到嵌套对象（v0.35.0）｜软链解析完整化（v0.35.0）｜`mergeSnapshotByFiles` 路径字段补全（v0.35.0）
+
+详细任务 ID（ask-1/2/3, out-1/2/3/4, srv-1/2/3/4, E-1/2/3/...）见 `docs/plan/aos-three-core-roadmap.md`。
+
 - 更新日志见 [CHANGELOG.md](./CHANGELOG.md)

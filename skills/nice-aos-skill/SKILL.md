@@ -347,6 +347,30 @@ serve 端点：`/snapshot.json`（完整快照）/ `/blueprint.html` / `/api/sta
 
 agent 降级链：CLI agent（codebuddy → opencode）超时/失败自动降级到已配置的 OpenAI 兼容模型服务（每级独立超时预算，`--json` 的 `fallbackFrom` 记录失败链）。
 
+### mcp — MCP server（Claude Code / Cursor 直连协议，v0.32.0+）
+
+```bash
+# 启动 stdio MCP server（与 Claude Code / Cursor 配套使用）
+mcp --root /abs/path/to/your/project
+
+# Claude Code 集成（一次性配置 ~/.claude.json）：
+# claude mcp add nice-aos -- npx nice-aos mcp --root /abs/path/to/your/project
+```
+
+把 nice-aos 7 个能力暴露为 [Model Context Protocol](https://modelcontextprotocol.io) tools，让 Claude Code / Cursor / Continue / Cline 等 MCP 客户端**直接调用**——无需复制上下文、无需手写 fetch。
+
+| Tool | 用途 | 关键参数 |
+|------|------|---------|
+| `get_stats` | 项目元信息 + counts + 循环依赖 + 孤儿候选 | — |
+| `get_schema` | 本体元模型（19 对象类型 / 24 链接 / 4 action / 4 抽象层 / 6 范畴） | — |
+| `list_types` | 19 种对象类型精简列表 | — |
+| `query_objects` | 按类型 + 条件查询 | `type`（必填）/ `where`（如 `deadCandidate=true,name~Button`）/ `limit`（默认 200） |
+| `get_node` | 按 id 查单个对象（含自动推断的 `_type`） | `id`（必填，如 `comp:Button`） |
+| `traverse_links` | 链接遍历 | `linkType`（必填，`links` 看所有 / 具体名看一类）/ `srcId` / `depth`（默认 1） |
+| `get_health` | 五维健康审计摘要 | — |
+
+**与 `serve` 的关系**：`serve` 暴露 HTTP 端点（人 / 油猴脚本 / 网页消费），`mcp` 暴露 MCP 协议（AI agent 直连）。两者数据源相同（`snapshot.json`），工具语义一致。**实现细节**：低层 `Server` + `setRequestHandler`（非 `McpServer.tool()`）以避免 zod 依赖；inputSchema 用 JSON Schema 形态（MCP 协议层接受）；handler 错误用 `{ok: false, error}` 返回值表达（不抛）。详细决策见 `docs/adr/0004-code-graph-rag-reusable-patterns.md`。
+
 ### export — 导出
 
 ```bash

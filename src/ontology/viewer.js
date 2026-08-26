@@ -816,7 +816,7 @@ export function buildViewerModel(dataMap) {
       }
       groupIdx.get(name).routes.push(it);
     }
-    domainGroups.sort((a, b) => b.routes.length - a.routes.length || a.name.localeCompare(b.name));
+    domainGroups.sort((a, b) => b.routes.length - a.routes.length || (a.name ?? '').localeCompare(b.name ?? ''));
 
     // 路径层级树：'/' 为根，逐段嵌套（每节点独立子段索引，不同分支同名段不合并）；
     // 中间段节点 routes 为空数组；静态段在前动态段在后
@@ -915,7 +915,7 @@ export function buildViewerModel(dataMap) {
       });
     }
     if (!edges.length) return null;
-    edges.sort((a, b) => b.propCount - a.propCount || (a.fromName + '>' + a.toName).localeCompare(b.fromName + '>' + b.toName));
+    edges.sort((a, b) => b.propCount - a.propCount || (a.fromName + '>' + a.toName).localeCompare(b.fromName + '>' + b.toName ?? ''));
 
     // 参与边的组件及出入度
     const nodes = [];
@@ -942,7 +942,7 @@ export function buildViewerModel(dataMap) {
     const topIn = nodes.slice().sort((a, b) => b.inCount - a.inCount || b.propInCount - a.propInCount).slice(0, 12);
     const domainOptions = [...new Set(nodes.map((n) => n.domain).filter(Boolean))]
       .map((name) => ({ name, count: nodes.filter((n) => n.domain === name).length }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+      .sort((a, b) => b.count - a.count || (a.name ?? '').localeCompare(b.name ?? ''));
 
     return {
       edgeCount: edges.length,
@@ -1044,7 +1044,7 @@ export function buildViewerModel(dataMap) {
       ...hooks.map((h) => ({ name: h.name, kind: 'hook', kindLabel: UNIT_KIND_LABELS.hook, filePath: h.filePath, lineCount: h.lineCount ?? 0 })),
       ...stores.map((s) => ({ name: s.name, kind: 'store', kindLabel: UNIT_KIND_LABELS.store, filePath: s.filePath, lineCount: s.lineCount ?? 0 })),
       ...services.map((s) => ({ name: s.name, kind: 'service', kindLabel: UNIT_KIND_LABELS.service, filePath: s.filePath, lineCount: s.lineCount ?? 0 })),
-    ].sort((a, b) => b.lineCount - a.lineCount || a.name.localeCompare(b.name)).slice(0, 20);
+    ].sort((a, b) => b.lineCount - a.lineCount || (a.name ?? '').localeCompare(b.name ?? '')).slice(0, 20);
 
     const topFiles = files
       .slice().sort((a, b) => (b.lineCount ?? 0) - (a.lineCount ?? 0))
@@ -1184,7 +1184,7 @@ export function buildViewerModel(dataMap) {
         .map((s) => ({ id: s.id, name: s.name, kind: 'store', domain: domainNameOf(s), lines: s.lineCount ?? 0 }));
       const storeIds = new Set(storeNodes.map((s) => s.id));
       const compNodes = components
-        .slice().sort((a, b) => (degreeOf.get(b.id) ?? 0) - (degreeOf.get(a.id) ?? 0) || (b.lineCount ?? 0) - (a.lineCount ?? 0) || a.name.localeCompare(b.name))
+        .slice().sort((a, b) => (degreeOf.get(b.id) ?? 0) - (degreeOf.get(a.id) ?? 0) || (b.lineCount ?? 0) - (a.lineCount ?? 0) || (a.name ?? '').localeCompare(b.name ?? ''))
         .slice(0, Math.max(0, COMPONENT_GRAPH_NODE_CAP - storeNodes.length))
         .map((c) => ({ id: c.id, name: c.name, kind: 'component', domain: domainNameOf(c), lines: c.lineCount ?? 0, filePath: c.filePath ?? null }));
       const nodes = [...compNodes, ...storeNodes];
@@ -2193,7 +2193,7 @@ function buildPropFlowSvg(nodes, edges) {
   const COL = 260, ROW = 54, W = 208, H = 42, PADX = 24, PADY = 34;
   const cols = [];
   nodes.forEach((n) => { const lv = level[n.id]; (cols[lv] = cols[lv] || []).push(n); });
-  cols.forEach((c) => c.sort((a, b) => a.name.localeCompare(b.name)));
+  cols.forEach((c) => c.sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')));
   const pos = {};
   let maxRows = 1;
   cols.forEach((c, lv) => {
@@ -2306,7 +2306,7 @@ function renderPropFlowGraph() {
   let capped = false;
   if (nodes.length > PROP_NODE_CAP) {
     nodes = nodes.slice()
-      .sort((a, b) => (b.inCount + b.outCount) - (a.inCount + a.outCount) || a.name.localeCompare(b.name))
+      .sort((a, b) => (b.inCount + b.outCount) - (a.inCount + a.outCount) || (a.name ?? '').localeCompare(b.name ?? ''))
       .slice(0, PROP_NODE_CAP);
     capped = true;
   }

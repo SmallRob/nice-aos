@@ -64,7 +64,7 @@ test('serve 端点契约：默认目录解析 + CORS + 各端点响应', async (
   assert.equal(st.json.snapshot.ready, true);
   assert.equal(st.json.snapshot.state, 'ok');
   assert.equal(st.json.blueprint.ready, true);
-  assert.deepEqual(st.json.endpoints, ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/api/objects/:type', '/api/ask/context', '/']);
+  assert.deepEqual(st.json.endpoints, ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/api/objects/:type', '/api/ask/context', '/ws/snapshot', '/']);
   assert.equal(st.json.root, dir);
 
   // /snapshot.json：完整快照可解析

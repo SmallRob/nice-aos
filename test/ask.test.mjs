@@ -737,3 +737,373 @@ test('ask 端到端：config set 未知 provider / 无参数 → 报错', async 
   assert.equal(r2.code, 1);
   assert.match(r2.err, /无可更新项/);
 });
+
+// ---------- 端到端：--stream 流式输出（ask-1） ----------
+
+test('ask 端到端：--stream + --agent api + --json → streamed=true + 完整 answer + stream:true', async () => {
+  const dir = mkFixture();
+  let lastPayload = null;
+  const { srv, port } = await startFakeOpenAiServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      lastPayload = JSON.parse(body);
+      res.setHeader('content-type', 'text/event-stream');
+      // 模拟 OpenAI 兼容流式响应
+      res.write('data: {"choices":[{"delta":{"content":"你"}}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"content":"好"}}]}\n\n');
+      res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+      res.end();
+    });
+  });
+  try {
+    const r = await runCli(['ask', 'Q', '--cwd', dir, '--agent', 'api', '--stream', '--json'], {
+      env: {
+        PATH: minimalPath(''),
+        NICE_AOS_API_KEY: 'sk-stream-test',
+        NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`,
+        NICE_AOS_MODEL: 'test-stream',
+      },
+    });
+    assert.equal(r.code, 0, `stderr: ${r.err}`);
+    const j = JSON.parse(r.out);
+    assert.equal(j.agent, 'api');
+    assert.equal(j.streamed, true, 'JSON 应含 streamed=true');
+    assert.equal(j.answer, '你好', 'answer 应是 token 顺序拼接的完整文本');
+    // 服务端收到的 stream 应是 true
+    assert.equal(lastPayload.stream, true, '流式调用应传 stream:true');
+  } finally {
+    srv.close();
+  }
+});
+
+test('ask 端到端：--stream + --agent api（无 --json）→ token 实时到 stdout', async () => {
+  const dir = mkFixture();
+  const { srv, port } = await startFakeOpenAiServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      res.setHeader('content-type', 'text/event-stream');
+      res.write('data: {"choices":[{"delta":{"content":"你"}}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"content":"好"}}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"content":" world"}}]}\n\n');
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  try {
+    const r = await runCli(['ask', 'Q', '--cwd', dir, '--agent', 'api', '--stream'], {
+      env: {
+        PATH: minimalPath(''),
+        NICE_AOS_API_KEY: 'sk-stream-test',
+        NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`,
+        NICE_AOS_MODEL: 'test-stream',
+      },
+    });
+    assert.equal(r.code, 0, `stderr: ${r.err}`);
+    // token 应在 stdout 中按顺序出现（不被合并到一行 JSON）
+    assert.match(r.out, /你好 world/, 'stdout 应含 token 拼接的完整文本');
+    // 不应输出 JSON 块（无 --json）
+    assert.equal(r.out.includes('"answer"'), false, '非 JSON 模式不应输出 JSON 字段');
+  } finally {
+    srv.close();
+  }
+});
+
+test('ask 端到端：--stream + CLI agent → 提示降级 + 走同步路径', async () => {
+  // fake codebuddy 立即成功返回固定文本（同步路径）
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-stream-cli-'));
+  const script = path.join(bin, 'codebuddy');
+  fs.writeFileSync(script, '#!/bin/sh\necho CLI_STREAM_FALLBACK\n');
+  fs.chmodSync(script, 0o755);
+  try {
+    const dir = mkFixture();
+    const r = await runCli(['ask', 'Q', '--cwd', dir, '--agent', 'codebuddy', '--stream'], {
+      env: { PATH: `${bin}${path.delimiter}/usr/bin:/bin` },
+    });
+    assert.equal(r.code, 0);
+    // 降级提示应在 stderr
+    assert.match(r.err, /不支持流式/);
+    // CLI agent 实际回答应仍在 stdout（同步打印完整文本）
+    assert.match(r.out, /CLI_STREAM_FALLBACK/);
+  } finally {
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('ask 端到端：--stream + api 流式 0 token → 报错且降级链路工作', async () => {
+  const dir = mkFixture();
+  const { srv, port } = await startFakeOpenAiServer((req, res) => {
+    res.setHeader('content-type', 'text/event-stream');
+    res.write('data: {"choices":[{"delta":{}}]}\n\n'); // 0 content
+    res.write('data: [DONE]\n\n');
+    res.end();
+  });
+  try {
+    const r = await runCli(['ask', 'Q', '--cwd', dir, '--agent', 'api', '--stream', '--json'], {
+      env: {
+        PATH: minimalPath(''),
+        NICE_AOS_API_KEY: 'sk-test',
+        NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`,
+        NICE_AOS_MODEL: 'test-empty',
+      },
+    });
+    // 0 token → invokeApiChatStream 抛错；chain 失败后应再尝试 fallback（无则 exit=1）
+    // 这里 chain 只含 api 一个；最后错误应透出到 stderr
+    assert.equal(r.code, 1);
+    assert.match(r.err, /无有效 token/);
+  } finally {
+    srv.close();
+  }
+});
+
+// ---------- 端到端：--session 多轮会话（ask-2） ----------
+
+test('ask 端到端：--session <id> 第 1 轮 → prompt 不含历史 + 写入 session jsonl', async () => {
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sess-cfg-'));
+  try {
+    const dir = mkFixture();
+    const { srv, port } = await startFakeOpenAiServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ choices: [{ message: { content: 'ROUND1_ANS' } }] }));
+      });
+    });
+    try {
+      const r = await runCli(['ask', 'Q1', '--cwd', dir, '--agent', 'api', '--session', 'sess-1', '--json'], {
+        env: {
+          PATH: minimalPath(''),
+          NICE_AOS_CONFIG_DIR: cfgDir,
+          NICE_AOS_API_KEY: 'sk-test',
+          NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`,
+          NICE_AOS_MODEL: 'test',
+        },
+      });
+      assert.equal(r.code, 0, `stderr: ${r.err}`);
+      const j = JSON.parse(r.out);
+      assert.equal(j.answer, 'ROUND1_ANS');
+      assert.equal(j.session.id, 'sess-1');
+      assert.equal(j.session.turnCount, 1);
+
+      // session jsonl 应被写入
+      const sessionFile = path.join(cfgDir, 'sessions', 'sess-1.jsonl');
+      assert.ok(fs.existsSync(sessionFile), 'session jsonl 应存在');
+      const lines = fs.readFileSync(sessionFile, 'utf-8').trim().split('\n');
+      assert.equal(lines.length, 1);
+      const rec = JSON.parse(lines[0]);
+      assert.equal(rec.question, 'Q1');
+      assert.equal(rec.answer, 'ROUND1_ANS');
+      assert.equal(rec.agent, 'api');
+      assert.equal(rec.model, 'test');
+    } finally {
+      srv.close();
+    }
+  } finally {
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test('ask 端到端：--session <id> 续聊 → prompt 含历史 + turnCount=2', async () => {
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sess-cfg-'));
+  try {
+    const dir = mkFixture();
+    let lastPrompt = null;
+    let callCount = 0;
+    const { srv, port } = await startFakeOpenAiServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        callCount += 1;
+        lastPrompt = JSON.parse(body).messages[0].content;
+        const ans = callCount === 1 ? 'ROUND1_ANS' : 'ROUND2_ANS';
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ choices: [{ message: { content: ans } }] }));
+      });
+    });
+    try {
+      // 第 1 轮
+      const r1 = await runCli(['ask', 'first question', '--cwd', dir, '--agent', 'api', '--session', 'sess-2', '--json'], {
+        env: {
+          PATH: minimalPath(''),
+          NICE_AOS_CONFIG_DIR: cfgDir,
+          NICE_AOS_API_KEY: 'sk-test',
+          NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`,
+          NICE_AOS_MODEL: 'test',
+        },
+      });
+      assert.equal(r1.code, 0, `r1 stderr: ${r1.err}`);
+      assert.equal(JSON.parse(r1.out).answer, 'ROUND1_ANS');
+      // 第 2 轮：续聊
+      const r2 = await runCli(['ask', 'follow up', '--cwd', dir, '--agent', 'api', '--session', 'sess-2', '--json'], {
+        env: {
+          PATH: minimalPath(''),
+          NICE_AOS_CONFIG_DIR: cfgDir,
+          NICE_AOS_API_KEY: 'sk-test',
+          NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`,
+          NICE_AOS_MODEL: 'test',
+        },
+      });
+      assert.equal(r2.code, 0, `r2 stderr: ${r2.err}`);
+      const j = JSON.parse(r2.out);
+      assert.equal(j.answer, 'ROUND2_ANS');
+      assert.equal(j.session.turnCount, 2);
+
+      // 第 2 轮 prompt 应含历史
+      assert.match(lastPrompt, /## 对话历史（session: sess-2/);
+      assert.match(lastPrompt, /\*\*用户\*\*: first question/);
+      assert.match(lastPrompt, /\*\*助手\*\*: ROUND1_ANS/);
+      assert.match(lastPrompt, /## 当前问题\nfollow up/);
+
+      // session 文件应有 2 行
+      const lines = fs.readFileSync(path.join(cfgDir, 'sessions', 'sess-2.jsonl'), 'utf-8').trim().split('\n');
+      assert.equal(lines.length, 2);
+    } finally {
+      srv.close();
+    }
+  } finally {
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test('ask 端到端：--session-max-turns → prompt 只带最近 N 轮', async () => {
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sess-cfg-'));
+  try {
+    const dir = mkFixture();
+    let lastPrompt = null;
+    const { srv, port } = await startFakeOpenAiServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        lastPrompt = JSON.parse(body).messages[0].content;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ choices: [{ message: { content: 'ANS' } }] }));
+      });
+    });
+    try {
+      // 连发 3 轮，每轮问题唯一可识别
+      for (const q of ['q-one', 'q-two', 'q-three']) {
+        await runCli(['ask', q, '--cwd', dir, '--agent', 'api', '--session', 'sess-mt', '--json'], {
+          env: {
+            PATH: minimalPath(''),
+            NICE_AOS_CONFIG_DIR: cfgDir,
+            NICE_AOS_API_KEY: 'sk-test',
+            NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`,
+            NICE_AOS_MODEL: 'test',
+          },
+        });
+      }
+      // 第 4 轮带 --session-max-turns 1
+      await runCli(['ask', 'q-four', '--cwd', dir, '--agent', 'api', '--session', 'sess-mt', '--session-max-turns', '1', '--json'], {
+        env: {
+          PATH: minimalPath(''),
+          NICE_AOS_CONFIG_DIR: cfgDir,
+          NICE_AOS_API_KEY: 'sk-test',
+          NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`,
+          NICE_AOS_MODEL: 'test',
+        },
+      });
+      // 提示应含 skipNote + 只有 q-three 历史
+      assert.match(lastPrompt, /已省略前 2 轮/);
+      assert.match(lastPrompt, /\*\*用户\*\*: q-three/);
+      assert.doesNotMatch(lastPrompt, /\*\*用户\*\*: q-one/);
+      assert.match(lastPrompt, /## 当前问题\nq-four/);
+    } finally {
+      srv.close();
+    }
+  } finally {
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test('ask 端到端：不同 session id 互不干扰（隔离）', async () => {
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sess-cfg-'));
+  try {
+    const dir = mkFixture();
+    const { srv, port } = await startFakeOpenAiServer((req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content: 'X' } }] }));
+    });
+    try {
+      await runCli(['ask', 'A1', '--cwd', dir, '--agent', 'api', '--session', 'a', '--json'], {
+        env: { PATH: minimalPath(''), NICE_AOS_CONFIG_DIR: cfgDir, NICE_AOS_API_KEY: 'k', NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`, NICE_AOS_MODEL: 'm' },
+      });
+      await runCli(['ask', 'B1', '--cwd', dir, '--agent', 'api', '--session', 'b', '--json'], {
+        env: { PATH: minimalPath(''), NICE_AOS_CONFIG_DIR: cfgDir, NICE_AOS_API_KEY: 'k', NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`, NICE_AOS_MODEL: 'm' },
+      });
+      const aLines = fs.readFileSync(path.join(cfgDir, 'sessions', 'a.jsonl'), 'utf-8').trim().split('\n');
+      const bLines = fs.readFileSync(path.join(cfgDir, 'sessions', 'b.jsonl'), 'utf-8').trim().split('\n');
+      assert.equal(aLines.length, 1);
+      assert.equal(bLines.length, 1);
+      assert.equal(JSON.parse(aLines[0]).question, 'A1');
+      assert.equal(JSON.parse(bLines[0]).question, 'B1');
+    } finally {
+      srv.close();
+    }
+  } finally {
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
+
+test('ask 端到端：--session 非法 id → fail', async () => {
+  const dir = mkFixture();
+  const r = await runCli(['ask', 'Q', '--cwd', dir, '--agent', 'api', '--session', '../escape'], {
+    env: { PATH: minimalPath('') },
+  });
+  assert.equal(r.code, 1);
+  assert.match(r.err, /非法的 session id/);
+});
+
+// ask session list/clear 子命令在 v0.33.0 精简时移除（CLI 入口收敛）；
+// 底层 listSessions / clearSession 仍由 askSession.js 模块 export，外部脚本可 import 复用。
+// 验证模块 API 自身可用，等价替代 CLI 子命令：
+test('askSession.listSessions / clearSession 模块 API 等价于被移除的 CLI 子命令', async () => {
+  const cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sess-cfg-'));
+  try {
+    const dir = mkFixture();
+    const { srv, port } = await startFakeOpenAiServer((req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ choices: [{ message: { content: 'Y' } }] }));
+    });
+    try {
+      // 创建 2 个 session（通过 ask --session 落到 cfgDir/sessions/ 下）
+      await runCli(['ask', 'A', '--cwd', dir, '--agent', 'api', '--session', 'sa', '--json'], {
+        env: { PATH: minimalPath(''), NICE_AOS_CONFIG_DIR: cfgDir, NICE_AOS_API_KEY: 'k', NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`, NICE_AOS_MODEL: 'm' },
+      });
+      await runCli(['ask', 'B', '--cwd', dir, '--agent', 'api', '--session', 'sb', '--json'], {
+        env: { PATH: minimalPath(''), NICE_AOS_CONFIG_DIR: cfgDir, NICE_AOS_API_KEY: 'k', NICE_AOS_BASE_URL: `http://127.0.0.1:${port}/chat/completions`, NICE_AOS_MODEL: 'm' },
+      });
+
+      const sessionsMod = await import('../src/cli/commands/askSession.js');
+      // listSessions / clearSession 通过 process.env.NICE_AOS_CONFIG_DIR 读路径；
+      // 子进程 CLI 调用已写文件到 cfgDir/sessions/，父进程 import 模块后需临时切到 cfgDir
+      const origCfg = process.env.NICE_AOS_CONFIG_DIR;
+      process.env.NICE_AOS_CONFIG_DIR = cfgDir;
+      try {
+        // listSessions
+        const list = sessionsMod.listSessions();
+        assert.equal(list.length, 2);
+        const ids = list.map((s) => s.id).sort();
+        assert.deepEqual(ids, ['sa', 'sb']);
+        for (const s of list) assert.equal(s.turnCount, 1);
+
+        // clearSession
+        const removed = sessionsMod.clearSession('sa');
+        assert.equal(removed, true);
+        assert.equal(fs.existsSync(path.join(cfgDir, 'sessions', 'sa.jsonl')), false);
+
+        // 再次 clear → false
+        const removed2 = sessionsMod.clearSession('sa');
+        assert.equal(removed2, false);
+      } finally {
+        if (origCfg === undefined) delete process.env.NICE_AOS_CONFIG_DIR;
+        else process.env.NICE_AOS_CONFIG_DIR = origCfg;
+      }
+    } finally {
+      srv.close();
+    }
+  } finally {
+    fs.rmSync(cfgDir, { recursive: true, force: true });
+  }
+});
