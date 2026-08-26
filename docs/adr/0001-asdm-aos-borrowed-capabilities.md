@@ -117,3 +117,12 @@ nice-aos 采用**回调式**:
 - asdm-aos action: `aos/src/cli/commands/action.ts`(363 行 6 步流水线)
 - asdm-aos analyzer: `aos/src/server/analyzers/javaAnalyzer.ts`(1756 行,@Test/@ParameterizedTest/复杂度/数据模型 全部在这里)
 - nice-aos 借鉴产物: `nice-aos/src/analyzers/methodHealth.js`
+
+## 追加（v0.31.0, 2026-08-26）
+
+新增借鉴 4 大工程模式（详见 [ADR 0002](./0002-blueprint-engine-borrowed-from-aos.md)）：
+
+- **蓝图引擎 V2**（`src/ontology/blueprintEngine.js`）—— 借鉴 BlueprintRuntime + createEngine
+- **项目根自动检测**（`src/analyzers/projectRootDetector.js`）—— 借鉴 projectDetector
+- **蓝图交互控件**（`src/ontology/blueprintActions.js`）—— 借鉴 ActionPanel.tsx（不引入 React 运行时）
+- **增量解析**（`src/analyzers/incrementalParser.js`）—— 借鉴 IncrementalParser（无 tree-sitter，按 analyzer 维度 LRU 缓存）

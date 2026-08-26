@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import { loadSnapshot, saveSnapshot } from '../../ontology/snapshot.js';
 import { createBlueprint, ACTION_NAMES } from '../../ontology/blueprint.js';
 import { buildOntologyData, buildSingleFileOntology } from '../../ontology/builder.js';
+import { detectProjectRoot } from '../../analyzers/projectRootDetector.js';
 import { fail } from '../shared.js';
 
 export const actionCommand = new Command('action')
@@ -19,13 +20,56 @@ export const actionCommand = new Command('action')
     }
 
     if (name === 'refreshRepo') {
-      const projectPath = path.resolve(params.repoPath ?? params.projectPath ?? process.cwd());
-      // 纯油猴脚本仓库可无 package.json，改用目录存在性校验（扫描器对缺失的 package.json 已有兜底）
-      if (!fs.existsSync(projectPath)) {
-        fail(`路径不存在: ${projectPath}`);
+      // 借鉴 asdm-aos v0.0.12 projectDetector：自动检测项目根
+      // 优先级：显式 repoPath/projectPath > 文件路径（向上找） > cwd（向上找） > 报清晰错
+      let projectPath;
+      let projectRootMeta = null;
+      const explicitPath = params.repoPath ?? params.projectPath;
+
+      if (explicitPath) {
+        const resolved = path.resolve(explicitPath);
+        if (fs.existsSync(resolved)) {
+          const stat = fs.statSync(resolved);
+          if (stat.isFile()) {
+            // 文件路径 → 向上找项目根
+            const detected = detectProjectRoot(resolved);
+            if (detected) {
+              projectPath = detected.root;
+              projectRootMeta = { source: 'file-path', from: resolved, ...detected };
+            } else {
+              // 找不到 marker 时使用文件所在目录（兼容无 marker 的简单项目）
+              projectPath = path.dirname(resolved);
+              projectRootMeta = { source: 'file-dir-fallback', from: resolved };
+            }
+          } else {
+            // 目录路径 → 先尝试作为项目根；若不是项目根则向上找
+            const detected = detectProjectRoot(resolved);
+            if (detected) {
+              projectPath = detected.root;
+              projectRootMeta = { source: 'explicit', from: resolved, ...detected };
+            } else {
+              projectPath = resolved; // 目录无 marker 仍允许（如纯油猴脚本）
+              projectRootMeta = { source: 'explicit-no-marker', from: resolved };
+            }
+          }
+        } else {
+          fail(`路径不存在: ${resolved}`);
+        }
+      } else {
+        // 未传 repoPath → 从 cwd 向上找
+        const detected = detectProjectRoot('', { cwd: process.cwd() });
+        if (detected) {
+          projectPath = detected.root;
+          projectRootMeta = { source: 'cwd-detected', ...detected };
+        } else {
+          // 找不到 marker → 退到 cwd 本身
+          projectPath = process.cwd();
+          projectRootMeta = { source: 'cwd-fallback' };
+        }
       }
-      if (!fs.statSync(projectPath).isDirectory()) {
-        fail(`路径不是目录: ${projectPath}`);
+
+      if (!fs.existsSync(projectPath) || !fs.statSync(projectPath).isDirectory()) {
+        fail(`项目路径不是目录: ${projectPath}`);
       }
       // 借鉴 asdm-aos 的 6 步流水线进度（action.ts doRefreshRepo）：
       // scan:start → scan:done → parse:done → resolve:done → build:done → save:done
@@ -67,6 +111,15 @@ export const actionCommand = new Command('action')
         cycles: meta.cycles.length,
         orphanCandidates: meta.orphanCandidates.length,
         analysisErrors: project.analysisErrors?.length ?? 0,
+        // 项目根来源（借鉴 asdm-aos projectDetector；方便 agent 复盘）
+        projectRoot: projectRootMeta
+          ? {
+              path: projectPath,
+              source: projectRootMeta.source,
+              marker: projectRootMeta.marker ?? null,
+              description: projectRootMeta.description ?? null,
+            }
+          : { path: projectPath, source: 'unset' },
         ...(silent ? {} : { steps: stepLog }),
       }, null, 2));
       return;

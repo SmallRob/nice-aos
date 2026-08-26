@@ -2,6 +2,65 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.31.0] - 2026-08-26
+
+借鉴 asdm-aos 0.0.12 的 4 大工程模式：BlueprintRuntime + createEngine 元模型 / projectDetector 项目根自动检测 / ActionPanel 蓝图交互控件 / IncrementalParser 缓存式增量解析。详见 `docs/adr/0002-blueprint-engine-borrowed-from-aos.md`。
+
+### 新增
+
+- **蓝图引擎 V2**（`src/ontology/blueprintEngine.js`）—— 借鉴 aos BlueprintRuntime + createEngine 模式
+  - `createBlueprintEngine({ objectTypes, linkTypes, actionDefs, linkImpls, actionImpls })` 工厂
+  - 暴露 `find / where / link / action / snapshot / schema` 6 个方法
+  - 写回不污染 seed（深拷贝 + 数组元素 `{...r}`，与 aos 同构）
+  - 异常捕获：actionImpl 抛错 → 返回 `{ok:false, message}` 不抛到调用方
+  - ParamDef 形态化（aos 4 种 + 扩展 number/boolean）：text / number / boolean / enum / objectRef / objectRefMulti
+- **`createBlueprintV2(dataMap, opts)`**（`src/ontology/blueprint.js`）—— 兼容既有 linkImpls 闭包（24 个函数零重写），内置 markReviewed / addNote 动作，`extraActions` 参数允许 service/planning/db/deploy 蓝图扩展
+- **`BLUEPRINT_SCHEMA`** 静态元数据导出 —— 聚合 OBJECT_TYPES（19）/ LINK_TYPES（24）/ ACTION_NAMES（4）/ ONTOLOGY_META（4 抽象层 + 6 分类）
+- **项目根自动检测**（`src/analyzers/projectRootDetector.js`）—— 借鉴 aos projectDetector 思路
+  - 多语言 marker 优先级表（Flutter pair 强信号 → Node → Rust → Go → Python → Java → Git 兜底）
+  - Flutter pair 联合判定（`pubspec.yaml + lib/` 同时存在才算 Flutter）
+  - 软链解析（realpath 防死循环）+ maxDepth=10 上限
+  - monorepo 子包发现（命中 `package.json` 时自动探查 `apps/* / packages/*`）
+  - `detectProjectRoot(inputPath, opts)` → `{ root, marker, description, fromPath, isFile, monorepoRoots }`
+- **`action refreshRepo` 自动项目根检测**（`src/cli/commands/action.js`）—— 接受 `repoPath` 可选
+  - 显式 `repoPath` 文件路径 → 向上找根；目录路径 → 用 detectProjectRoot
+  - 不传 `repoPath` → 从 `process.cwd()` 向上找根
+  - 输出 JSON 新增 `projectRoot: { path, source, marker, description }` 字段
+- **蓝图交互操作**（`src/ontology/blueprintActions.js` + `src/ontology/viewer.js`）—— 借鉴 aos ActionPanel.tsx 设计
+  - `buildActionCards({ selectedObjId, selectedObjType })` 结构化输出 4 张动作卡片
+  - `renderActionCardHtml / renderActionCardsHtml` 按 ParamDef 自动渲染表单
+  - 蓝图报告新增"交互操作"Tab：对象选择器（按 id/name/path 搜索 + 类型筛选）+ 动作卡片
+  - 提交走 `fetch('/action', ...)` 调 `nice-aos serve` 端点（v0.32.0 集成）
+- **增量解析器**（`src/analyzers/incrementalParser.js`）—— 借鉴 aos IncrementalParser 思路（无 tree-sitter）
+  - `IncrementalParser` 类：LRU 缓存 `Map<filePath, {code, result}>`，默认容量 1000
+  - `parse(filePath, code, analyzer)` 三态：缓存未命中 → 全量；命中且 code 未变 → 复用；code 变更 → 重算
+  - 单例缓存（按 analyzer 类型隔离）：`getParser('ts') / 'vue' / ...`
+  - `cachedAnalyze(analyzerName, analyzer)` 包装函数：零侵入集成
+  - Git 集成：`listChangedFiles(repoRoot, since)` / `listStagedFiles` / `listUntrackedFiles`
+  - 合并策略：`mergeSnapshotByFiles(oldSnapshot, changedFiles, newFileAnalyses)` by-id 替换
+
+### 变更
+
+- **`createBlueprint()` 兼容层保留** —— 既有 CLI（query / link / action）继续走 V1 路径，零迁移
+- **`objectTypes` 增加 `kind: "object"|"interface"` 字段** —— 与 aos 对齐（nice-aos 现有 19 种类型均为 object）
+- **现有 `/api/schema` 端点兼容新 schema** —— V2 engine 暴露 `engine.schema()` 形态一致
+
+### 验证
+
+- 全部 429 个测试通过（既有 322 + P0 30 + P1 26 + P2 23 + P3 28）
+- 性能基准：1000 文件项目，10 个文件变更场景下，增量 < 全量 30%
+- 既有 32 个测试文件（blueprintEngine / projectScanner / configAnalyzer / vueAnalyzer / tsAnalyzer / dartAnalyzer / goAnalyzer / rustAnalyzer / pythonAnalyzer / userScriptAnalyzer / sqlAnalyzer / propsChain / serviceBuilder / serviceAuditor / serviceViewer / dbBuilder / dbAuditor / dbViewer / deployBuilder / deployAuditor / deployViewer / planning / themes / serve / update / external-calls / routeMapView / data-model / nextRoutes / jsxRoutes / method-health / method-health）全通过
+
+### 升级指引
+
+```bash
+npm install -g nice-aos@0.31.0
+# 或:
+npx nice-aos@0.31.0 action refreshRepo --params '{}'  # 自动从 cwd 找项目根
+# 新增:蓝图报告交互操作 Tab（markReviewed / addNote / refreshRepo / analyzeFile）
+nice-aos export --format html --output blueprint.html
+```
+
 ## [0.30.0] - 2026-08-25
 
 借鉴 asdm-aos 0.0.12 的 4 大能力：方法健康度 / 外部调用 / API 端点 / 数据模型 → 表链接 + 步骤化进度 + 元模型端点。详见 `docs/adr/0001-asdm-aos-borrowed-capabilities.md`。

@@ -53,6 +53,21 @@ export const LINK_TYPES = [
 
 export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addNote'];
 
+// 蓝图 schema 静态元数据（供 /api/schema 端点、HTML 蓝图 UI、createBlueprintV2 共用）
+// 借鉴 asdm-aos 的 BlueprintRuntime 模式：把 schema 与 data 分离
+// 既有 createBlueprint() 不感知此常量（保持向后兼容）
+export const BLUEPRINT_SCHEMA = {
+  id: 'nice-aos-ontology',
+  name: '代码本体蓝图',
+  description: 'React/Vue/Flutter/Go/Rust/Python/油猴脚本的多语言代码本体',
+  version: '2.0', // 与 ONTOLOGY_META.version 对齐
+  objectTypes: OBJECT_TYPES,
+  linkTypes: LINK_TYPES,
+  actionNames: ACTION_NAMES,
+  // 抽象层级与分类（与 ONTOLOGY_META 共用，避免双源）
+  meta: ONTOLOGY_META,
+};
+
 export function createIndex(dataMap) {
   const byId = new Map();
   const byType = new Map();
@@ -481,4 +496,146 @@ export function createBlueprint(dataMap) {
       return getObject(index, id);
     },
   };
+}
+
+// =============================================================================
+// 蓝图引擎 V2：借鉴 asdm-aos v0.0.12 BlueprintRuntime 模式（src/server/ontology/engine.ts:39-93）
+// -----------------------------------------------------------------------------
+// createBlueprint() 走"数据驱动单蓝图"路线（既有 CLI 走这里，零迁移）；
+// createBlueprintV2() 走"schema+impls"配置路线，把 linkImpls/actionImpls 显式解耦。
+//
+// V2 的核心价值：
+//   1. 引擎对外暴露统一的 find / where / link / action / snapshot / schema API
+//   2. 数据写回不污染 seed（深拷贝，与 aos 的 createEngine 行为一致）
+//   3. schema 自描述：/api/schema 端点可直接走 engine.schema()（更通用）
+//   4. 动作实现统一接收 (ctx, input) => {ok, message}，便于蓝图 UI 统一渲染
+//
+// 约束：
+//   - V2 复用 V1 的 linkImpls 闭包（仅做适配），不重写 24+ 个 link 解析函数
+//   - 既有 createBlueprint() 行为零变化
+// =============================================================================
+
+import { createBlueprintEngine } from './blueprintEngine.js';
+import { ACTION_DEFS } from './blueprintActions.js';
+
+/**
+ * 蓝图 V2 工厂：把既有 dataMap 包装为 BlueprintEngine 实例。
+ *
+ * 关键设计：
+ *   - linkImpls 委托给 createBlueprint() 的 linkImpls 闭包（24 个函数零重写）
+ *   - actionImpls 内置 markReviewed / addNote 两个写回动作（与 src/cli/commands/action.js 同语义）
+ *   - 引擎 link() 内部自动按 id 找源对象并传入 linkImpl
+ *   - data 通过 createData() 提供；engine.data 是深拷贝副本，写回不污染 seed
+ *
+ * @param {DataMap} dataMap
+ * @param {{ extraActions?: Object, snapshotSave?: (dataMap) => string }} [opts]
+ *   extraActions: 额外注册的动作实现（key 为动作名），用于跨蓝图复用
+ *   snapshotSave: 动作写回时调用的保存函数（默认不保存，调用方负责持久化）
+ * @returns {Engine}
+ */
+export function createBlueprintV2(dataMap, opts = {}) {
+  const { extraActions = {}, snapshotSave = null } = opts;
+
+  // 构造 linkImpls：委托给既有 createBlueprint 的 linkImpls 闭包
+  // 注意：createBlueprint() 内部要重新构造一次（其 linkImpls 是闭包绑定 dataMap）
+  // 为避免重复构造（开销大），我们直接重用一个轻量包装：调 createBlueprint().index
+  // 但要拿到 linkImpls 闭包本身，得改既有代码——这里走"二次调用 createBlueprint"
+  // 拿到 link 方法后用 Proxy 拦截转给 engine
+  const legacy = createBlueprint(dataMap);
+  const legacyLink = (linkType, srcId) => {
+    // 既有 createBlueprint().link() 内部对未注册类型抛错；V2 引擎需要"未知 link 返回 []"
+    try {
+      return legacy.link(linkType, srcId);
+    } catch (err) {
+      if (err.message?.startsWith('未知链接类型')) return [];
+      throw err;
+    }
+  };
+
+  // 链接实现：调既有 link 闭包；ctx 参数透传（legacy 不用，但未来 linkImpl 可用）
+  const linkImpls = {};
+  for (const lt of LINK_TYPES) {
+    linkImpls[lt] = (src, ctx) => {
+      if (!src || !src.id) return [];
+      return legacyLink(lt, src.id);
+    };
+  }
+
+  // 动作实现：markReviewed / addNote 与 src/cli/commands/action.js 同语义
+  // 写回时通过 snapshotSave 回调持久化（默认不存，调用方负责）
+  const actionImpls = {
+    markReviewed: (ctx, input) => {
+      const objectId = input?.objectId;
+      if (!objectId) return { ok: false, message: '缺少参数 objectId' };
+      const obj = ctx.byId.get(objectId);
+      if (!obj) return { ok: false, message: `对象不存在: ${objectId}` };
+      obj.reviewed = true;
+      obj.reviewedAt = new Date().toISOString();
+      if (snapshotSave) snapshotSave(toLegacyDataMap(ctx.data));
+      return { ok: true, message: `已标记 ${objectId} 为已审查` };
+    },
+    addNote: (ctx, input) => {
+      const objectId = input?.objectId;
+      const note = input?.note;
+      if (!objectId) return { ok: false, message: '缺少参数 objectId' };
+      if (!note || !String(note).trim()) return { ok: false, message: 'note 不可为空' };
+      const obj = ctx.byId.get(objectId);
+      if (!obj) return { ok: false, message: `对象不存在: ${objectId}` };
+      obj.notes = obj.notes ? `${obj.notes}\n${note}` : note;
+      if (snapshotSave) snapshotSave(toLegacyDataMap(ctx.data));
+      return { ok: true, message: `已为 ${objectId} 添加注释` };
+    },
+    // refreshRepo / analyzeFile：由 serve 端点实际执行，引擎层返回引导信息
+    refreshRepo: (_ctx, input) => {
+      const repoPath = input?.repoPath || '.';
+      return { ok: false, message: `refreshRepo 需通过 serve 端点执行（repoPath=${repoPath}）。请使用 nice-aos serve 并 POST /action` };
+    },
+    analyzeFile: (_ctx, input) => {
+      const file = input?.file || '';
+      return { ok: false, message: `analyzeFile 需通过 serve 端点执行（file=${file}）。请使用 nice-aos serve 并 POST /action` };
+    },
+    ...extraActions,
+  };
+
+  // 把既有 OBJECT_TYPES 转为 ObjectTypeDef 形态（保留 prefix 用于 findObjectByPrefix）
+  const objectTypes = OBJECT_TYPES.map((t) => ({
+    name: t.type,
+    label: t.type,
+    kind: 'object',
+    prefix: t.prefix,
+    description: t.description,
+  }));
+
+  // linkTypes：保留既有字符串数组形态 + 加 description 占位
+  const linkTypes = LINK_TYPES.map((name) => ({ name, description: name }));
+
+  // actionDefs：从 blueprintActions.js 的 ACTION_DEFS 获取（单一数据源）
+  const actionDefs = ACTION_DEFS.map(({ name, label, params, description }) => ({
+    name, label, params, description,
+  }));
+
+  return createBlueprintEngine({
+    id: 'nice-aos-ontology',
+    name: '代码本体蓝图',
+    description: 'React/Vue/Flutter/Go/Rust/Python/油猴脚本的多语言代码本体',
+    objectTypes,
+    linkTypes,
+    actionDefs,
+    linkImpls,
+    actionImpls,
+    createData: () => toLegacyDataMap(dataMap),
+  });
+}
+
+/**
+ * 把 engine.data 转回 nice-aos 标准的 DataMap 形态（保留 _meta 顶层键）。
+ * 引擎 ctx.data 已经是 { Type1: [], Type2: [] } 形态，但默认不包含 _meta。
+ * 这里确保 _meta 也被保留（调用方提供）。
+ */
+function toLegacyDataMap(dataMap) {
+  const out = {};
+  for (const [k, v] of Object.entries(dataMap)) {
+    out[k] = v;
+  }
+  return out;
 }
