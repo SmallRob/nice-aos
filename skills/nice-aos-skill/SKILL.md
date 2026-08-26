@@ -314,6 +314,39 @@ action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页�
 - 油猴文件：追加 `UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction` 五类（ScriptFunction 含函数级 deadCandidate）
 - 典型管道用法：`nice-aos action analyzeFile --params '{"file":"x.user.js"}' | jq '.ScriptFunction[] | select(.deadCandidate)'`
 
+### ask / serve / storage — 快照协同（外部 AI CLI 与 HTTP 数据源）
+
+```bash
+# 向外部 AI CLI 提问：自动把快照浓缩为上下文（项目画像/架构分层/功能域/模块 Top 10/依赖/健康指标）拼进 prompt
+# agent 探测顺序 codebuddy → opencode → 模型服务兜底（--agent 可显式指定；--json 输出结构化结果）
+# 空数据自动快照：无 snapshot.json 或空项目快照（fileCount=0）时先自动 refreshRepo 再问答（--no-auto-refresh 跳过）
+ask "这个项目有哪些功能域？"
+ask "架构分层的文件分布？" --agent opencode
+ask "有哪些循环依赖？" --serve        # 同时后台起 serve，HTTP URL 拼进 prompt 供 AI CLI 深查完整快照
+ask "依赖健康度？" --json             # {ok, agent, contextSource, durationMs, answer}
+ask "ASDM架构？"                     # 无快照/空项目 → 自动 refreshRepo 重建后再答
+
+# 备选模型服务（OpenAI 兼容，如 DeepSeek）：CLI 超时/失败自动降级；--agent api 直连
+ask config set --provider deepseek --api-key sk-xxx   # 密钥 AES-256-GCM 加密落盘 ~/.nice-aos/config.json
+ask config show                                        # 查看生效配置（掩码；env 变量 NICE_AOS_API_KEY/BASE_URL/MODEL 优先）
+ask config unset                                       # 清除
+ask "Q" --agent api                                    # 直连模型服务
+
+# 本地 HTTP 数据源（全端点 CORS *，就绪状态每请求实时探测）
+serve                                 # 默认 http://127.0.0.1:8420
+serve --port 0                        # 自动分配端口
+
+# SQLite 镜像（可选加速层；JSON 始终是主数据源，better-sqlite3 缺失自动降级不阻塞）
+storage rebuild --kind code          # snapshot.json → <snapshotDir>/aos.sqlite
+storage status                       # 镜像状态
+```
+
+serve 端点：`/snapshot.json`（完整快照）/ `/blueprint.html` / `/api/status` / `/api/stats` / `/api/schema`（本体元模型，agent 自我发现能力）/ `/api/objects/:type?where=k=v,k2~v2&limit=200`（对象级查询，SQLite 优先回退 JSON）/ `/api/ask/context?q=问题`（与 ask 命令同一上下文构建器）。
+
+上下文构建性能：SQLite 镜像存在时 ask/serve 走 4 次预过滤 SQL（12MB 快照实测热查询 0.2ms、冷启动 39ms）；无镜像回退 JSON 全量 parse（同快照约 500ms）。写入双写闭环：refreshRepo / markReviewed / addNote 落 JSON 同时镜像 SQLite，跨进程 WAL + 锁文件保护。
+
+agent 降级链：CLI agent（codebuddy → opencode）超时/失败自动降级到已配置的 OpenAI 兼容模型服务（每级独立超时预算，`--json` 的 `fallbackFrom` 记录失败链）。
+
 ### export — 导出
 
 ```bash
@@ -407,7 +440,9 @@ link implements --src "class:src/impl/localStorage.ts#LocalStorage"  # 实现了
 | 分析纯油猴脚本仓库 | 直接 refreshRepo（无需 package.json）；快照不存在时照常自动构建 |
 | 大型油猴仓库 refreshRepo | 数百个超大脚本（单脚本 2 万+ 行）全量分析可达数十秒，属正常耗时，耐心等待而非中断重试 |
 | 用户要"项目蓝图 / 可视化 / 汇报材料" | `export --format html` 生成自包含蓝图 HTML 并告知文件路径（无需起服务）；agent 自用聚合数据用 `--format viewmodel` |
-| markReviewed/addNote | 执行 review 类任务后主动回写，下次会话可恢复上下文 |
+| 用户想让 codebuddy/opencode 等外部 AI CLI 理解本项目 | `ask "<问题>"`（快照上下文自动注入；`--serve` 附带 HTTP 深查端点；未装 AI CLI 时报错并提示安装） |
+| ask 时快照缺失或为空项目（fileCount=0） | ask 自动执行 refreshRepo 重建快照后作答，无需手动先跑；仅 CI 等显式控制场景用 `--no-auto-refresh` |
+| markReviewed/addNote | 执行 review 类任务后主动回写，下次会话可恢复上下文（JSON 与 SQLite 镜像双写） |
 
 ## 输出格式
 

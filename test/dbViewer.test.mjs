@@ -163,7 +163,7 @@ test('数据统计 / 数据图谱 Tab：KPI + 环形图 + 力导向图 SVG 渲�
 
   // 执行内嵌脚本（DOM stub），验证两个新视图的渲染产物
   const dataJson = html.match(/<script id="db-viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-  const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+  const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
   const elements = new Map();
   const makeEl = (id) => {
     if (!elements.has(id)) {
@@ -258,7 +258,7 @@ test('演进图表惰性渲染：隐藏时不绘制，Tab 激活后按实测宽�
   const model = buildDbViewerModel(buildDbDataMap());
   const html = renderDbOverviewHtml(model);
   const dataJson = html.match(/<script id="db-viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-  const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+  const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
 
   const elements = new Map();
   let containerWidth = 0; // 模拟：初始隐藏（display:none → 宽度 0），点击 Tab 后可见

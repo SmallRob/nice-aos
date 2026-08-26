@@ -2,33 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+// 目录解析统一走 paths.js（单一状态源；CLI --snapshot-dir 与 storage 层 SQLite 路径共用同一覆盖链）
+import { setSnapshotDir, getSnapshotDirOverride, getSnapshotDir, ENV_VAR } from '../paths.js';
+export { setSnapshotDir, getSnapshotDirOverride, getSnapshotDir };
+
 const SNAPSHOT_FILE = 'snapshot.json';
-const ENV_VAR = 'NICE_AOS_SNAPSHOT_DIR';
-
-let snapshotDirOverride = null;
-
-export function setSnapshotDir(dir) {
-  snapshotDirOverride = dir;
-}
-
-// 是否存在显式覆盖（--snapshot-dir 参数经 preAction 钩子写入；不含环境变量与回退链）
-export function getSnapshotDirOverride() {
-  return snapshotDirOverride;
-}
-
-export function getSnapshotDir() {
-  if (snapshotDirOverride) return snapshotDirOverride;
-  if (process.env[ENV_VAR]) return process.env[ENV_VAR];
-  // 回退链：cwd/.nice-aos/data → 用户主目录 ~/.nice-aos/data
-  const candidates = [
-    path.join(process.cwd(), '.nice-aos', 'data'),
-    path.join(os.homedir(), '.nice-aos', 'data'),
-  ];
-  for (const dir of candidates) {
-    if (fs.existsSync(path.join(dir, SNAPSHOT_FILE))) return dir;
-  }
-  return candidates[0]; // 均不存在时保持原行为（后续 loadSnapshot 报 NO_SNAPSHOT）
-}
 
 export function getSnapshotPath() {
   return path.join(getSnapshotDir(), SNAPSHOT_FILE);

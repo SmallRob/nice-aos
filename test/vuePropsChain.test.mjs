@@ -449,7 +449,7 @@ test('viewer：propFlow 消费 Vue PropEdge + 类视图 renders 边渲染', asyn
 
     // mock DOM 执行内嵌脚本，验证实体面板实际渲染输出（chips 的 renders 计数为运行时拼接）
     const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
     const elements = new Map();
     const makeEl = (id) => {
       if (!elements.has(id)) {

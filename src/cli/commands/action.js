@@ -6,6 +6,8 @@ import { createBlueprint, ACTION_NAMES } from '../../ontology/blueprint.js';
 import { buildOntologyData, buildSingleFileOntology } from '../../ontology/builder.js';
 import { detectProjectRoot } from '../../analyzers/projectRootDetector.js';
 import { fail } from '../shared.js';
+import { applyOverlay, saveSnapshot as sqlSaveSnapshot } from '../../storage/index.js';
+import { parseObjectId } from '../../storage/objectId.js';
 
 export const actionCommand = new Command('action')
   .description('执行受控动作（' + ACTION_NAMES.join('/') + '）')
@@ -152,6 +154,18 @@ export const actionCommand = new Command('action')
       obj.reviewed = true;
       obj.reviewedAt = new Date().toISOString();
       saveSnapshot(dataMap);
+      // v0.31 双写：SQLite overlay 增量追加（no-snapshot 时先镜像当前 dataMap 再写 overlay）
+      try {
+        const { type, id } = parseObjectId(objectId);
+        let r = applyOverlay({ kind: 'code', type, id, patch: { reviewed: true, reviewedAt: obj.reviewedAt } });
+        if (r && r.ok === false && r.reason === 'no-snapshot') {
+          const w = sqlSaveSnapshot({ kind: 'code', dataMap });
+          if (w.ok) r = applyOverlay({ kind: 'code', type, id, patch: { reviewed: true, reviewedAt: obj.reviewedAt } });
+        }
+        if (r && r.ok === false) console.error(`⚠️ SQLite 双写失败: ${r.reason}（JSON 快照已更新，不影响本次结果）`);
+      } catch (err) {
+        console.error(`⚠️ SQLite 双写异常: ${err.message}`);
+      }
       console.log(JSON.stringify({ ok: true, message: `已标记 ${objectId} 为已审查` }, null, 2));
       return;
     }
@@ -162,8 +176,21 @@ export const actionCommand = new Command('action')
       if (!note) fail('缺少参数 note（不可为空）');
       const obj = blueprint.find(objectId);
       if (!obj) fail(`对象不存在: ${objectId}`);
-      obj.notes = obj.notes ? `${obj.notes}\n${note}` : note;
+      const existing = obj.notes;
+      obj.notes = existing ? `${existing}\n${note}` : note;
       saveSnapshot(dataMap);
+      // v0.31 双写：SQLite overlay 增量追加（no-snapshot 时先镜像当前 dataMap 再写 overlay）
+      try {
+        const { type, id } = parseObjectId(objectId);
+        let r = applyOverlay({ kind: 'code', type, id, patch: { notes: obj.notes } });
+        if (r && r.ok === false && r.reason === 'no-snapshot') {
+          const w = sqlSaveSnapshot({ kind: 'code', dataMap });
+          if (w.ok) r = applyOverlay({ kind: 'code', type, id, patch: { notes: obj.notes } });
+        }
+        if (r && r.ok === false) console.error(`⚠️ SQLite 双写失败: ${r.reason}（JSON 快照已更新，不影响本次结果）`);
+      } catch (err) {
+        console.error(`⚠️ SQLite 双写异常: ${err.message}`);
+      }
       console.log(JSON.stringify({ ok: true, message: `已为 ${objectId} 添加注释` }, null, 2));
     }
   });

@@ -64,7 +64,7 @@ test('serve 端点契约：默认目录解析 + CORS + 各端点响应', async (
   assert.equal(st.json.snapshot.ready, true);
   assert.equal(st.json.snapshot.state, 'ok');
   assert.equal(st.json.blueprint.ready, true);
-  assert.deepEqual(st.json.endpoints, ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/']);
+  assert.deepEqual(st.json.endpoints, ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/api/objects/:type', '/api/ask/context', '/']);
   assert.equal(st.json.root, dir);
 
   // /snapshot.json：完整快照可解析
@@ -163,3 +163,104 @@ test('serve --dir / --snapshot-dir 显式指定数据源目录', async (t) => {
   assert.equal(sc.status, 404);
   assert.match(sc.json.error, /refreshRepo/);
 });
+
+// 预镜像 fixture 到 SQLite（storage rebuild），返回 promise
+function rebuildSqlite(dataDir) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, '--snapshot-dir', dataDir, 'storage', 'rebuild', '--kind', 'code'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { out += d.toString(); });
+    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`storage rebuild 失败(${code}): ${out}`))));
+    child.on('error', reject);
+  });
+}
+
+test('serve SQL 端点（SQLite 路径）：/api/objects/:type + /api/ask/context', async (t) => {
+  const dir = mkFixture(); // <dir>/.nice-aos/data/snapshot.json
+  const dataDir = path.join(dir, '.nice-aos', 'data');
+  await rebuildSqlite(dataDir); // 镜像到 <dataDir>/aos.sqlite
+
+  const { port } = await startServe(['--root', dir], t);
+
+  // limit 截断：2 个 SourceFile 只取 1
+  const lim = await get(port, '/api/objects/SourceFile?limit=1');
+  assert.equal(lim.status, 200);
+  assert.equal(lim.json.ok, true);
+  assert.equal(lim.json.source, 'sqlite');
+  assert.equal(lim.json.total, 2);
+  assert.equal(lim.json.count, 1);
+  assert.equal(lim.json.truncated, true);
+  assert.equal(lim.json.objects.length, 1);
+
+  // limit=0 不限
+  const all = await get(port, '/api/objects/SourceFile?limit=0');
+  assert.equal(all.json.count, 2);
+  assert.equal(all.json.count, all.json.total);
+  assert.equal(all.json.truncated, false);
+
+  // where 模糊（k~v 子串忽略大小写）
+  const fuzzy = await get(port, '/api/objects/SourceFile?where=id~src/a');
+  assert.equal(fuzzy.json.total, 1);
+  assert.equal(fuzzy.json.objects[0].id, 'file:src/a.ts');
+
+  // where 精确（k=v）
+  const eq = await get(port, '/api/objects/Component?where=name=A');
+  assert.equal(eq.json.total, 1);
+  assert.equal(eq.json.objects[0].name, 'A');
+
+  // 未知类型：400 + validTypes
+  const bad = await get(port, '/api/objects/Nope');
+  assert.equal(bad.status, 400);
+  assert.equal(bad.json.ok, false);
+  assert.ok(Array.isArray(bad.json.validTypes));
+  assert.ok(bad.json.validTypes.includes('SourceFile'));
+
+  // ask 上下文：source=sqlite，含项目名
+  const ctx = await get(port, '/api/ask/context?q=' + encodeURIComponent('架构?'));
+  assert.equal(ctx.status, 200);
+  assert.equal(ctx.json.ok, true);
+  assert.equal(ctx.json.source, 'sqlite');
+  assert.match(ctx.json.context, /名称: serve-fixture/);
+  assert.match(ctx.json.context, /问题/);
+  assert.match(ctx.json.context, /架构\?/);
+});
+
+test('serve SQL 端点（JSON 回退）：--sqlite off 时两个端点走 JSON', async (t) => {
+  const dir = mkFixture();
+
+  // 全局 --sqlite off：storage 层禁用 → loadType 返回 null → JSON 回退
+  const { port } = await startServeSqliteOff(['--root', dir], t);
+
+  const objs = await get(port, '/api/objects/SourceFile');
+  assert.equal(objs.status, 200);
+  assert.equal(objs.json.ok, true);
+  assert.equal(objs.json.source, 'json');
+  assert.equal(objs.json.total, 2);
+
+  const fuzzy = await get(port, '/api/objects/SourceFile?where=id~src/b');
+  assert.equal(fuzzy.json.total, 1);
+  assert.equal(fuzzy.json.objects[0].id, 'file:src/b.ts');
+
+  const ctx = await get(port, '/api/ask/context');
+  assert.equal(ctx.status, 200);
+  assert.equal(ctx.json.source, 'json');
+  assert.match(ctx.json.context, /名称: serve-fixture/);
+});
+
+// 与 startServe 相同但注入全局 --sqlite off（模式切换后 storage 单例失效，serve 每请求重探）
+function startServeSqliteOff(args, t) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, '--sqlite', 'off', 'serve', '--port', '0', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    t.after(() => child.kill());
+    let out = '';
+    const timer = setTimeout(() => reject(new Error(`serve 启动超时，输出: ${out}`)), 20_000);
+    child.stdout.on('data', (d) => {
+      out += d.toString();
+      const m = out.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+      if (m) { clearTimeout(timer); resolve({ child, port: Number(m[1]) }); }
+    });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`serve 提前退出(${code})，输出: ${out}`)); });
+  });
+}

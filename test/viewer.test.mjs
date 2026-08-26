@@ -209,7 +209,7 @@ test('代码统计 / 代码图谱 Tab：KPI + 环形图 + 力导向图 SVG 渲�
 
     // 执行内嵌脚本（DOM stub），验证两个新视图的渲染产物
     const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
     const elements = new Map();
     const makeEl = (id) => {
       if (!elements.has(id)) {
@@ -291,7 +291,7 @@ test('架构分层条形图：层名不换行压缩、描述独立副行（无�
     const html = renderViewerHtml(model);
 
     const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
     const elements = new Map();
     const makeEl = (id) => {
       if (!elements.has(id)) {
@@ -389,7 +389,7 @@ test('实体类图 Tab：跨语言 UML 类框 + 关系边渲染（内嵌脚本�
     assert.ok(html.includes('data-tab="entities"'), 'HTML 应含实体类图 Tab');
 
     const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
     const elements = new Map();
     const makeEl = (id) => {
       if (!elements.has(id)) {
@@ -460,7 +460,7 @@ test('蓝图页头生成时间显示本机时区（不显示 UTC 标准时间）
 
     const html = renderViewerHtml(model);
     const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
     const elements = new Map();
     const makeEl = (id) => {
       if (!elements.has(id)) {

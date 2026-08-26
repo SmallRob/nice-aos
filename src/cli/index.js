@@ -8,6 +8,9 @@ import { setDbSnapshotDir } from '../database/dbSnapshot.js';
 import { setDeploySnapshotDir } from '../deployment/deploySnapshot.js';
 import { setServiceSnapshotDir } from '../service/serviceSnapshot.js';
 import { setPlanningSnapshotDir } from '../planning/docsSnapshot.js';
+import { setOverviewSnapshotDir } from '../overview/overviewSnapshot.js';
+import { setStorageMode, setSqlitePath, setBlueprint, closeDb } from '../storage/index.js';
+import { OBJECT_TYPES, LINK_TYPES } from '../ontology/blueprint.js';
 import { queryCommand } from './commands/query.js';
 import { linkCommand } from './commands/link.js';
 import { actionCommand } from './commands/action.js';
@@ -18,6 +21,12 @@ import { dbCommand } from './commands/db.js';
 import { deployCommand } from './commands/deploy.js';
 import { serviceCommand } from './commands/service.js';
 import { planningCommand } from './commands/planning.js';
+import { overviewCommand } from './commands/overview.js';
+import { askCommand } from './commands/ask.js';
+import { storageCommand } from '../storage/storageCommand.js';
+
+// 蓝图注入到 storage 模块（避免 sqliteSnapshot.js 顶层 import blueprint.js 造成循环）
+setBlueprint({ OBJECT_TYPES, LINK_TYPES });
 
 // 版本号取自 package.json，避免与发布版本脱节
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -33,17 +42,25 @@ program
   .option('--deploy-snapshot-dir <path>', '部署快照目录（默认与代码快照同目录，文件名 deploy-snapshot.json）')
   .option('--service-snapshot-dir <path>', '后端服务快照目录（默认与代码快照同目录，文件名 service-snapshot.json）')
   .option('--planning-snapshot-dir <path>', '产品规划快照目录（默认与代码快照同目录，文件名 planning-snapshot.json）')
+  .option('--overview-snapshot-dir <path>', '全景架构快照目录（默认与代码快照同目录，文件名 overview-snapshot.json）')
+  .option('--sqlite <mode>', 'SQLite 存储模式: auto | on | off（默认 auto，better-sqlite3 不可用时自动降级到 JSON）')
+  .option('--sqlite-path <path>', 'SQLite 文件路径（默认 <snapshot-dir>/aos.sqlite）')
   .hook('preAction', (thisCommand) => {
-    const dir = thisCommand.opts().snapshotDir;
+    const opts = thisCommand.opts();
+    const dir = opts.snapshotDir;
     if (dir) setSnapshotDir(dir);
-    const dbDir = thisCommand.opts().dbSnapshotDir;
+    const dbDir = opts.dbSnapshotDir;
     if (dbDir) setDbSnapshotDir(dbDir);
-    const deployDir = thisCommand.opts().deploySnapshotDir;
+    const deployDir = opts.deploySnapshotDir;
     if (deployDir) setDeploySnapshotDir(deployDir);
-    const serviceDir = thisCommand.opts().serviceSnapshotDir;
+    const serviceDir = opts.serviceSnapshotDir;
     if (serviceDir) setServiceSnapshotDir(serviceDir);
-    const planningDir = thisCommand.opts().planningSnapshotDir;
+    const planningDir = opts.planningSnapshotDir;
     if (planningDir) setPlanningSnapshotDir(planningDir);
+    const overviewDir = opts.overviewSnapshotDir;
+    if (overviewDir) setOverviewSnapshotDir(overviewDir);
+    if (opts.sqlite) setStorageMode(opts.sqlite);
+    if (opts.sqlitePath) setSqlitePath(opts.sqlitePath);
   });
 
 program.addCommand(queryCommand);
@@ -56,12 +73,21 @@ program.addCommand(dbCommand);
 program.addCommand(deployCommand);
 program.addCommand(serviceCommand);
 program.addCommand(planningCommand);
+program.addCommand(overviewCommand);
+program.addCommand(askCommand);
+program.addCommand(storageCommand);
 
-program.parseAsync().catch((err) => {
-  if (err.code === 'NO_SNAPSHOT' || err.code === 'NO_DB_SNAPSHOT' || err.code === 'NO_DEPLOY_SNAPSHOT' || err.code === 'NO_SERVICE_SNAPSHOT' || err.code === 'NO_PLANNING_SNAPSHOT') {
-    console.error(`\n⚠️  ${err.message}\n`);
-  } else {
-    console.error(`\n❌ ${err.message ?? err}\n`);
-  }
-  process.exit(1);
-});
+program.parseAsync()
+  .catch((err) => {
+    if (err.code === 'NO_SNAPSHOT' || err.code === 'NO_DB_SNAPSHOT' || err.code === 'NO_DEPLOY_SNAPSHOT' || err.code === 'NO_SERVICE_SNAPSHOT' || err.code === 'NO_PLANNING_SNAPSHOT') {
+      console.error(`\n⚠️  ${err.message}\n`);
+    } else {
+      console.error(`\n❌ ${err.message ?? err}\n`);
+    }
+    closeDb(); // process.exit 会跳过 finally，这里显式关闭
+    process.exit(1);
+  })
+  .finally(() => {
+    // CLI 退出前关闭 SQLite（清理 WAL/SHM 与 lock 文件；serve 长驻进程不受影响，parseAsync 不返回）
+    closeDb();
+  });

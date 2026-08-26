@@ -3471,21 +3471,13 @@ if (M.propFlow) renderPropFlow();
 if (M.entities) renderEntities();
 if (M.scriptBlueprint) renderScripts();
 if (M.interactive) { /* renderInteractive 调用移到第二个 script 块中（依赖其内定义的 renderInteractive / renderActionCardHtml） */ }
-` + endScript() + `</body>
+</script>` + renderInteractiveScript() + `
+</body>
 </html>`;
 }
 
 // 借鉴 asdm-aos v0.0.12 ActionPanel.tsx 设计：按对象类型过滤可用动作、点击对象自动填表单、提交走 fetch 调 nice-aos serve
 // 不引入 React 运行时；这些函数会被注入到 HTML 蓝图的 <script> 块中
-// 用 IIFE 包裹 + 反引号模板字符串拼接，避免 `</script>` 字面量在原始字符串中出现
-
-// 借鉴 asdm-aos v0.0.12 ActionPanel.tsx 设计：按对象类型过滤可用动作、点击对象自动填表单、提交走 fetch 调 nice-aos serve
-// 不引入 React 运行时；这些函数会被注入到 HTML 蓝图的 <script> 块中
-// 用 IIFE 包裹 + 反引号模板字符串拼接，避免 `</script>` 字面量在原始字符串中出现
-
-// 借鉴 asdm-aos v0.0.12 ActionPanel.tsx 设计：按对象类型过滤可用动作、点击对象自动填表单、提交走 fetch 调 nice-aos serve
-// 不引入 React 运行时；这些函数会被注入到 HTML 蓝图的 <script> 块中
-// 用 IIFE 包裹 + 反引号模板字符串拼接，避免 `</script>` 字面量在原始字符串中出现
 // 拼接 </script> 字符串避免被 HTML 解析器 / JS 解析器误识别
 function endScript() { return '<' + '/script>'; }
 

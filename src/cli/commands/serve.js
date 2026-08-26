@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { Command } from 'commander';
-import { fail } from '../shared.js';
-import { getSnapshotDirOverride } from '../../ontology/snapshot.js';
+import { fail, parseWhere, matchesWhere } from '../shared.js';
+import { getSnapshotDirOverride, setSnapshotDir } from '../../paths.js';
+import { loadType, buildAskContextFromSql } from '../../storage/index.js';
+import { buildAskContext } from './askContext.js';
 import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META } from '../../ontology/blueprint.js';
 
 // serve —— 在本地启动数据源 HTTP 服务。
@@ -73,6 +75,8 @@ ${row('本体元模型', true, `<a href="/api/schema">/api/schema</a> — ${OBJE
 <li><code>GET /api/status</code> — 服务状态与端点清单</li>
 <li><code>GET /api/stats</code> — 快照对象统计摘要</li>
 <li><code>GET /api/schema</code> — 本体元模型（对象/链接/动作 schema,借鉴 asdm-aos）</li>
+<li><code>GET /api/objects/:type</code> — 对象级查询（?where=k=v,k2~v2&amp;limit=200；SQLite 优先，回退 JSON）</li>
+<li><code>GET /api/ask/context</code> — ask 上下文（?q=问题；4 次 SQL 预过滤，回退 JSON）</li>
 <li><code>GET /</code> — 本页</li>
 </ul>
 <p style="color:#64748b;font-size:12px;margin-top:24px">提示：若快照缺失请先执行 <code>nice-aos action refreshRepo</code>；蓝图为 <code>nice-aos export --format html</code>。</p>
@@ -92,6 +96,10 @@ export const serveCommand = new Command('serve')
     const port = Number(opts.port);
     const host = opts.host;
     if (!Number.isInteger(port) || port < 0 || port > 65535) fail(`无效端口: ${opts.port}`);
+
+    // SQL 端点数据目录对齐：storage 层 getSqlitePath 走 paths.js 的覆盖链，
+    // 不设的话会用 cwd/.nice-aos/data 而非 serve 解析出的 --dir/--root 目录
+    setSnapshotDir(dataDir);
 
     const server = http.createServer((req, res) => {
       const url = (req.url || '/').split('?')[0];
@@ -122,7 +130,7 @@ export const serveCommand = new Command('serve')
           root, snapshotDir: dataDir,
           snapshot: { ready: snapState === 'ok', path: snapPath, state: snapState },
           blueprint: { ready: bpReady, path: bpPath },
-          endpoints: ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/'],
+          endpoints: ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/api/objects/:type', '/api/ask/context', '/'],
           cors: '*',
         }));
         return;
@@ -158,6 +166,73 @@ export const serveCommand = new Command('serve')
         }, null, 2), { 'Content-Type': 'application/json; charset=utf-8' });
         return;
       }
+      // 对象级查询：GET /api/objects/:type?where=k=v,k2~v2&limit=200
+      // 取数走 SQL（loadType 毫秒级），SQLite 不可用/无快照时回退 JSON；过滤统一内存（两路 where 语义一致）
+      const objMatch = url.match(/^\/api\/objects\/([A-Za-z]+)$/);
+      if (objMatch) {
+        const type = objMatch[1];
+        if (!OBJECT_TYPES.some((t) => t.type === type)) {
+          respond(res, 400, JSON.stringify({ ok: false, error: `未知对象类型: ${type}`, validTypes: OBJECT_TYPES.map((t) => t.type) }));
+          return;
+        }
+        const query = new URL(req.url, 'http://x').searchParams;
+        const limitRaw = parseInt(query.get('limit') ?? '200', 10);
+        const limit = Number.isInteger(limitRaw) && limitRaw >= 0 ? limitRaw : 200;
+
+        let objects = loadType({ kind: 'code', type });
+        let source = 'sqlite';
+        if (objects === null || objects === undefined) {
+          if (snapState === 'none') {
+            respond(res, 404, JSON.stringify({ ok: false, error: '快照缺失，请先执行 nice-aos action refreshRepo 或 storage rebuild', snapshotDir: dataDir }));
+            return;
+          }
+          if (snapState === 'gone') {
+            respond(res, 500, JSON.stringify({ ok: false, error: '快照 JSON 损坏', snapshotDir: dataDir }));
+            return;
+          }
+          objects = snap[type] || [];
+          source = 'json';
+        }
+
+        const conditions = parseWhere(query.get('where'));
+        const filtered = conditions ? objects.filter((o) => matchesWhere(o, conditions)) : objects;
+        const total = filtered.length;
+        const truncated = limit > 0 && total > limit;
+        respond(res, 200, JSON.stringify({
+          ok: true,
+          type,
+          source,
+          count: truncated ? limit : total,
+          total,
+          truncated,
+          objects: truncated ? filtered.slice(0, limit) : filtered,
+        }));
+        return;
+      }
+
+      // ask 上下文：GET /api/ask/context?q=<question>
+      // SQL 优先（4 次查询 <50ms），回退 JSON 构建；供 AI agent 拉取精简上下文
+      if (url === '/api/ask/context') {
+        const q = new URL(req.url, 'http://x').searchParams.get('q') || '';
+        let context = buildAskContextFromSql({ kind: 'code', question: q || undefined });
+        let source = 'sqlite';
+        if (!context) {
+          if (snapState === 'none') {
+            respond(res, 404, JSON.stringify({ ok: false, error: '快照缺失，请先执行 nice-aos action refreshRepo 或 storage rebuild', snapshotDir: dataDir }));
+            return;
+          }
+          if (snapState === 'gone') {
+            respond(res, 500, JSON.stringify({ ok: false, error: '快照 JSON 损坏', snapshotDir: dataDir }));
+            return;
+          }
+          context = buildAskContext(snap);
+          if (q) context += `\n\n## 问题\n${q}`;
+          source = 'json';
+        }
+        respond(res, 200, JSON.stringify({ ok: true, source, context }));
+        return;
+      }
+
       respond(res, 404, JSON.stringify({ ok: false, error: `未支持路径: ${url}（可用端点见 /api/status）` }));
     });
 
@@ -186,6 +261,8 @@ export const serveCommand = new Command('serve')
       console.log('    GET /api/status         服务状态与端点清单');
       console.log('    GET /api/stats          快照对象统计摘要');
       console.log('    GET /api/schema         本体元模型(对象/链接/动作 schema,借鉴 asdm-aos)');
+      console.log('    GET /api/objects/:type  对象级查询 ?where=k=v,k2~v2&limit=200 (SQLite 优先)');
+      console.log('    GET /api/ask/context    ask 上下文 ?q=问题 (4 次 SQL 预过滤)');
       console.log('\n  按 Ctrl+C 停止\n');
     });
   });

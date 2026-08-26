@@ -26,6 +26,7 @@
 | 想按功能域浏览代码 | `link belongsTo --src dom:health` 列出该域全部成员 |
 | 想要一张可交互的项目蓝图给人看 | `export --format html --output blueprint.html`（浏览器直接打开，无需服务） |
 | 想给 AI agent / 油猴脚本一个 HTTP 数据源 | `nice-aos serve`（一行启动，CORS 就绪，暴露快照与蓝图） |
+| 想让 codebuddy / opencode 带着项目上下文回答问题 | `nice-aos ask "这个项目有哪些功能域？"`（自动注入快照上下文） |
 
 ## 安装
 
@@ -67,6 +68,9 @@ nice-aos update
 
 # 8. 启动本地数据源服务（供 AI agent / 油猴脚本跨源拉取快照与蓝图）
 nice-aos serve
+
+# 9. 向 AI CLI 提问（上下文自动从快照构建，SQLite 预过滤毫秒级）
+nice-aos ask "这个项目的架构分层和功能域划分？"
 ```
 
 > **快照目录解析优先级**：`--snapshot-dir` 参数 > `NICE_AOS_SNAPSHOT_DIR` 环境变量 > `cwd/.nice-aos/data` > `~/.nice-aos/data`。
@@ -400,9 +404,43 @@ nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅�
 | `GET /api/status` | 服务状态：目录解析结果、快照/蓝图就绪状态、端点清单 |
 | `GET /api/stats` | 快照统计摘要：项目名/框架/对象计数/循环依赖/死代码候选 |
 | `GET /api/schema` | 本体元模型：`OBJECT_TYPES`（19 个）/ `LINK_TYPES`（24 个）/ `ACTION_NAMES`（4 个）+ 概念范畴与抽象层级（abstractionLevels / categories）+ prefix → type 反查映射，供 agent 自动发现能力 |
+| `GET /api/objects/:type` | 对象级查询：`?where=k=v,k2~v2&limit=200`（`=` 精确 / `~` 子串忽略大小写 / `limit=0` 不限；SQLite 优先，无镜像时回退 JSON） |
+| `GET /api/ask/context` | ask 上下文：`?q=问题`（4 次 SQL 预过滤的项目上下文，与 `ask` 命令同一构建器；无 SQLite 镜像回退 JSON） |
 | `GET /` | 状态首页（HTML） |
 
 就绪状态**每次请求实时探测**——"先起服务、后 `refreshRepo` / `export`"的工作流无需重启；快照缺失返回 404（附生成指引）、JSON 损坏返回 500。目录解析链：`--dir` → 全局 `--snapshot-dir` → `NICE_AOS_SNAPSHOT_DIR` → `<root>/.nice-aos/data`。典型配套用法见 [contrib/blueprint-ai-agent](./contrib/blueprint-ai-agent)。
+
+### ask — 向 AI CLI 提问（快照上下文注入）
+
+```bash
+nice-aos ask "这个项目有哪些功能域？"                # auto 探测 agent：codebuddy → opencode → 模型服务兜底
+nice-aos ask "架构分层的文件分布？" --agent opencode  # 显式指定 agent
+nice-aos ask "有哪些循环依赖？" --serve              # 后台起 serve，HTTP URL 拼进 prompt 供深查
+nice-aos ask "依赖健康度？" --json                   # 结构化输出 {ok, agent, contextSource, durationMs, answer}
+nice-aos ask "ASDM架构？"                            # 无快照/空项目快照 → 自动 refreshRepo 后再答
+nice-aos ask "Q" --no-auto-refresh                   # 跳过自动快照（无快照时保持报错指引，供 CI 场景）
+
+# 备选模型服务（OpenAI 兼容，如 DeepSeek；CLI 超时/失败时自动降级到它）
+nice-aos ask config set --provider deepseek --api-key sk-xxx   # 密钥 AES-256-GCM 加密落盘 ~/.nice-aos/config.json
+nice-aos ask config show                                      # 查看生效配置（密钥掩码显示）
+nice-aos ask config unset                                     # 清除配置
+nice-aos ask "Q" --agent api                                  # 直连模型服务（不经 CLI agent）
+```
+
+**备选降级链**：CLI agent（codebuddy → opencode）调用超时或失败时，若已配置模型服务则自动降级重试（每级独立超时预算），stderr 可见降级轨迹，`--json` 输出 `fallbackFrom: ["codebuddy"]` 记录完整失败链。模型服务须为 OpenAI 兼容端点（DeepSeek / Qwen / Kimi / OpenRouter 等均支持），预置 `deepseek`（`deepseek-chat`），其他用 `--provider custom --base-url <url> --model <name>` 接入；环境变量 `NICE_AOS_API_KEY` / `NICE_AOS_BASE_URL` / `NICE_AOS_MODEL` 明文优先于落盘配置（CI 场景）。密钥加密为防文件泄露/误提交的混淆级保护（密钥环 `~/.nice-aos/.keyring`，权限 600）。
+
+把本体快照浓缩为上下文（项目画像 / 架构分层 / 功能域 / 模块 Top 10 / 声明依赖 / 健康指标 / 对象统计）拼进 prompt，再交给外部 AI CLI（codebuddy / opencode）回答。上下文构建**SQLite 优先**：`<snapshotDir>/aos.sqlite` 有镜像时走 4 次预过滤 SQL（12MB 快照实测热查询 0.2ms、冷启动 39ms，对比全量 `JSON.parse` 约 500ms）；无镜像或 better-sqlite3 不可用时自动回退 JSON 路径。`--serve` 会同时后台启动本地服务并把 `/snapshot.json`、`/api/objects/:type`、`/api/ask/context` 的 URL 拼进 prompt，让 AI CLI 可按需深查完整快照（会话结束后自动关闭）。
+
+**空数据自动快照**：无 `snapshot.json` 或快照为空项目（`Project.fileCount === 0`，典型产物：扫了空目录 / repoPath 指错）时，ask 先自动执行 refreshRepo（与 action 同款项目根探测，从 cwd 向上找）重建快照并同步 SQLite 镜像，再进行问答——避免 AI 对着空上下文回答"无法分析"。刷新后仍是空项目（目录确实无源码）则如实呈现并照常作答；`--no-auto-refresh` 跳过自动刷新保持报错指引。`contextSource` 取值：`sqlite`（SQL 预过滤）/ `json`（JSON 回退）/ `json-refreshed`（本次自动快照后构建）。
+
+### storage — SQLite 镜像（可选加速层）
+
+```bash
+nice-aos storage rebuild --kind code      # 把 snapshot.json 镜像进 <snapshotDir>/aos.sqlite
+nice-aos storage status                   # 查看镜像状态与版本
+```
+
+快照 JSON 始终是**主数据源**，SQLite 是同目录下的可选加速镜像（`better-sqlite3` 声明为 optionalDependencies——安装/编译失败时所有命令自动降级 JSON 路径并打印 warning，不阻塞主流程）。写入走双写闭环：`refreshRepo` / `markReviewed` / `addNote` 落 JSON 的同时镜像到 SQLite（首次无镜像时自动补建）；跨进程写用 WAL + `busy_timeout` + 锁文件保护，锁持有进程已退出时自动清理恢复。6 种快照形态（code / db / deploy / planning / service / overview）统一以 `props_json` 通用列存储，`json_extract` 表达式索引支撑按字段查询，无需为每种形态建专表。
 
 ### 本体查看器（blueprint HTML / viewmodel）
 

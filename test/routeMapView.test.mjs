@@ -107,7 +107,7 @@ test('routeMap 渲染：路由地图 Tab 输出导航链 SVG / 层级树 / 域�
 
     // 嵌入数据无损
     const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-    const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+    const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
     const parsed = JSON.parse(dataJson);
     assert.equal(parsed.routeMap.totalCount, 5);
 

@@ -118,7 +118,7 @@ test('DOM stub：执行内嵌脚本渲染各 Tab 内容', () => {
   assert.ok(html.includes('data-theme="fresh-green"'), '--theme 应生效');
 
   const dataJson = html.match(/<script id="service-viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-  const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+  const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
 
   const elements = new Map();
   const makeEl = (id) => {

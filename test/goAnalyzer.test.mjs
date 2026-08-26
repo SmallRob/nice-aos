@@ -474,7 +474,7 @@ test('端到端：viewer 实体类图 Go 配色（节点描边/分布条/图例 
   assert.match(html, /\.bar\.go\s*\{\s*background:\s*var\(--go\)/, '语言分布条应有 .bar.go 类');
 
   const dataJson = html.match(/<script id="viewer-data" type="application\/json">([\s\S]*?)<\/script>/)[1];
-  const script = html.match(/<script>\n([\s\S]*?)<\/script>\s*<\/body>/)[1];
+  const script = html.match(/<script>\n([\s\S]*?)<\/script>/)[1];
   const elements = new Map();
   const makeEl = (id) => {
     if (!elements.has(id)) {
