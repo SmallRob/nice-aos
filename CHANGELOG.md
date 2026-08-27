@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增（ask 命令升级 v0.34.0–v0.35.0 规划落地）
+
+- **Agent 解析翻转 + 注册表扩展**（`agentRunner.js`）：`--agent auto` 时已配置的自定义模型服务成为首选通道（原为 CLI 优先、模型兜底），其后按注册表序探测 CLI；注册表从 2 项扩展至 8 项（codebuddy / opencode / **trae / qoder / claude / codex / qwen / aider**，后六者 experimental 标记）；报错信息给出可用注册名与接入指引
+- **`--agent-cmd "<bin> [args...] {prompt}"`**：任意自定义 AI CLI 零代码接入——含 `{prompt}` 占位符按位注入（可多处），缺省追加末尾；未知名字不再死路一条
+- **`--tools` 自治深查**（sub-tool P1）：隐含后台 serve，把 `query`/`link`/`export` CLI 用法与 HTTP 端点指引注入 prompt，AI 按需自行取证并要求引用对象 id
+- **`--since <ref> [--staged]` 跨快照 diff 问答**（P2）：复用 gitDiff 增量解析，变更文件（≤40 行列示）与涉及本体对象（按类型分组 ≤15/类）折叠为 prompt 独立段落；与 export --since 同源同参（findGitRoot 收敛共享）
+- **`--save [path]` 回答落盘**（P2）：自包含 Markdown 存档（元信息头含回答方/降级链/会话/增量范围/耗时），缺省写 `<snapshotDir>/answers/ask-<时间戳>.md`
+- **`ask eval` 评测 harness**（P2）：JSONL 用例集（mustInclude 字符串或数组任选其一 / mustExclude）+ 纯函数评分，输出通过率与逐例报告；`--out` 落盘；存在失败 exitCode=1；doAsk 核心抽取复用（多用例共享一次上下文构建）
+
+### 内部
+
+- `gitDiff.findGitRoot` 上移共享（原 export.js 本地实现删除）；新增模块 `askSave.js` / `askDiffContext.js` / `askEval.js`
+- 测试：新增 `test/askUpgrade.test.mjs` 15 例（注册表/模板编译/评分器/JSONL 解析/落盘/diff 上下文含临时 git 仓库 e2e）；既有 4 例按新语义更新
+
 ## [0.33.1] - 2026-08-27
 
 ### 修复（自扫描驱动：用 nice-aos 扫描自身仓库发现的设计缺陷）

@@ -8,7 +8,7 @@ import { exportToMarkdown } from '../../ontology/exporter.js';
 import { buildViewerModel, renderViewerHtml } from '../../ontology/viewer.js';
 import { fail } from '../shared.js';
 import { listThemeNames } from '../../themes/index.js';
-import { listChangedFiles, listChangedFilesSince, filterObjectsByFiles, isValidRangeSpec } from '../../analyzers/gitDiff.js';
+import { listChangedFiles, listChangedFilesSince, filterObjectsByFiles, isValidRangeSpec, findGitRoot } from '../../analyzers/gitDiff.js';
 import { renderTemplate } from '../../ontology/template.js';
 
 export const exportCommand = new Command('export')
@@ -91,15 +91,3 @@ export const exportCommand = new Command('export')
       console.log(content);
     }
   });
-
-// 从 cwd 向上找含 .git 的目录（最多 8 层）
-function findGitRoot(startDir) {
-  let dir = startDir;
-  for (let i = 0; i < 8; i += 1) {
-    if (fs.existsSync(path.join(dir, '.git'))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-  return null;
-}

@@ -11,6 +11,8 @@
 //
 // 安全：纯 execFile，无 shell 拼接；git 命令在指定 gitRoot 下执行
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 // 校验范围 spec 合法性（防注入：仅允许字母数字 / . ~ ^ _ - / .. 与空白）
@@ -106,4 +108,16 @@ export function filterObjectsByFiles(dataMap, fileList) {
     if (matched.length > 0) byType[type] = matched;
   }
   return byType;
+}
+
+// 从 startDir 向上找含 .git 的目录（最多 8 层；export --since 与 ask --since 共用）
+export function findGitRoot(startDir) {
+  let dir = startDir;
+  for (let i = 0; i < 8; i += 1) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
 }

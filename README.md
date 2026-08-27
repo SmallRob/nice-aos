@@ -623,35 +623,40 @@ nice-aos io --format json                     # JSON envelope
 
 **asdm-portal 验证**：231 个 method 中 37 个有 IO 使用，共 50 次调用——20 次 fetch (high) + 17 次 setTimeout (medium) + 13 次 localStorage (medium)。
 
-### ask — 向 AI CLI 提问（快照上下文注入）
+### ask — 向 AI 提问（快照上下文注入，支持自治深查 / 增量问答 / 评测）
 
 ```bash
-nice-aos ask "这个项目有哪些功能域？"                # auto 探测 agent：codebuddy → opencode → 模型服务兜底
-nice-aos ask "架构分层的文件分布？" --agent opencode  # 显式指定 agent
-nice-aos ask "有哪些循环依赖？" --serve              # 后台起 serve，HTTP URL 拼进 prompt 供深查
-nice-aos ask "依赖健康度？" --json                   # 结构化输出 {ok, agent, contextSource, durationMs, answer, streamed, session}
-nice-aos ask "ASDM架构？"                            # 无快照/空项目快照 → 自动 refreshRepo 后再答
-nice-aos ask "Q" --no-auto-refresh                   # 跳过自动快照（无快照时保持报错指引，供 CI 场景）
+nice-aos ask "这个项目有哪些功能域？"                 # auto：已配置的自定义模型服务优先 → 注册表序探测 CLI（codebuddy → opencode → trae → qoder → claude → codex → qwen → aider）
+nice-aos ask "架构分层的文件分布？" --agent opencode   # 显式指定 agent
+nice-aos ask "Q" --agent-cmd "myai --ask {prompt}"    # 接入任意其他 AI CLI（{prompt} 占位符按位注入，缺省追加末尾）
+nice-aos ask "依赖健康度？" --tools                   # 自治深查：后台起 serve + 把 query/link/export 使用指引注入 prompt，AI 按需自行取证并引用对象 id
+nice-aos ask "这次重构影响谁？" --since HEAD~1         # 跨快照 diff 问答：增量变更文件与涉及对象折叠进 prompt（--staged 只看暂存区）
+nice-aos ask "依赖健康度？" --save answers/a.md       # 回答落盘为自包含 Markdown 存档（省略路径 → <snapshotDir>/answers/ask-<时间戳>.md）
+nice-aos ask "有哪些循环依赖？" --serve               # 后台起 serve，HTTP URL 拼进 prompt 供深查
+nice-aos ask "ASDM架构？"                             # 无快照/空项目快照 → 自动 refreshRepo 后再答
 
-# 流式输出（仅 --agent api 有效；CLI agent 走同步降级）
-nice-aos ask "Q" --stream --agent api                # token 逐字打到 stdout
-nice-aos ask "Q" --stream --json                     # 流式 + JSON 结构化输出（streamed:true）
+# 流式输出与结构化输出
+nice-aos ask "Q" --stream --agent api                # token 逐字打到 stdout（仅模型服务通道；CLI agent 自动降级非流式）
+nice-aos ask "Q" --json                              # {ok, agent, model, contextSource, durationMs, streamed, saved, since, ...}
 
 # 多轮会话（JSONL 持久化到 ~/.nice-aos/sessions/<id>.jsonl）
 nice-aos ask "项目架构是怎样的？" --session s1 --agent api      # 第 1 轮
 nice-aos ask "那 Controller 层呢？" --session s1 --agent api    # 第 2 轮（自动含历史）
-nice-aos ask "Q" --session s1 --session-max-turns 3              # prompt 只带最近 3 轮（防 token 击穿）
 nice-aos ask session list --as-json                              # 列出所有 session
 nice-aos ask session clear s1                                    # 删除指定 session
 
-# 备选模型服务（OpenAI 兼容，如 DeepSeek；CLI 超时/失败时自动降级到它）
+# 模型服务配置（OpenAI 兼容；配置后成为 auto 的首选通道）
 nice-aos ask config set --provider deepseek --api-key sk-xxx   # 密钥 AES-256-GCM 加密落盘 ~/.nice-aos/config.json
 nice-aos ask config show                                      # 查看生效配置（密钥掩码显示）
 nice-aos ask config unset                                     # 清除配置
 nice-aos ask "Q" --agent api                                  # 直连模型服务（不经 CLI agent）
+
+# 评测 harness：JSONL 用例集 + 关键词断言出通过率报告（question + mustInclude/mustExclude）
+nice-aos ask eval --cases cases.jsonl                         # 默认走 auto 链；--agent api 固定模型便于对比
+nice-aos ask eval --cases cases.jsonl --out report.json       # 报告落盘；存在失败时 exitCode=1（CI 友好）
 ```
 
-**备选降级链**：CLI agent（codebuddy → opencode）调用超时或失败时，若已配置模型服务则自动降级重试（每级独立超时预算），stderr 可见降级轨迹，`--json` 输出 `fallbackFrom: ["codebuddy"]` 记录完整失败链。模型服务须为 OpenAI 兼容端点（DeepSeek / Qwen / Kimi / OpenRouter 等均支持），预置 `deepseek`（`deepseek-chat`），其他用 `--provider custom --base-url <url> --model <name>` 接入；环境变量 `NICE_AOS_API_KEY` / `NICE_AOS_BASE_URL` / `NICE_AOS_MODEL` 明文优先于落盘配置（CI 场景）。密钥加密为防文件泄露/误提交的混淆级保护（密钥环 `~/.nice-aos/.keyring`，权限 600）。
+**降级链与 agent 选择**：`--agent auto` 时解析顺序为「已配置的模型服务（一等公民）→ 按注册表序探测可用 CLI」；`--agent <name>` 显式指定时该 CLI 在前、模型服务兜底。任一级超时或失败自动降到下一级（每级独立超时预算），stderr 可见降级轨迹，`--json` 输出 `fallbackFrom: [...]` 记录完整失败链。预置注册表：codebuddy / opencode / trae / qoder / claude / codex / qwen / aider（后六者为实验性接入，flag 组合以实际版本为准——不符时用 `--agent-cmd "<bin> [args] {prompt}"` 覆盖调用模板，任意 CLI 零代码接入）。模型服务须为 OpenAI 兼容端点（DeepSeek / Qwen / Kimi / OpenRouter 等均支持），预置 `deepseek`（`deepseek-chat`），其他用 `--provider custom --base-url <url> --model <name>` 接入；环境变量 `NICE_AOS_API_KEY` / `NICE_AOS_BASE_URL` / `NICE_AOS_MODEL` 明文优先于落盘配置（CI 场景）。密钥加密为防文件泄露/误提交的混淆级保护（密钥环 `~/.nice-aos/.keyring`，权限 600）。
 
 把本体快照浓缩为上下文（项目画像 / 架构分层 / 功能域 / 模块 Top 10 / 声明依赖 / 健康指标 / 对象统计）拼进 prompt，再交给外部 AI CLI（codebuddy / opencode）回答。上下文构建**SQLite 优先**：`<snapshotDir>/aos.sqlite` 有镜像时走 4 次预过滤 SQL（12MB 快照实测热查询 0.2ms、冷启动 39ms，对比全量 `JSON.parse` 约 500ms）；无镜像或 better-sqlite3 不可用时自动回退 JSON 路径。`--serve` 会同时后台启动本地服务并把 `/snapshot.json`、`/api/objects/:type`、`/api/ask/context` 的 URL 拼进 prompt，让 AI CLI 可按需深查完整快照（会话结束后自动关闭）。
 
@@ -866,8 +871,9 @@ node src/cli/index.js --help
 按三大核心（`ask` / `output` / `serve`）分轴 + P0/P1/P2 优先级组织。**完整任务清单与验收标准见 [`docs/plan/aos-three-core-roadmap.md`](./docs/plan/aos-three-core-roadmap.md)**，决策背景见 [`docs/adr/0003-`](./docs/adr/0003-aos-three-core-roadmap.md)。
 
 ### `ask` 轴（输入）
-- **P1**：流式输出 `--stream`（v0.34.0）｜多轮会话 `--session`（v0.34.0）｜sub-tool 让 AI 自治 `query/link/export`（v0.35.0）
-- **P2**：落盘 `--save`（v0.35.0）｜跨快照 diff 问答（v0.35.0）｜评测 harness（v0.35.0）
+- **P1**：流式输出 `--stream`（✅ v0.33.0 已发）｜多轮会话 `--session`（✅ v0.33.0 已发）｜sub-tool 让 AI 自治 `query/link/export` —— `--tools`（✅ Unreleased）
+- **P2**：落盘 `--save`（✅ Unreleased）｜跨快照 diff 问答 —— `--since`（✅ Unreleased）｜评测 harness —— `ask eval`（✅ Unreleased）
+- **已完成于 Unreleased 的配套升级**：agent 解析翻转（自定义模型服务为 auto 首选通道）+ 注册表扩至 8 CLI + `--agent-cmd` 任意 CLI 零代码接入
 
 ### `output` 轴（输出 / `export` 顶层别名）
 - **P0**：`output` 作为 `export` 的 commander 顶层别名（v0.33.0，✅ 已发）

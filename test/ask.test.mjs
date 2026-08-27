@@ -40,8 +40,17 @@ test('resolveAgent：显式指定 codebuddy / opencode，buildArgs 与约定一�
   assert.deepEqual(oc.buildArgs('Q'), ['run', 'Q']);
 });
 
-test('resolveAgent：未知 agent 报错并列出可用项', () => {
-  assert.throws(() => resolveAgent('nope'), /未知 agent: nope（可用: codebuddy, opencode）/);
+test('resolveAgent：未知 agent 报错并列出可用项与 --agent-cmd 指引', () => {
+  assert.throws(
+    () => resolveAgent('nope'),
+    (err) => {
+      const msg = err.message;
+      assert.match(msg, /未注册的 agent: nope/);
+      assert.match(msg, /可用注册名: codebuddy, opencode, trae, qoder/);
+      assert.match(msg, /--agent-cmd/);
+      return true;
+    },
+  );
 });
 
 test('invokeAgent：返回 stdout（trim 后）', () => {
@@ -232,11 +241,11 @@ test('ask 端到端：显式 --agent opencode + 纯文本输出（非 --json）'
   assert.equal(r.out.trim(), 'FAKE_AGENT_ANSWER');
 });
 
-test('ask 端到端：--agent 指定未知 agent → exit 1 + 错误信息', async () => {
+test('ask 端到端：--agent 指定未注册 agent → exit 1 + 新版错误信息', async () => {
   const dir = mkFixture();
   const r = await runCli(['ask', 'Q', '--agent', 'nope', '--cwd', dir]);
   assert.equal(r.code, 1);
-  assert.match(r.err, /未知 agent: nope（可用: codebuddy, opencode）/);
+  assert.match(r.err, /未注册的 agent: nope/);
 });
 
 test('ask 端到端：--no-auto-refresh 无快照 → 保持旧 fail 指引', async () => {
@@ -608,7 +617,9 @@ function mkTimeoutAgentBin() {
   return bin;
 }
 
-test('ask 端到端：CLI 超时自动降级到模型服务（fake server）', async () => {
+// v0.34.0 语义更新：auto 链已翻转为"模型服务优先"；
+// CLI→API 的降级语义现通过 --agent <name>（命名 CLI 在前、api 兜底）验证
+test('ask 端到端：CLI 超时自动降级到模型服务（fake server，--agent codebuddy）', async () => {
   const dir = mkFixture();
   const bin = mkTimeoutAgentBin();
   let lastPayload = null;
@@ -622,7 +633,7 @@ test('ask 端到端：CLI 超时自动降级到模型服务（fake server）', a
     });
   });
   try {
-    const r = await runCli(['ask', '降级链测试?', '--cwd', dir, '--timeout', '600', '--json'], {
+    const r = await runCli(['ask', '降级链测试?', '--cwd', dir, '--agent', 'codebuddy', '--timeout', '600', '--json'], {
       env: {
         PATH: minimalPath(bin),
         NICE_AOS_API_KEY: 'sk-e2e-key',
@@ -683,14 +694,17 @@ test('ask 端到端：--agent api 未配置 → 明确报错指引', async () =>
   assert.match(r.err, /ask config set --provider deepseek/);
 });
 
-test('ask 端到端：无 CLI 且无模型服务 → 提示两条出路', async () => {
+test('ask 端到端：无 CLI 且无模型服务 → 提示三条出路（配置/装 CLI/--agent-cmd）', async () => {
   const dir = mkFixture();
   const r = await runCli(['ask', 'Q', '--cwd', dir], {
     env: { PATH: minimalPath('') },
   });
   assert.equal(r.code, 1);
-  assert.match(r.err, /未检测到可用的 AI CLI/);
-  assert.match(r.err, /ask config set/);
+  assert.match(r.err, /未检测到任何可用问答通道/);
+  assert.match(r.err, /配置模型服务（推荐，一等公民）/);
+  // 注意：fail() 经 JSON.stringify 输出，内嵌引号会被转义为 \"，断言避开引号字符
+  assert.match(r.err, /--agent-cmd/);
+  assert.match(r.err, /<bin> \[args\.\.\.\] \{prompt\}/);
 });
 
 test('ask 端到端：config set/show/unset 全流程（密钥加密 + 掩码）', async () => {
