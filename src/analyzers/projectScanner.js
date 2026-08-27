@@ -609,7 +609,105 @@ function isExpoAppJson(hostDir, configs) {
   return Boolean(appJson?.expo);
 }
 
-function detectFramework({ deps, configs, hostDir, userScriptCount, codeSignals, flutterDetected, dartDetected, goDetected }) {
+// Node 入口识别：package.json bin/main 字段指向的文件（CLI / 工具库形态的真实入口）。
+// 仅保留位于扫描根内的路径——bin 指向构建产物或根外文件时不在 fileObjects 中，标 entry 无意义
+function resolveNodeEntryFiles(projectRoot, roots, packageJson) {
+  const specs = [];
+  const bin = packageJson?.bin;
+  if (typeof bin === 'string') specs.push(bin);
+  else if (bin && typeof bin === 'object') specs.push(...Object.values(bin).filter((v) => typeof v === 'string'));
+  if (typeof packageJson?.main === 'string') specs.push(packageJson.main);
+  const rootPrefixes = roots.map((r) => {
+    const norm = String(r).replace(/\/+$/, '');
+    return !norm || norm === '.' ? '' : `${norm}/`;
+  });
+  const out = new Set();
+  for (const spec of specs) {
+    if (!spec) continue;
+    const rel = path.relative(projectRoot, path.resolve(projectRoot, spec)).split(path.sep).join('/');
+    if (!rel || rel.startsWith('..')) continue;
+    if (!rootPrefixes.some((p) => rel.startsWith(p))) continue;
+    out.add(rel);
+  }
+  return [...out];
+}
+
+// 扫描根之外的测试引用收集：test/tests/__tests__/spec 等根级测试目录不在默认扫描范围，
+// 其 import 对死代码判定不可见 → 轻量词法提取补充"真实使用"证据，
+// 消除「仅被测试使用的导出/函数被判死」的误报（自扫描验证：42 个死导出中可证伪）
+const EXTERNAL_TEST_DIRS = ['test', 'tests', '__tests__', 'spec'];
+const EXTERNAL_TEST_SKIP = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '__pycache__', 'fixtures', 'snapshots']);
+// 命名组：1 默认导入名 | 2 具名花括号 | 3 混合形式花括号 | 4 from specifier | 5 动态 import specifier | 6 require specifier
+// 注意：specifier 字符类必须排除换行，否则正则会跨语句贪婪吞并（多行 import 场景下把后续代码当成路径）
+const TEST_IMPORT_RE = /import\s+(?:([\w$]+)|(?:\{([^}]*)\})|(?:(?:[\w$]+)\s*,\s*(?:\{([^}]*)\}|\*\s+as\s+[\w$]+)))\s*from\s*['"]([^\n'"]+)['"]|import\s*\(\s*['"]([^\n'"]+)['"]\s*\)|require\s*\(\s*['"]([^\n'"]+)['"]\s*\)/g;
+
+export function collectExternalTestImports(projectRoot, scannedFiles) {
+  const scanned = new Set(scannedFiles);
+  const probeExts = ['', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '/index.ts', '/index.js'];
+  const resolveSpecToScanned = (tFileRel, spec) => {
+    if (!spec || !(spec.startsWith('./') || spec.startsWith('../'))) return [];
+    const base = path.posix.normalize(path.posix.join(path.posix.dirname(tFileRel), spec));
+    const hits = [];
+    for (const ext of probeExts) {
+      const cand = `${base}${ext}`;
+      if (scanned.has(cand)) hits.push(cand);
+    }
+    return hits;
+  };
+
+  // 递归收集外部测试目录下的 JS/TS 测试文件（相对 projectRoot 路径）
+  function walkTestDir(absDir, dirRel, acc) {
+    let list;
+    try { list = fs.readdirSync(absDir, { withFileTypes: true }); } catch { return; }
+    for (const e of list) {
+      if (e.name.startsWith('.') || EXTERNAL_TEST_SKIP.has(e.name)) continue;
+      const absChild = path.join(absDir, e.name);
+      const relChild = dirRel ? `${dirRel}/${e.name}` : e.name;
+      if (e.isDirectory()) walkTestDir(absChild, relChild, acc);
+      else if (/\.(m|c)?[jt]sx?$/.test(e.name)) acc.push(relChild);
+    }
+  }
+
+  const extTestFiles = [];
+  for (const dirName of EXTERNAL_TEST_DIRS) {
+    // rel 必须带目录名前缀（如 'test/x.test.mjs'），specifier 才能以测试文件位置为基准解析
+    walkTestDir(path.join(projectRoot, dirName), dirName, extTestFiles);
+  }
+
+  const importedFiles = new Set();
+  const namedRefs = new Set();
+  for (const tFile of extTestFiles) {
+    let content;
+    try { content = fs.readFileSync(path.join(projectRoot, tFile), 'utf-8'); } catch { continue; }
+    TEST_IMPORT_RE.lastIndex = 0;
+    let m;
+    while ((m = TEST_IMPORT_RE.exec(content))) {
+      const spec = m[4] ?? m[5] ?? m[6];
+      const hits = resolveSpecToScanned(tFile, spec);
+      if (!hits.length) continue;
+      for (const h of hits) importedFiles.add(h);
+      // 具名导入 → 符号级引用证据（relPath#name），供导出符号/方法的死判定豁免
+      for (const g of [m[2], m[3]]) {
+        if (!g) continue;
+        for (let part of g.split(',')) {
+          part = part.trim().replace(/^\{|\}$/g, '').trim();
+          if (!part) continue;
+          const name = part.split(/\s+as\s+/)[0].split(/[:\s]/)[0].trim();
+          if (!name) continue;
+          for (const h of hits) namedRefs.add(`${h}#${name}`);
+        }
+      }
+    }
+  }
+
+  return {
+    testFileCount: extTestFiles.length,
+    importedFiles: [...importedFiles],
+    namedRefs: [...namedRefs],
+  };
+}
+
+function detectFramework({ deps, configs, hostDir, packageJson, userScriptCount, codeSignals, flutterDetected, dartDetected, goDetected }) {
   // Flutter/Dart 客户端（pubspec.yaml + lib/）优先
   if (flutterDetected) return 'flutter';
   if (dartDetected) return 'dart';
@@ -627,6 +725,9 @@ function detectFramework({ deps, configs, hostDir, userScriptCount, codeSignals,
   // 代码信号兜底：.vue 文件 → vue；tsx/jsx 组件文件 → react（扫描目录无任何清单时的启发式）
   if (codeSignals.vueFileCount > 0) return 'vue';
   if (codeSignals.tsxFileCount + codeSignals.jsxFileCount > 0) return 'react';
+  // Node.js CLI / 工具库：package.json 声明 bin 入口且无任何前端框架信号。
+  // 必须先于 userscript 判定——CLI 仓库可能混入油猴脚本（如 contrib/ 示例），不应劫持整个仓库画像
+  if (packageJson?.bin) return 'node-cli';
   if (userScriptCount > 0) return 'userscript';
   return 'unknown';
 }
@@ -660,6 +761,7 @@ const FRAMEWORK_LABELS_FULL = {
   next: 'Next.js 应用',
   vue: 'Vue 单页应用',
   react: 'React 单页应用',
+  'node-cli': 'Node.js CLI 工具',
   userscript: '油猴脚本集合',
   unknown: '前端项目',
 };
@@ -828,6 +930,7 @@ export function scanProject(projectRoot, options = {}) {
     deps: allDeps,
     configs: hostConfigs,
     hostDir,
+    packageJson,
     userScriptCount: userScriptFiles.size,
     codeSignals: { vueFileCount: counts.vue, tsxFileCount: counts.tsx, jsxFileCount: counts.jsx },
     flutterDetected: flutterDetected && Object.keys(pubspecDeps).includes('flutter'),
@@ -845,6 +948,10 @@ export function scanProject(projectRoot, options = {}) {
   if (tauriDetected && !frameworkVariants.includes('tauri')) frameworkVariants.push('tauri');
   if (electronDetected && !frameworkVariants.includes('electron')) frameworkVariants.push('electron');
 
+  // Node 入口（package.json bin/main，供 builder 判 isEntry）与外部测试引用（供死代码判定豁免）
+  const nodeEntryFiles = resolveNodeEntryFiles(projectRoot, roots, packageJson);
+  const testImports = collectExternalTestImports(projectRoot, files);
+
   return {
     root: projectRoot,
     roots,
@@ -859,6 +966,8 @@ export function scanProject(projectRoot, options = {}) {
     files,
     fileCount: files.length,
     htmlEntryFiles,
+    nodeEntryFiles,
+    testImports,
     tsFileCount: counts.ts,
     tsxFileCount: counts.tsx,
     jsFileCount: counts.js + counts.jsx,

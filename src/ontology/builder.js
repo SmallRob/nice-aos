@@ -597,6 +597,12 @@ export async function buildOntologyData(projectRoot, options = {}) {
   // 入口识别使用实际扫描根（显式 roots 或默认 src/）；根级入口名在每个根顶层均有效
   const entryRoots = scan.roots ?? ['src'];
   const htmlEntries = new Set(scan.htmlEntryFiles ?? []);
+  // Node 入口（package.json bin/main）：CLI/工具库形态的真实入口，不参与前端入口名约定
+  const nodeEntries = new Set(scan.nodeEntryFiles ?? []);
+  // 外部测试引用证据：根级 test/tests/__tests__/spec 目录不在扫描范围，
+  // 其 import 代表真实使用 → 孤儿文件与死代码判定须豁免（消除"仅被测试使用"误报）
+  const testImportedFiles = new Set(scan.testImports?.importedFiles ?? []);
+  const testNamedRefs = new Set(scan.testImports?.namedRefs ?? []);
   const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files, scan.pubspecName ?? null);
 
   // 1. 逐文件解析（TypeScript Compiler API，仅词法/语法层，不做类型检查）
@@ -810,7 +816,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       lineCount: facts.lineCount,
       isTest: isTestFile(relPath),
       isDeclaration: relPath.endsWith('.d.ts'),
-      isEntry: htmlEntries.has(relPath) || isEntryFile(relPath, entryRoots),
+      isEntry: htmlEntries.has(relPath) || isEntryFile(relPath, entryRoots) || nodeEntries.has(relPath),
       isPageFile: stem.endsWith('Page') || stem.endsWith('Screen') || (relPath.endsWith('.vue') && /\/(views|pages)\//.test(relPath)),
       importIds,
       typeImportCount,
@@ -1383,6 +1389,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
   const exportedModuleFns = methods.filter((m) => m.ownerKind === 'module' && m.exported);
   for (const e of [...interfaces, ...classes, ...exportedModuleFns]) {
     if (!e.exported || e.deadCandidate) continue;
+    if (testNamedRefs.has(`${e.filePath}#${e.name}`)) continue; // 外部测试具名引用 → 真实使用，不判死
     if (e.filePath.endsWith('.go')) continue; // Go 跨包引用走 pkg.Name 标识符（无 import 名记录），由下方包级重判段处理
     if (indirectlyReferencedFiles.has(e.filePath)) continue;
     if (importedTypeRefs.has(`${e.filePath}#${e.name}`)) continue;
@@ -2494,22 +2501,24 @@ export async function buildOntologyData(projectRoot, options = {}) {
       && !lazyReferencedFiles.has(f.path)
       && !globReferencedFiles.has(f.path)
       && !isAutoRegistered(f.path)
+      && !testImportedFiles.has(f.path)
       && (importedByCount.get(f.id) ?? 0) === 0)
     .map((f) => f.path);
   // 导出级死代码：导出符号全仓库零导入且本文件零使用（仅 export 冗余，代码可安全去导出/删除）
   // 保守豁免：入口/测试文件、被 export */命名空间/无子句动态 import 整体引用的文件、
-  // 零导入文件（文件级 orphan 已覆盖）、default 导出（消费方按 default 导入，名字不可对照）
+  // 零导入文件（文件级 orphan 已覆盖）、default 导出、外部测试目录的具名引用（relPath#name）
   const deadExportCandidates = [];
   for (const f of fileObjects) {
     f.unusedExports = [];
     if (f.isEntry || f.isTest) continue;
     if (f.path.endsWith('.go')) continue; // Go 导出符号的包级判定已在 5b-0d 完成
     if (indirectlyReferencedFiles.has(f.path)) continue;
-    if ((importedByCount.get(f.id) ?? 0) === 0) continue;
+    if (((importedByCount.get(f.id) ?? 0) === 0) && !testImportedFiles.has(f.path)) continue;
     const facts = factsMap.get(f.path);
     for (const sym of facts?.exportSymbols ?? []) {
       if (!sym.isExported || sym.isDefault) continue;
       if (importedTypeRefs.has(`${f.path}#${sym.name}`)) continue;
+      if (testNamedRefs.has(`${f.path}#${sym.name}`)) continue;
       if (f.path.endsWith('.rs') && rustUsedNames.has(sym.name)) continue; // Rust use 名字级兜底豁免
       const positions = facts.nameReferences?.get(sym.name) ?? [];
       if (positions.length > 1) continue; // 本文件内仍有使用，仅 export 语句冗余，不判死
@@ -2534,12 +2543,14 @@ export async function buildOntologyData(projectRoot, options = {}) {
     hostConfigs: scan.hostConfigs ?? [],
     language: (() => {
       const parts = [];
-      if ((scan.tsFileCount ?? 0) + (scan.tsxFileCount ?? 0) + (scan.jsFileCount ?? 0) + (scan.vueFileCount ?? 0) > 0) parts.push('TypeScript');
+      // TS/JS 区分：.js 文件不再无条件归入 TypeScript（纯 JS 的 CLI/工具库此前被误标）
+      if ((scan.tsFileCount ?? 0) + (scan.tsxFileCount ?? 0) > 0) parts.push('TypeScript');
+      else if ((scan.jsFileCount ?? 0) + (scan.vueFileCount ?? 0) > 0) parts.push('JavaScript');
       if ((scan.rustFileCount ?? 0) > 0) parts.push('Rust');
       if ((scan.dartFileCount ?? 0) > 0) parts.push('Dart');
       if ((scan.goFileCount ?? 0) > 0) parts.push('Go');
       if ((scan.pyFileCount ?? 0) > 0) parts.push('Python');
-      return parts.join(' + ') || 'TypeScript';
+      return parts.join(' + ') || 'JavaScript';
     })(),
     commitHash: scan.commitHash,
     branch: scan.branch,

@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-08-27
+
+### 修复（自扫描驱动：用 nice-aos 扫描自身仓库发现的设计缺陷）
+
+- **Node CLI 形态识别**（`projectScanner.js`）：`package.json` 声明 `bin` 入口且无前端框架信号时判 `framework=node-cli`（标签"Node.js CLI 工具"），先于 userscript 判定——CLI 仓库混入油猴脚本（如 `contrib/`）不再劫持整个仓库画像；语言判定区分 TS/JS，纯 JS 工程不再误标 TypeScript
+- **bin/main 入口识别**（`projectScanner.js` + `builder.js`）：`package.json` `bin`/`main` 指向且位于扫描根内的文件标 `isEntry`——自扫描中 CLI 真实入口 `src/cli/index.js` 此前被误判孤儿文件
+- **外部测试引用豁免**（`projectScanner.collectExternalTestImports` + `builder.js`）：根级 `test/tests/__tests__/spec` 目录的 import 不在扫描范围，词法提取具名/文件级引用作为死代码判定证据（`relPath#name`）——孤儿候选、死导出、导出实体三类判定同时豁免；自扫描验证死导出候选 42 → 32
+- **IO 扫描字符串打码**（`ioRegistry.maskStringsAndComments`）：匹配前把 `'...'` / `"..."` / 模板字面量内容与注释替换为等长空白（`${}` 插值段保留为代码），注册表 callee 名出现在字符串常量/代码生成模板中的误报消除——自扫描 3 个 fetch 高危误报清零；`callText`/`argsText` 回取原文保持展示保真
+- **快照持久化收敛**（新增 `storage/snapshotFileKit.js`）：db / deploy / planning / service / overview 五个领域模块的 `getXxxSnapshotDir / load / save / has / fileHash` 模板复制（duplicates 检测 13 组中的 5 组）收敛为共享 kit，各模块保留原导出名薄封装
+
+### 文档
+
+- **README 介绍重写**：一句话定位语 + 「30 秒上手」前置 + 「四个入口」命令表精简 + 「核心能力速览」六要点；详细参考章节零改动，场景类子节收拢至「场景指南」
+
 ## [0.33.0] - 2026-08-26
 
 三大核心命令升级（输入 / 输出 / 服务）+ code-graph-rag 范式落地（MCP / 重复代码 / 死代码 BFS / IO 注册表 / 模板），详见 `docs/plan/aos-three-core-roadmap.md` 与 `docs/adr/0004-code-graph-rag-reusable-patterns.md`。本节为 v0.32.0 → v0.33.0 的统一变更记录（原 [0.32.0] release commit `68070d2` 中未含 CHANGELOG 条目，本次合并为单节）。

@@ -1,24 +1,42 @@
-# nice-aos — 通用前端代码本体 / 数据库脚本 / 部署配置分析 CLI（React / Vue 2+3 / Flutter / Go / 油猴脚本 / MySQL 迁移脚本 / Docker+K8s+nginx 部署配置）
+# nice-aos — 让 AI 与开发者毫秒级读懂任意代码仓库
 
-> 把任意 React、Vue 2 / Vue 3、Flutter（Dart）前端仓库、Go（CLI / agent 代理 / Gin 后端）仓库或 Tampermonkey 油猴脚本仓库预先分析为**结构化本体快照**（语义架构分层/功能域/模块/文件/组件/Hook/Composable/Zustand/Pinia/Vuex/Riverpod Store/Service/**接口/类/方法**/路由/依赖 + import/render/**props 传递链**/导航/**implements/extends/renders/overrides/方法调用链** 关系图谱；油猴脚本额外产出 GM API 使用/DOM 注入点/网络端点/脚本函数 + 调用图；Go 项目额外产出 **CLI 命令树 / HTTP 路由 / 前后端调用映射**），供 AI agent 与开发者通过 CLI 毫秒级查询，替代逐文件 grep。
-> 参考 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 代码本体分析）的架构，针对前端生态重新建模：React（React 19 + TypeScript + Vite + Zustand + overlay 路由 / react-router）、Vue 2（Options API + Vuex + element-ui，RuoYi 类中后台）/ Vue 3（SFC + vue-router + Pinia）、Flutter（Dart Widget + GoRouter + Riverpod，轻量语法级解析）、Go（cobra CLI 命令树 + Gin/标准库 HTTP 路由 + 包级调用链 + 前后端融合仓库映射，轻量语法级解析）与油猴脚本（UserScript 元数据 + GM API + 注入/请求审计）。
-> 语义本体引擎：对象按概念范畴与抽象层级（L3 架构 / L2 结构 / L1 单元 / L0 事实）组织；架构分层按内容信号推断（非目录名直译）；Module/Domain/Project 自动生成职责画像与自然语言总结。
-> 本体查看器（viewer）：`export --format html` 一键生成**自包含蓝图 HTML**（零依赖可离线打开，宽屏分档适配），含领域蓝图 / 业务数据图 / 业务逻辑流向 / **脚本蓝图（油猴函数调用图 + DOM 注入锚点 + 网络端点一图呈现）**五个视图；纯脚本仓库三视图自动按**函数意图分析**重建（意图功能域 / 存储枢纽 / 意图流转矩阵），分析不出业务结构时自动隐藏；`--format viewmodel` 输出聚合视图模型 JSON 供 agent 直接消费。
+> 把 **React / Vue 2+3 / Flutter(Dart) / Go / Python / 油猴脚本** 仓库，以及 **MySQL 迁移脚本、Docker+K8s+nginx 部署配置、Java 后端本体快照、产品规划 PRD 文档**，扫描为可查询的**结构化本体快照**——架构分层、功能域、组件/Store/路由、接口与调用链、四级死代码、健康度画像，一应俱全。一条命令建快照，之后每个结构问题都是一次毫秒级查询，替代逐文件 grep。
+>
+> 本体按概念范畴与抽象层级组织（L3 架构 → L0 审计事实），架构分层以内容信号推断而非目录名直译；聚合节点自动生成职责画像与自然语言总结。底层借鉴 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 本体分析）并针对前端生态重新建模。
 
-## 三大核心命令
+## 30 秒上手
 
-nice-aos 13 个子命令收敛为 **3 个核心 + N 个领域型** 两层级。三个核心面向"AI agent / 终端用户"主入口，彼此互补构成输入/输出/服务三角：
+```bash
+npm install -g nice-aos          # Node.js >= 18；免安装用 npx nice-aos ...
+cd /path/to/your-project
+
+# 1. 一条命令建快照（1000+ 文件约 3.5s → ./.nice-aos/data/snapshot.json）
+nice-aos action refreshRepo --params '{"repoPath":"."}'
+
+# 2. 用问题直接查答案
+nice-aos query Project                                        # 项目画像 + 架构分层 + 健康度
+nice-aos link importedBy --src "file:src/services/ai.ts"      # 谁导入了我（变更影响面）
+nice-aos query Method --where "deadCandidate=true"            # 函数级死代码候选
+
+# 3. 出一张给人看、给 AI 用的图与答案
+nice-aos export --format html --output blueprint.html         # 离线可开的交互蓝图
+nice-aos ask "这个项目的架构分层和功能域划分？"                # AI 自动带着全仓上下文回答
+```
+
+这只是 React 单页应用的冰山一角——Vue 2/3 中后台、Flutter App、Go CLI/Gin 后端与前后端融合仓库、油猴脚本安全审计、MySQL ER 图、部署拓扑各有专属章节，见 [解析能力](#解析能力)。
+
+## 四个入口：问 / 出 / 服务 / 协议
+
+nice-aos 的 13 个子命令收敛为 **4 个面向"人与 AI agent"的入口 + N 个领域型命令**：
 
 | 命令 | 角色 | 一句话 |
 |------|------|--------|
-| `ask` | **输入** | 基于本体快照向 AI CLI（codebuddy / opencode）或模型服务（DeepSeek 等 OpenAI 兼容端点）提问；上下文走 SQLite 4 次预过滤（<50ms），CLI 超时自动降级到模型服务 |
-| `output` | **输出** | 导出项目报告与蓝图：Markdown 全景报告 / JSON / 自包含 HTML 蓝图（5 视图）/ viewmodel 视图模型（`output` 是 `export` 的顶层别名，两名等价） |
-| `serve` | **服务** | 启动本地数据源 HTTP 服务（全端点 CORS `*`），暴露 `snapshot.json` / `blueprint.html` / `/api/schema` / `/api/objects/:type` / `/api/ask/context` 等 7 个端点，给 AI agent / 油猴脚本 / 网页跨源拉取 |
-| `mcp` | **协议** | 启动 [MCP server](https://modelcontextprotocol.io)（stdio 传输），把 7 个能力暴露为 MCP tools，供 Claude Code / Cursor / Continue 等 MCP 客户端**直接调用**——无需复制上下文、无需手写 fetch |
+| `ask` | **输入** | 基于本体快照向 AI CLI 或模型服务提问；上下文 SQLite 预过滤毫秒级构建，CLI 超时自动降级到模型服务 |
+| `output` | **输出** | Markdown 全景报告 / JSON / 自包含 HTML 蓝图 / viewmodel 视图模型（`output` 是 `export` 别名，两名等价） |
+| `serve` | **服务** | 一行启动本地 HTTP 数据源（CORS `*`）：快照 JSON、蓝图 HTML 与 7 个 `/api/*` 端点，供 agent / 油猴脚本 / 网页跨源拉取 |
+| `mcp` | **协议** | 以 [MCP server](https://modelcontextprotocol.io) 把 7 个能力暴露为 tools，Claude Code / Cursor 等客户端**直接调用**——零上下文复制 |
 
-完整 13 命令列表（领域型：db / deploy / service / planning / overview；原子型：query / link / action；运维：update / storage）见 `nice-aos --help`。三大核心的详细升级路线见 `docs/plan/aos-three-core-roadmap.md`，决策背景见 `docs/adr/0003-aos-three-core-roadmap.md`。
-
-
+领域型命令：`db`（数据库）/ `deploy`（部署）/ `service`（Java 后端）/ `planning`（PRD 规划）/ `overview`（多项目全景）；原子型：`query` / `link` / `action`；运维：`update` / `storage`。详见 `nice-aos --help`。
 
 ## 为什么需要它
 
@@ -43,52 +61,37 @@ nice-aos 13 个子命令收敛为 **3 个核心 + N 个领域型** 两层级。�
 | 想给 AI agent / 油猴脚本一个 HTTP 数据源 | `nice-aos serve`（一行启动，CORS 就绪，暴露快照与蓝图） |
 | 想让 codebuddy / opencode 带着项目上下文回答问题 | `nice-aos ask "这个项目有哪些功能域？"`（自动注入快照上下文） |
 
-## 安装
+## 核心能力速览
+
+- **多栈语义解析** —— React 19 / Vue 2 Options API（RuoYi 类中后台）/ Vue 3 SFC + Pinia / Flutter Widget + Riverpod / Go cobra+Gin 融合仓库 / Python FastAPI/Flask / 油猴脚本，提取组件、Store（Zustand/Pinia/Vuex/Riverpod）、接口/类/方法、路由与 props 传递链等 **19 种对象、24 种关系**
+- **关系图谱查询** —— `link importedBy / renders / navigatesTo / implements / calls ...` 双向遍历：变更影响分析、导航图、方法"声明+实现"一次命中
+- **四级死代码 + 健康审计** —— 文件/导出/类型/函数级候选（保守判定宁漏报不误报）、Tarjan 循环依赖、未声明依赖治理，`deadcode` / `duplicates` / `io` 三个独立检测器开箱即用
+- **五套领域审计器** —— 油猴安全（GM 越权/XSS 面/@connect）、数据库（7 大审计 + ER 图）、部署（安全/高可用/一致性/依赖/健康）、Java 服务（复杂度/数据层/测试/质量/依赖）、产品规划（PRD 四维健康）
+- **自包含蓝图 HTML** —— `export --format html` 一键产出零依赖可离线打开的可视化蓝图：领域蓝图、业务数据图、逻辑流向矩阵、路由导航链 SVG、Props 数据流图、UML 类图；三套主题随心切换
+- **AI agent 原生友好** —— `ask` 注入上下文问答（SQLite 预过滤 <50ms）、`serve` 开箱即用的 CORS 数据源、`mcp` 让 Claude Code/Cursor 直接调用，`export --format viewmodel` 输出聚合 JSON 供 agent 直接消费
+
+## 更多上手姿势
 
 ```bash
-npm install -g nice-aos        # 全局安装（需要 Node.js >= 18）
-# 或不安装，直接使用：
-npx nice-aos query --help
-```
-
-## 快速开始
-
-```bash
-cd /path/to/your-frontend-project
-
-# 1. 构建本体快照（约 3.5 秒 / 1000+ 文件，快照默认写入 ./.nice-aos/data/snapshot.json）
-nice-aos action refreshRepo --params '{"repoPath":"."}'
-
-# 2. 查询对象
-nice-aos query Project
-nice-aos query Component --where "name~steam"        # ~ 模糊匹配（子串包含，忽略大小写）
-nice-aos query Route --where "domain=health"
-
-# 3. 遍历关系
-nice-aos link importedBy --src "file:src/services/ai.ts"   # 谁导入了这个文件
-nice-aos link renders --src "comp:HealthStatsPage"         # 组件渲染了什么
-nice-aos link usesStore --src "store:useThemeStore"        # store 被谁用了
-
-# 4. 导出全景报告（路由地图 / 导航图 / 循环依赖 / 死代码候选 / Store 一览）
-nice-aos export --format markdown --output report.md
-
-# 5. 生成可交互蓝图 HTML（浏览器直接打开，离线可用；--theme 可选 deep-blue / fresh-green）
-nice-aos export --format html --output blueprint.html
-
-# 6. 单文件分析（不建快照，stdout 直接输出本体 JSON，可与 jq/findstr 管道组合）
+# 单文件体检（不建快照，stdout 输出本体 JSON，可与 jq 管道组合）
 nice-aos action analyzeFile --params '{"file":"Steam-License-Classifier.js"}' | jq '.ScriptFunction[] | select(.deadCandidate)'
 
-# 7. 升级到最新版（全局安装时一键升级；--check 仅检测）
+# 结构完全相同的重复函数（AST fingerprint 分组）
+nice-aos duplicates --min-size 20
+
+# 敏感 API 使用扫描（fetch / eval / localStorage ...，数据驱动注册表）
+nice-aos io --min-danger medium
+
+# 版本升级（全局安装一键升级；--check 仅检测）
 nice-aos update
 
-# 8. 启动本地数据源服务（供 AI agent / 油猴脚本跨源拉取快照与蓝图）
+# 本地数据源服务（AI agent / 油猴脚本跨源拉取）
 nice-aos serve
-
-# 9. 向 AI CLI 提问（上下文自动从快照构建，SQLite 预过滤毫秒级）
-nice-aos ask "这个项目的架构分层和功能域划分？"
 ```
 
 > **快照目录解析优先级**：`--snapshot-dir` 参数 > `NICE_AOS_SNAPSHOT_DIR` 环境变量 > `cwd/.nice-aos/data` > `~/.nice-aos/data`。
+
+## 场景指南
 
 ### 多根目录项目（monorepo / 多包仓库）
 

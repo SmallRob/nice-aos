@@ -114,8 +114,74 @@ export function getSink(callee) {
 }
 
 /**
+ * 字符串字面量与注释打码：把 '...' / "..." / `...` 的内容与 // /* *\/ 注释替换为等长空白
+ * （保留换行，保证打码后索引与原文一致），防止注册表 callee 名出现在字符串常量、
+ * 代码生成模板或文档注释中时被误判为真实调用。
+ * 模板字面量的 ${...} 插值段保留为代码（内部调用仍是真实运行时行为）。
+ *
+ * @param {string} source 原始源码
+ * @returns {string} 等长打码文本
+ */
+export function maskStringsAndComments(source) {
+  const out = source.split('');
+  const blank = (a, b) => { for (let k = a; k < b; k++) if (out[k] !== '\n') out[k] = ' '; };
+  const n = source.length;
+  // tpl = 模板插值表达式作用域（'}' 结束）；brace = 普通花括号块
+  const scopeStack = [];
+  let i = 0;
+  while (i < n) {
+    const c = source[i];
+    // 行注释
+    if (c === '/' && source[i + 1] === '/') {
+      let j = i;
+      while (j < n && source[j] !== '\n') j++;
+      blank(i, j); i = j; continue;
+    }
+    // 块注释
+    if (c === '/' && source[i + 1] === '*') {
+      const j = source.indexOf('*/', i + 2);
+      const end = j < 0 ? n : j + 2;
+      blank(i, end); i = end; continue;
+    }
+    // 单引号 / 双引号字符串：整体打码
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      while (j < n) {
+        if (source[j] === '\\') { j += 2; continue; }
+        if (source[j] === c) { j++; break; }
+        j++;
+      }
+      blank(i, j); i = j; continue;
+    }
+    // 模板字面量：内容打码，${...} 插值段保留为代码
+    if (c === '`') {
+      blank(i, i + 1); i++;
+      while (i < n) {
+        if (source[i] === '\\') { blank(i, Math.min(n, i + 2)); i += 2; continue; }
+        if (source[i] === '`') { blank(i, i + 1); i++; break; }
+        if (source[i] === '$' && source[i + 1] === '{') { blank(i, i + 1); i += 2; scopeStack.push('tpl'); continue; }
+        out[i] = source[i] === '\n' ? '\n' : ' '; i++;
+      }
+      continue;
+    }
+    // 模板插值作用域内的花括号配对：'}' 弹出 tpl，其余 '{'/'}' 按普通块处理
+    if (scopeStack.length > 0) {
+      if (c === '{') { scopeStack.push('brace'); i++; continue; }
+      if (c === '}') { scopeStack.pop(); i++; continue; }
+    } else if (c === '{' || c === '}') {
+      i++; continue;
+    }
+    // 正则字面量含引号时可能破坏后续配对——按普通字符略过（宁漏报不误报的保守方向）
+    i++;
+  }
+  return out.join('');
+}
+
+/**
  * 静态扫描：在 source 文本中找所有 sink call sites。
  * 借鉴 code-graph-rag 的"shadow check"——但简化版只做文本匹配。
+ * 匹配在「打码后」的文本上执行：字符串字面量与注释中的 callee 名不再误报；
+ * callText/argsText 回取自原文对应位置，保持展示保真。
  *
  * @param {string} source 函数体源码
  * @param {string[]} [declaredLocals=[]] 函数内 local 变量名（用来 shadow check；简化为只看 var/let/const）
@@ -125,6 +191,7 @@ export function scanSource(source, declaredLocals = []) {
   if (!source) return [];
   const hits = [];
 
+  const masked = maskStringsAndComments(source);
   // 找所有 <callee>( 的位置
   // callee 转义（特殊字符 . 等）
   for (const sink of IO_SINKS) {
@@ -133,19 +200,24 @@ export function scanSource(source, declaredLocals = []) {
     // 形式：callee(...) 或 callee.something(...)
     const re = new RegExp(`\\b${escaped}\\s*\\(\\s*([^)]*?)\\)`, 'gm');
     let m;
-    while ((m = re.exec(source))) {
+    while ((m = re.exec(masked))) {
       // shadow check：如果 callee 的最后一段是 local var 声明的，跳过
       const short = sink.callee.split('.').pop();
       if (declaredLocals.includes(short) && !sink.callee.includes('.')) {
         continue;
       }
+      // 打码为等长替换 → masked 索引即原文索引，回取原始文本保持展示保真
+      const origCallText = source.slice(m.index, m.index + m[0].length);
+      const openParen = origCallText.indexOf('(');
+      const closeParen = origCallText.lastIndexOf(')');
+      const argsText = closeParen > openParen ? origCallText.slice(openParen + 1, closeParen).trim() : '';
       // 找行号
       const before = source.slice(0, m.index);
       const line = (before.match(/\n/g) || []).length + 1;
       hits.push({
         sink,
-        callText: m[0],
-        argsText: m[1]?.trim() || '',
+        callText: origCallText,
+        argsText,
         line,
       });
     }
