@@ -602,6 +602,24 @@ export async function buildOntologyData(projectRoot, options = {}) {
   // 外部测试引用证据：根级 test/tests/__tests__/spec 目录不在扫描范围，
   // 其 import 代表真实使用 → 孤儿文件与死代码判定须豁免（消除"仅被测试使用"误报）
   const testImportedFiles = new Set(scan.testImports?.importedFiles ?? []);
+
+  // v0.35.0 借鉴 GitNexus resolution-outcome.ts：把"解析失败的近似判定"也建成数据
+  // 在 _meta.resolutionStats 暴露；MCP get_health / serve /api/stats 一并复用
+  // 各计数器在对应代码路径 +1，_meta 阶段汇总
+  const resolutionStats = {
+    totalImportAttempts: 0,           // 所有 import 声明总数（external + internal + type）
+    totalResolvedImports: 0,          // 解析成功的 import 声明
+    unresolvedImportsCount: 0,        // 解析失败（无候选文件）
+    unresolvedDynamicImportsCount: 0, // defineAsyncComponent / React.lazy 等动态导入解析失败
+    vueGlobalFallbackCount: 0,        // renders 经 Vue.component 全局注册兜底
+    vueSameFileFallbackCount: 0,      // renders 经同文件兜底（无 import 记录）
+    autoImportedUsesStoreCount: 0,    // usesStore 经 unplugin-auto-import 隐式调用匹配
+    propEdgeSourceMissingCount: 0,    // prop 边源/目标组件缺失
+    matchedRouteCount: 0,             // 前后端路由匹配命中数
+    unmatchedFrontendCallsCount: 0,   // 前端 API 调用未匹配到后端路由
+    methodCallAttempts: 0,            // 方法调用边总数
+    methodCallResolved: 0,            // 方法调用边解析成功数
+  };
   const testNamedRefs = new Set(scan.testImports?.namedRefs ?? []);
   const resolver = createResolver(projectRoot, scan.tsconfigPaths, scan.files, scan.pubspecName ?? null);
 
@@ -769,14 +787,19 @@ export async function buildOntologyData(projectRoot, options = {}) {
     const isGoFile = relPath.endsWith('.go');
     for (const imp of facts.imports) {
       if (imp.isTypeOnly) typeImportCount += 1;
+      resolutionStats.totalImportAttempts += 1;
       if (isRustFile) {
         const r = imp.resolved ?? resolveRustImport(relPath, imp.specifier);
         if (r.kind === 'internal') {
           if (!seen.has(`file:${r.file}`)) { importIds.push(`file:${r.file}`); seen.add(`file:${r.file}`); }
+          resolutionStats.totalResolvedImports += 1;
         } else if (r.kind === 'unresolved') {
           if (!unresolvedImports.includes(imp.specifier)) unresolvedImports.push(imp.specifier);
+          resolutionStats.unresolvedImportsCount += 1;
+        } else {
+          // rust-external: 解析成功（依赖边不进 npm 体系）
+          resolutionStats.totalResolvedImports += 1;
         }
-        // rust-external（Cargo crate）不进 npm 依赖体系
         continue;
       }
       if (isGoFile) {
@@ -787,8 +810,12 @@ export async function buildOntologyData(projectRoot, options = {}) {
             if (tf === relPath) continue;
             if (!seen.has(`file:${tf}`)) { importIds.push(`file:${tf}`); seen.add(`file:${tf}`); }
           }
+          resolutionStats.totalResolvedImports += 1;
         } else if (r.kind === 'unresolved') {
           if (!unresolvedImports.includes(imp.specifier)) unresolvedImports.push(imp.specifier);
+          resolutionStats.unresolvedImportsCount += 1;
+        } else {
+          resolutionStats.totalResolvedImports += 1;
         }
         // builtin（标准库）/ external（go.mod 依赖）不进文件边
         continue;
@@ -796,10 +823,13 @@ export async function buildOntologyData(projectRoot, options = {}) {
       const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
       if (r.kind === 'internal') {
         if (!seen.has(`file:${r.file}`)) { importIds.push(`file:${r.file}`); seen.add(`file:${r.file}`); }
+        resolutionStats.totalResolvedImports += 1;
       } else if (r.kind === 'external') {
         if (!seen.has(`dep:${r.package}`)) { importIds.push(`dep:${r.package}`); seen.add(`dep:${r.package}`); }
+        resolutionStats.totalResolvedImports += 1;
       } else if (r.kind === 'unresolved') {
         if (!unresolvedImports.includes(imp.specifier)) unresolvedImports.push(imp.specifier);
+        resolutionStats.unresolvedImportsCount += 1;
       }
     }
     const stem = path.posix.basename(relPath).replace(/\.(tsx?|jsx?|dart)$/, '');
@@ -939,7 +969,17 @@ export async function buildOntologyData(projectRoot, options = {}) {
       const ids = new Set();
       for (const name of names) {
         const sid = storeIdByName.get(name);
-        if (sid) ids.add(sid);
+        if (sid) {
+          ids.add(sid);
+          // 仅当无显式 import 时计 auto-imported（import 过的会重复出现在 storeIds，但来源不同）
+          if (!(c.filePath && fileObjectByPath.get(c.filePath)?.importIds?.some((iid) => {
+            const f = fileObjectByPath.get(c.filePath);
+            const target = stores.find((s) => s.id === sid);
+            return f && target && iid === `file:${target.filePath}`;
+          }))) {
+            resolutionStats.autoImportedUsesStoreCount += 1;
+          }
+        }
       }
       c.storeIds = [...ids];
     }
@@ -1534,10 +1574,12 @@ export async function buildOntologyData(projectRoot, options = {}) {
     const globalTarget = globalVueComponents.get(pcTag) ?? globalVueComponents.get(tag);
     if (globalTarget) {
       const hit = pickTargetComponent(globalTarget, pcTag);
-      if (hit) return hit;
+      if (hit) { resolutionStats.vueGlobalFallbackCount += 1; return hit; }
     }
     // 4. 同文件兜底（无 import 记录的同文件导出组件）
-    return fileComps.find((c) => c.name === tag) ?? fileComps.find((c) => c.name === pcTag) ?? null;
+    const sameFile = fileComps.find((c) => c.name === tag) ?? fileComps.find((c) => c.name === pcTag);
+    if (sameFile) resolutionStats.vueSameFileFallbackCount += 1;
+    return sameFile ?? null;
   };
   for (const relPath of scan.files) {
     const facts = factsMap.get(relPath);
@@ -1713,6 +1755,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     for (const w of facts.lazyWrappers) {
       const r = resolver.resolve(relPath, w.importPath);
       if (r.kind === 'internal') lazyReferencedFiles.add(r.file);
+      else resolutionStats.unresolvedDynamicImportsCount += 1;
     }
   }
   for (const route of rawRoutes) {
@@ -2238,8 +2281,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
             if (!route.frontendCalls.some((c) => c.filePath === relPath && c.line === call.line)) {
               route.frontendCalls.push(entry);
             }
+            resolutionStats.matchedRouteCount += 1;
           } else {
             unmatchedFrontendCalls.push({ ...entry, path: call.path });
+            resolutionStats.unmatchedFrontendCallsCount += 1;
           }
         }
       }
@@ -2598,6 +2643,16 @@ export async function buildOntologyData(projectRoot, options = {}) {
       orphanCandidates,
       deadExportCandidates,
       unmatchedFrontendCalls,
+      // v0.35.0 解析覆盖度（借鉴 GitNexus resolution-outcome.ts）
+      // 关键派生指标：importResolutionRate（解析成功/总尝试）让 agent 一眼看到"图谱完整度"
+      resolutionStats: {
+        ...resolutionStats,
+        importResolutionRate: resolutionStats.totalImportAttempts > 0
+          ? Number((resolutionStats.totalResolvedImports / resolutionStats.totalImportAttempts).toFixed(4))
+          : 1.0,
+        fuzzyLinkCount: resolutionStats.vueGlobalFallbackCount + resolutionStats.vueSameFileFallbackCount
+          + resolutionStats.autoImportedUsesStoreCount + resolutionStats.propEdgeSourceMissingCount,
+      },
       objectCounts: {
         Module: modules.length, SourceFile: fileObjects.length, Component: components.length,
         Hook: hooks.length, Store: stores.length, Service: services.length,

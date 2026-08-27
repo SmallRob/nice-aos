@@ -4,6 +4,59 @@
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-08-27
+
+### 借鉴 GitNexus：图谱协议层 v0.35.1（ADR 0005）
+
+参考 `/Users/healer2027/workprojetcs/nice-aos/.nice-aos/analysis/gitnexus-graph-borrow-analysis.md`，4 项 GitNexus 范式增量落地。完整方案对比与不借鉴项决策见 `docs/adr/0005-gitnexus-borrowed-capabilities.md`。
+
+#### P1：链接元数据（edge metadata）
+
+- **新模块** `src/ontology/linkMeta.js` —— 把 `link()` 增强为 `linkWithMeta2(ctx, linkType, srcId) → [{id, confidence, reason}]`
+- 元数据写入约定：源对象上 `<linkType>Meta` 数组与 `*Ids` 一一对应；缺省时降级为 `confidence: 1.0, reason: 'direct'`
+- 模糊推导边的预设（与 builder.js 当前解析路径对齐）：
+  - `vue-global-fallback` 0.6（renders 经 Vue.component 全局注册兜底）
+  - `vue-same-file-fallback` 0.5（renders 经同文件兜底）
+  - `auto-imported` 0.7（usesStore 经 unplugin-auto-import 隐式调用）
+  - `missing-source` 0.4（prop 边源/目标组件缺失）
+- 新增 `linkBfsWithMeta(ctx, linkType, srcId, depth)`：按 hop 分层 + `pathConfidence` 取路径最低值 + cycle 防爆
+- 完全向后兼容：现有 `link(linkType, srcId)` 不变
+
+#### P1：MCP epistemic 信封（epistemic envelope）
+
+借鉴 GitNexus `src/mcp/tools.ts` 的 `epistemic: 'exact' | 'lower-bound'` 协议：
+
+- **traverse_links 响应**：新增 `_meta: { epistemic, confidence, causes, count, at, ... }`；可选 `withMeta: true` 附加 `edges: [{id, confidence, reason}]`；`depth > 1` 时附加 `byDepth: [{depth, count, edges}]`
+- **get_node 找不到**：返回 `_meta.ambiguity: { queried, candidates: [{id, name, _type, score}] }`（Levenshtein + prefix + 子串打分）
+- **query_objects 歧义名（~ 多匹配）**：返回 `_meta.ambiguity: { queriedName, distinctNames, candidates: [{name, count, sampleId, relevance}] }`；唯一匹配时不附 `_meta`（与原行为一致）
+- **get_health**：暴露 `_meta.resolutionStats`（向后兼容，无则 `null`）
+
+#### P2：解析覆盖度记账（resolution-outcome）
+
+借鉴 GitNexus `src/core/ingestion/scope-resolution/passes/resolution-outcome.ts`：
+
+- builder.js 在 `_meta.resolutionStats` 写入：
+  - `totalImportAttempts` / `totalResolvedImports` / `unresolvedImportsCount`
+  - `unresolvedDynamicImportsCount`（defineAsyncComponent / React.lazy 解析失败）
+  - `vueGlobalFallbackCount` / `vueSameFileFallbackCount`（renders 模糊兜底）
+  - `autoImportedUsesStoreCount`（隐式 store 调用）
+  - `matchedRouteCount` / `unmatchedFrontendCallsCount`（前后端路由匹配）
+- 派生指标：`importResolutionRate`（解析成功率） + `fuzzyLinkCount`（所有模糊边计数）
+- "已知限制"从文档 → 数据，agent 一眼看到图谱完整度
+
+#### P2：蓝图邻接聚焦交互（reducer 范式）
+
+借鉴 GitNexus WebGL Sigma 3 的邻接衰减着色，零依赖 SVG 实现：
+
+- viewer.js CSS 增强：选中节点 → 邻接边 stroke-width ×1.5 + drop-shadow + 邻接节点描边 3.5px + 阴影；非邻接压暗至 0.18 alpha / 边 0.06 alpha
+- 已有 `cgSetFocus` 函数 + Esc 键 + "清除聚焦"按钮三种解除方式
+- viewmodel 暴露 `renderBudgets: { moduleGraphNodeCap, componentGraphNodeCap, storeGraphNodeCap, graphEdgeCap, entityNodeCap, entityTableCap }`；超 cap 时 UI 显示 `<span class="warn">节点已达渲染上限 N</span>`（借鉴 ~25K 节点 / ~50K 边悬崖阈值熔断）
+
+### 测试
+
+- 新增 `test/linkMeta.test.mjs` 16 tests：linkWithMeta2 直连边/模糊边/缺省降级/'links' 聚合/未知 linkType + linkBfsWithMeta byDepth 分层/cycle 防爆/pathConfidence + epistemic 信封 5 路径（traverse_links 成功/源不存在/withMeta + get_node 找不到 + query_objects 歧义/精确 + get_health 暴露 resolutionStats）
+- 回归：114 tests pass（toolRegistry 24 + linkMeta 16 + blueprintActions 31 + blueprintEngine 14 + output 29）
+
 ## [0.35.0] - 2026-08-27
 
 ### 技术债清偿（ADR 0002 审核报告 P0/P1/P2 全量闭环，自扫描/审核驱动）

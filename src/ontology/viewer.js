@@ -1248,6 +1248,16 @@ export function buildViewerModel(dataMap) {
     propFlow,
     stats,
     codeGraph,
+    // v0.35.0 渲染预算声明（借鉴 GitNexus 的大图阈值熔断 + AI 标记回灌）
+    // UI 拿 budgets 与 codeGraph 对比，超限给用户明确告知
+    renderBudgets: {
+      moduleGraphNodeCap: MODULE_GRAPH_NODE_CAP,
+      componentGraphNodeCap: COMPONENT_GRAPH_NODE_CAP,
+      storeGraphNodeCap: STORE_GRAPH_NODE_CAP,
+      graphEdgeCap: GRAPH_EDGE_CAP,
+      entityNodeCap: ENTITY_NODE_CAP,
+      entityTableCap: ENTITY_TABLE_CAP,
+    },
     interactive,
     quality: {
       cycles: meta.cycles ?? [],
@@ -1443,8 +1453,11 @@ svg .cge.usesStore { stroke: color-mix(in srgb, var(--purple) 60%, transparent);
 svg .cge.dim { opacity: .35; }
 svg.focus .cgn { opacity: .18; }
 svg.focus .cgn.hl { opacity: 1; }
+/* v0.35.0 邻接聚焦视觉增强（借鉴 GitNexus reducer 范式：选中节点提亮 + 尺寸放大 + 描边强化） */
+svg.focus .cgn.hl circle { stroke-width: 3.5; filter: drop-shadow(0 0 6px currentColor); }
+svg.focus .cgn.hl text { fill: var(--fg); font-weight: 700; }
 svg.focus .cge { opacity: .06; }
-svg.focus .cge.hl { opacity: 1; }
+svg.focus .cge.hl { opacity: 1; stroke-width: 2.4; filter: drop-shadow(0 0 3px currentColor); }
 #cg-info { margin-top: 10px; min-height: 20px; font-size: 13px; }
 #cg-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
 .bp-obj-truncated { padding: 8px 12px; font-size: 12px; color: var(--fg-faint); text-align: center; border-top: 1px dashed var(--border); }
@@ -3406,6 +3419,20 @@ function renderCodeGraph() {
   }
   const hasModule = !!(G.moduleView && G.moduleView.nodes.length);
   const hasComponent = !!(G.componentView && G.componentView.nodes.length);
+  // v0.35.0 渲染预算声明（借鉴 GitNexus 的大图阈值熔断）：超 cap 时明确告知用户
+  // 不静默截断，让用户知道图谱已经"超出可清晰交互的尺寸"
+  const budgets = M.renderBudgets || {};
+  let budgetNote = '';
+  if (hasModule) {
+    const mNodes = G.moduleView.nodes.length;
+    const mCap = budgets.moduleGraphNodeCap || 90;
+    if (mNodes >= mCap) budgetNote += ' · <span class="warn">模块节点已达渲染上限 ' + mCap + '（' + mNodes + ' 个）</span>';
+  }
+  if (hasComponent) {
+    const cNodes = G.componentView.nodes.length;
+    const cCap = budgets.componentGraphNodeCap || 130;
+    if (cNodes >= cCap) budgetNote += ' · <span class="warn">组件节点已达渲染上限 ' + cCap + '（' + cNodes + ' 个）</span>';
+  }
   el.innerHTML =
     '<div class="panel"><h2>代码图谱（力导向图）</h2>'
     + '<div class="cg-toolbar">'
@@ -3413,12 +3440,14 @@ function renderCodeGraph() {
     + (hasComponent ? '<button class="btn" id="cg-mode-component">组件图谱</button>' : '')
     + '<button class="btn" id="cg-relayout">重新布局</button>'
     + '<button class="btn" id="cg-reset">重置视图</button>'
+    + '<button class="btn" id="cg-clear-focus">清除聚焦</button>'
     + '<span class="cg-hint" id="cg-count"></span>'
     + '</div>'
     + '<div class="cg-stage" id="cg-stage"><svg id="cg-svg" viewBox="0 0 ' + CG_W + ' ' + CG_H + '"><g id="cg-transform"></g></svg></div>'
     + '<div class="legend" id="cg-legend"></div>'
     + '<div id="cg-info"></div>'
-    + '<div class="note">模块视图：节点 = 二级以内模块，边 = 模块间文件导入（权重 = 导入次数）；组件视图：节点 = 组件 / Store，边 = props 传递、组件间文件导入与 useStore 依赖。力导向布局由内置力模拟（斥力 + 弹簧 + 向心力）实时计算。</div>'
+    + '<div class="note">模块视图：节点 = 二级以内模块，边 = 模块间文件导入（权重 = 导入次数）；组件视图：节点 = 组件 / Store，边 = props 传递、组件间文件导入与 useStore 依赖。力导向布局由内置力模拟（斥力 + 弹簧 + 向心力）实时计算。点击节点高亮邻接（邻接焦点模式），再次点击或按 Esc 取消。</div>'
+    + (budgetNote ? '<div class="note">' + budgetNote + '</div>' : '')
     + '</div>';
   cgBindStage();
   const bindMode = (id, mode) => {
@@ -3438,6 +3467,12 @@ function renderCodeGraph() {
     CG.view = { k: 1, x: 0, y: 0 };
     cgApplyTransform();
     cgSetFocus(null);
+  });
+  const clearFocus = document.getElementById('cg-clear-focus');
+  if (clearFocus) clearFocus.addEventListener('click', () => cgSetFocus(null));
+  // v0.35.0 Esc 键清除聚焦
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') cgSetFocus(null);
   });
   cgSetMode(hasModule ? 'module' : 'component');
 }

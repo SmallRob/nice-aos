@@ -15,17 +15,18 @@
 //   - JSON Schema 与 ParamDef 几乎一一对应，转化简单
 //   - code-graph-rag 的 SDK 默认接受 raw shape，本实现对齐
 //
-// 工具集（阶段 1 v0.33.0）：
+// 工具集（阶段 1 v0.33.0；v0.35.0 增 epistemic 信封 + 模糊元数据）：
 //   1. get_stats         — 快照统计摘要
 //   2. get_schema        — 本体元模型（对象/链接/动作 schema）
 //   3. list_types        — 列出 19 种对象类型
-//   4. query_objects     — 按类型 + where 条件查询
-//   5. get_node          — 按 id 查单个对象
-//   6. traverse_links    — 链接遍历（links/linkType/srcId 三种）
-//   7. get_health        — 五维健康审计（从 _meta 读）
+//   4. query_objects     — 按类型 + where 条件查询（歧义名 → 候选列表）
+//   5. get_node          — 按 id 查单个对象（不存在 → 相似候选）
+//   6. traverse_links    — 链接遍历（_meta.epistemic + withMeta 模糊元数据 + byDepth 分层）
+//   7. get_health        — 五维健康审计（从 _meta 读；含 resolutionStats 解析覆盖度）
 // 后续阶段 2 增量加：query_graph（Cypher-like）、search_duplicates、trace_flows 等
 
 import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META } from './blueprint.js';
+import { linkWithMeta2, linkBfsWithMeta } from './linkMeta.js';
 
 /**
  * 解析 where 条件字符串 "k=v,k2~v2" 为 [{key, op, value}] 数组。
@@ -186,6 +187,26 @@ export function createToolRegistry({ snap }) {
         const filtered = conditions.length ? objects.filter((o) => matchesWhere(o, conditions)) : objects;
         const total = filtered.length;
         const truncated = limit > 0 && total > limit;
+
+        // v0.35.0 epistemic envelope：歧义名（~ 包含过滤多匹配）返回候选聚合
+        // 触发条件：~ 操作符匹配数 > 1 且 limit 未截断；附按 name 分组的 Top5 候选 + 相关度
+        const meta = {};
+        if (conditions.length) {
+          const nameCond = conditions.find((c) => c.key === 'name' && c.op === '~');
+          if (nameCond && total > 1 && !truncated) {
+            const groups = new Map();
+            for (const o of filtered) {
+              const n = o.name ?? '';
+              if (!groups.has(n)) groups.set(n, { name: n, count: 0, sampleId: o.id });
+              groups.get(n).count += 1;
+            }
+            const candidates = [...groups.values()]
+              .map((g) => ({ ...g, relevance: nameRelevance(g.name, nameCond.value) }))
+              .sort((a, b) => b.relevance - a.relevance || b.count - a.count)
+              .slice(0, 5);
+            meta.ambiguity = { queriedName: nameCond.value, distinctNames: groups.size, candidates };
+          }
+        }
         return {
           ok: true,
           type,
@@ -193,6 +214,7 @@ export function createToolRegistry({ snap }) {
           total,
           truncated,
           objects: truncated ? filtered.slice(0, limit) : filtered,
+          ...(Object.keys(meta).length ? { _meta: meta } : {}),
         };
       },
     },
@@ -213,14 +235,28 @@ export function createToolRegistry({ snap }) {
       handler: async ({ id }) => {
         if (!id) return { ok: false, error: '缺少参数 id' };
         const obj = byId.get(id);
-        if (!obj) return { ok: false, error: `对象不存在: ${id}` };
-        return { ok: true, object: obj };
+        if (obj) return { ok: true, object: obj };
+
+        // v0.35.0 epistemic envelope：id 不存在时返回相似候选（不静默二选一）
+        // 候选打分：编辑距离（prefix + 子串命中加权）；上限 5 条
+        const candidates = findSimilarIds(byId, id, 5);
+        return {
+          ok: false,
+          error: `对象不存在: ${id}`,
+          _meta: {
+            epistemic: 'lower-bound',
+            ambiguity: {
+              queried: id,
+              candidates,
+            },
+          },
+        };
       },
     },
 
     {
       name: 'traverse_links',
-      description: '从源对象出发遍历链接关系。linkType 必填（24+ 链接类型之一）；srcId 必填；depth 控制 hop 数（默认 1）。返回相邻节点列表（不含源节点）',
+      description: '从源对象出发遍历链接关系。linkType 必填（24+ 链接类型之一）；srcId 必填；depth 控制 hop 数（默认 1）。返回相邻节点列表（不含源节点）。v0.35.0 起：默认带 _meta.epistemic 信封；withMeta=true 时额外返回每条边的 {confidence, reason}；depth>1 时输出按深度分层',
       inputSchema: {
         type: 'object',
         properties: {
@@ -235,20 +271,32 @@ export function createToolRegistry({ snap }) {
           },
           depth: {
             type: 'number',
-            description: '遍历深度（默认 1）',
+            description: '遍历深度（默认 1；最大 3）',
             default: 1,
             minimum: 1,
             maximum: 3,
           },
+          withMeta: {
+            type: 'boolean',
+            description: '是否在返回中携带每条边的 {id, confidence, reason} 模糊元数据（默认 false，节省带宽）',
+            default: false,
+          },
         },
         required: ['linkType', 'srcId'],
       },
-      handler: async ({ linkType, srcId, depth = 1 }) => {
+      handler: async ({ linkType, srcId, depth = 1, withMeta = false }) => {
         if (!srcId) return { ok: false, error: '缺少参数 srcId' };
         const src = byId.get(srcId);
-        if (!src) return { ok: false, error: `源对象不存在: ${srcId}` };
+        if (!src) {
+          const candidates = findSimilarIds(byId, srcId, 5);
+          return {
+            ok: false,
+            error: `源对象不存在: ${srcId}`,
+            _meta: { epistemic: 'lower-bound', ambiguity: { queried: srcId, candidates } },
+          };
+        }
 
-        // "links" 或 "all"：返回 src 上所有以 ids 结尾的字段（importIds / callIds / ...）
+        // "links" / "all"：返回 src 上所有以 ids 结尾的字段（importIds / callIds / ...）
         if (linkType === 'links' || linkType === 'all') {
           const refs = {};
           for (const [k, v] of Object.entries(src)) {
@@ -257,32 +305,60 @@ export function createToolRegistry({ snap }) {
               if (objs.length) refs[k] = objs;
             }
           }
-          return { ok: true, linkType, srcId, depth, refs, count: Object.values(refs).reduce((a, b) => a + b.length, 0) };
+          const count = Object.values(refs).reduce((a, b) => a + b.length, 0);
+          return {
+            ok: true,
+            linkType,
+            srcId,
+            depth: 1,
+            refs,
+            count,
+            _meta: epistemicEnvelope('exact', count, { linkType, srcId }),
+          };
         }
 
-        // 具体 linkType：按 src 字段名约定解析
-        // 约定：src.<linkType>Ids（数组 of id）或 src.<linkType>Id（单 id），无则视为 contains
-        const idsKey = `${linkType}Ids`;
-        const idKey = `${linkType}Id`;
-        let ids = [];
-        if (Array.isArray(src[idsKey])) ids = src[idsKey];
-        else if (src[idKey]) ids = [src[idKey]];
+        // 具体 linkType：走 linkWithMeta2 拿带元数据的瘦对象
+        // 但 target 仍要 lookup 完整对象给 agent 消费
+        const bp = await ensureBlueprint(snap);
+        const ctx = { linkFn: (lt, sid) => bp.link(lt, sid), byId };
+        const meta = linkWithMeta2(ctx, linkType, srcId);
+        const targets = meta.map((e) => byId.get(e.id)).filter(Boolean);
 
-        const targets = ids.map((id) => byId.get(id)).filter(Boolean);
-        return {
+        // depth > 1：按 hop 分层（借鉴 GitNexus impact byDepth）
+        if (depth > 1) {
+          const layered = linkBfsWithMeta(ctx, linkType, srcId, depth);
+          return {
+            ok: true,
+            linkType,
+            srcId,
+            depth,
+            // 兼容旧字段：d=1 targets 平铺
+            targets: targets.slice(0, 200),
+            count: targets.length,
+            byDepth: layered.byDepth,
+            _meta: epistemicEnvelope('exact', targets.length, { linkType, srcId, depth, withMeta }),
+          };
+        }
+
+        const out = {
           ok: true,
           linkType,
           srcId,
-          depth,
+          depth: 1,
           targets,
           count: targets.length,
+          _meta: epistemicEnvelope('exact', targets.length, { linkType, srcId, withMeta }),
         };
+        if (withMeta) {
+          out.edges = meta; // [{id, confidence, reason}, ...]
+        }
+        return out;
       },
     },
 
     {
       name: 'get_health',
-      description: '获取五维健康审计摘要：循环依赖（cycles）、孤儿候选（orphanCandidates）、各类型数量、生成时间。无参',
+      description: '获取五维健康审计摘要：循环依赖（cycles）、孤儿候选（orphanCandidates）、各类型数量、生成时间、解析覆盖度（resolutionStats）。无参',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
         // 五维健康审计 builder 写入 _meta，本工具暴露其精简版
@@ -302,6 +378,9 @@ export function createToolRegistry({ snap }) {
               present: OBJECT_TYPES.filter((t) => (counts[t.type] ?? 0) > 0).length,
               missing: OBJECT_TYPES.filter((t) => (counts[t.type] ?? 0) === 0).map((t) => t.type),
             },
+            // v0.35.0 解析覆盖度记账（借鉴 GitNexus resolution-outcome 模式）
+            // builder.js 在 _meta.resolutionStats 写入的近似判定统计
+            resolutionStats: meta.resolutionStats ?? null,
           },
         };
       },
@@ -351,4 +430,98 @@ export function createToolRegistry({ snap }) {
       names: tools.map((t) => t.name),
     },
   };
+}
+
+// ============================================================
+// v0.35.0 借鉴 GitNexus 的 epistemic envelope / 歧义候选协议
+//   - findSimilarIds(byId, query, k) — 找不到时返回相似候选
+//   - nameRelevance(a, b) — ~ 模糊匹配的相关度打分
+//   - epistemicEnvelope(kind, count, ctx) — 通用元数据封装
+//   - ensureBlueprint() — 懒构造 createBlueprint 引用（traverse_links 走 linkWithMeta2 需要）
+// ============================================================
+
+// 懒加载：避免循环依赖（toolRegistry.js → blueprint.js → ...）
+function ensureBlueprint(snap) {
+  if (!snap) throw new Error('ensureBlueprint: 缺 snap 参数');
+  return import('./blueprint.js').then(({ createBlueprint }) => createBlueprint(snap));
+}
+
+/**
+ * 构造 epistemic 元数据。
+ *   - epistemic: 'exact' 当结果完整可靠；'lower-bound' 当已知存在解析缺失
+ *   - causes:    一句话描述影响可信度的因素（空数组 = 完美）
+ *   - confidence: 0..1 汇总（exact=1.0，lower-bound 由 causes 数衰减）
+ */
+function epistemicEnvelope(kind, count, ctx = {}) {
+  if (kind === 'exact') {
+    return {
+      epistemic: 'exact',
+      confidence: 1.0,
+      causes: [],
+      count,
+      at: new Date().toISOString(),
+    };
+  }
+  return { epistemic: kind, confidence: 0, causes: [], count, at: new Date().toISOString(), ...ctx };
+}
+
+/**
+ * 找相似 id 候选。打分：完全 > 前缀 > 子串 > 编辑距离。
+ * 用于 get_node 找不到 / traverse_links 源不存在时返回候选。
+ */
+function findSimilarIds(byId, query, k = 5) {
+  if (!query) return [];
+  const q = String(query).toLowerCase();
+  const out = [];
+  for (const [id, obj] of byId.entries()) {
+    const lower = id.toLowerCase();
+    let score = 0;
+    if (lower === q) score = 1.0;
+    else if (lower.startsWith(q)) score = 0.8;
+    else if (lower.includes(q)) score = 0.5;
+    else {
+      // 简单编辑距离（仅前 64 字符，超长跳过避免 O(n²)）
+      const t = lower.slice(0, 64);
+      const d = levenshtein(t, q.slice(0, 64));
+      const max = Math.max(t.length, q.length, 1);
+      score = Math.max(0, 1 - d / max) * 0.4;
+    }
+    if (score > 0.2) {
+      out.push({ id, name: obj.name, _type: obj._type, score: Number(score.toFixed(3)) });
+    }
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, k);
+}
+
+/** name 模糊匹配的相关度（0..1）：子串 > 前缀 > 大小写无关 > 全字相等 */
+function nameRelevance(candidate, query) {
+  if (!candidate || !query) return 0;
+  const c = String(candidate).toLowerCase();
+  const q = String(query).toLowerCase();
+  if (c === q) return 1.0;
+  if (c.startsWith(q)) return 0.85;
+  if (c.includes(q)) return 0.6;
+  // 编辑距离
+  const d = levenshtein(c.slice(0, 64), q.slice(0, 64));
+  const max = Math.max(c.length, q.length, 1);
+  return Math.max(0, 1 - d / max) * 0.4;
+}
+
+/** 标准 Levenshtein 距离（O(n*m) 空间），用于 id/name 相似度 */
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = new Array(b.length + 1);
+  const cur = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    cur[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = cur[j];
+  }
+  return prev[b.length];
 }
