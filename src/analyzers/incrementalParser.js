@@ -1,6 +1,6 @@
 // 增量解析器：缓存式增量解析（无 tree-sitter）。
 // 借鉴 asdm-aos v0.0.12 IncrementalParser 设计（src/server/analyzers/shared/incrementalParser.ts:40-200）：
-//   - LRU 缓存：Map<filePath, {code, result}>
+//   - 结果缓存（FIFO 容量淘汰简化实现，非严格 LRU）：Map<filePath, {code, result}>
 //   - parse(filePath, code)：
 //     1) 缓存未命中 → 全量重算
 //     2) 缓存命中且 code 未变 → 复用旧 result
@@ -18,7 +18,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 /**
- * 增量解析器：通用 LRU 缓存包装。
+ * 增量解析器：通用结果缓存包装。
+ * 淘汰策略为 FIFO 简化实现（ADR 允许"不严格 LRU"，命中不更新位置）；见 ensureCacheSpace 注释。
  * 不依赖 tree-sitter；不修改被缓存的 analyzer 实现，仅做"按 filePath 缓存 result"。
  *
  * @template T 解析结果类型
@@ -26,7 +27,7 @@ import { execFileSync } from 'node:child_process';
 export class IncrementalParser {
   /**
    * @param {object} [opts]
-   * @param {number} [opts.maxCacheSize=1000] LRU 容量上限
+   * @param {number} [opts.maxCacheSize=1000] 缓存容量上限（超限按插入序 FIFO 淘汰）
    * @param {(filePath: string) => string} [opts.keyExtractor] 自定义缓存键（默认 filePath 本身）
    * @param {boolean} [opts.debug=false] 调试模式
    */

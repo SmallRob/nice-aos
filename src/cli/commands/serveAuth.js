@@ -128,6 +128,8 @@ export function authorizeRole(req, tokens, minRole) {
 export function minRoleFor(method, urlPath) {
   if (method === 'POST' && urlPath === '/api/ask') return 'write';
   if (method === 'POST' && urlPath === '/internal/broadcast') return 'write';
+  // v0.35.0（E-3）：POST /action 会写快照（markReviewed/addNote）或触发重扫（refreshRepo）→ write
+  if (method === 'POST' && urlPath === '/action') return 'write';
   if (urlPath.startsWith('/api/admin/')) return 'admin';
   return 'read';
 }

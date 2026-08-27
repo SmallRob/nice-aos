@@ -2,6 +2,9 @@
 // 覆盖：find / where / link / action / snapshot / schema / 写回不污染 seed / 守卫语义
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   createBlueprintEngine,
   prefixOf,
@@ -490,4 +493,116 @@ test('findObjectByPrefix: 按 prefix 匹配返回正确 typeName', () => {
 test('findObjectByPrefix: 对象不存在返回 null', () => {
   const byId = new Map();
   assert.equal(findObjectByPrefix(byId, [], 'x:1'), null);
+});
+
+// =============================================================================
+// 8. v0.35.0 技术债回归：嵌套深拷贝（E-6）+ 异步 actionImpl 契约（E-3）+ 动作真实现
+// =============================================================================
+
+test('createBlueprintEngine: action 写嵌套字段不穿透 seed（E-6 深拷贝补齐到嵌套对象）', () => {
+  const seedObj = {
+    id: 'x:1',
+    meta: { tags: ['a'], nested: { deep: 'keep' } },
+    list: [{ k: 1 }],
+  };
+  const engine = createBlueprintEngine({
+    id: 't',
+    name: 't',
+    objectTypes: [{ name: 'X' }],
+    linkTypes: [],
+    actionDefs: ['mutate'],
+    linkImpls: {},
+    actionImpls: {
+      mutate: (ctx) => {
+        const o = ctx.byId.get('x:1');
+        o.meta.tags.push('z');
+        o.meta.nested.deep = 'changed';
+        o.list[0].k = 99;
+        return { ok: true, message: 'done' };
+      },
+    },
+    createData: () => ({ X: [seedObj] }),
+  });
+  engine.action('mutate');
+  // 引擎内数据已变更
+  assert.deepEqual(engine.find('x:1').meta.tags, ['a', 'z']);
+  // seed 原对象嵌套字段不被写穿（修复前 {...r} 浅拷贝会让 push/赋值穿透）
+  assert.deepEqual(seedObj.meta.tags, ['a'], 'seed 嵌套数组不应被写穿');
+  assert.equal(seedObj.meta.nested.deep, 'keep', 'seed 深层字段不应被写穿');
+  assert.equal(seedObj.list[0].k, 1, 'seed 数组内对象不应被写穿');
+});
+
+test('createBlueprintEngine: 同步/异步 actionImpl 契约（同步保持同步返回，异步收 Promise，rejection 收敛 ok:false）', async () => {
+  const engine = createBlueprintEngine({
+    id: 't',
+    name: 't',
+    objectTypes: [{ name: 'X' }],
+    linkTypes: [],
+    actionDefs: [],
+    linkImpls: {},
+    actionImpls: {
+      syncAct: () => ({ ok: true, message: 'sync' }),
+      asyncOk: async () => ({ ok: true, message: 'async' }),
+      asyncBoom: async () => { throw new Error('boom'); },
+    },
+    createData: () => ({ X: [] }),
+  });
+  const r1 = engine.action('syncAct');
+  assert.ok(!(r1 && typeof r1.then === 'function'), '同步 impl 结果应原样同步返回（向后兼容）');
+  assert.equal(r1.message, 'sync');
+  const r2 = await engine.action('asyncOk');
+  assert.deepEqual(r2, { ok: true, message: 'async' });
+  const r3 = await engine.action('asyncBoom');
+  assert.equal(r3.ok, false);
+  assert.match(r3.message, /boom/);
+});
+
+test('createBlueprintV2: analyzeFile 真实分析单文件并输出统计（E-3）', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-analyze-'));
+  t.after(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ } });
+  fs.writeFileSync(path.join(dir, 'widget.tsx'), [
+    "import React from 'react';",
+    'export function Hello() { return <p>hi</p>; }',
+    'export default Hello;',
+  ].join('\n'));
+  const engine = createBlueprintV2({ _meta: {}, Project: [{ id: 'proj:t' }] });
+  const r = await engine.action('analyzeFile', { file: path.join(dir, 'widget.tsx') });
+  assert.equal(r.ok, true, `analyzeFile 应成功: ${r.message}`);
+  assert.match(r.message, /widget\.tsx/);
+  assert.ok(r.stats, '应携带对象统计 stats');
+  assert.ok((r.stats.SourceFile ?? 0) >= 1, '至少产出 1 个 SourceFile 对象');
+  // 缺参 / 文件不存在守卫
+  assert.equal((await engine.action('analyzeFile', {})).ok, false);
+  assert.equal((await engine.action('analyzeFile', { file: '/nonexistent/nope.ts' })).ok, false);
+});
+
+test('createBlueprintV2: refreshRepo 真实重扫并把快照落到沙箱快照目录（E-3）', async (t) => {
+  const projDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-refresh-proj-'));
+  const snapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-refresh-snap-'));
+  t.after(() => {
+    try { fs.rmSync(projDir, { recursive: true, force: true }); } catch { /* */ }
+    try { fs.rmSync(snapDir, { recursive: true, force: true }); } catch { /* */ }
+  });
+  fs.writeFileSync(path.join(projDir, 'package.json'), '{"name":"refresh-fixture"}');
+  fs.writeFileSync(path.join(projDir, 'app.js'), 'export const x = 1;\n');
+
+  // 快照目录重定向到沙箱，避免污染真实 ~/.nice-aos；结束后恢复
+  const { setSnapshotDir, getSnapshotDirOverride } = await import('../src/ontology/snapshot.js');
+  const prevOverride = getSnapshotDirOverride();
+  setSnapshotDir(snapDir);
+  try {
+    const engine = createBlueprintV2({ _meta: {}, Project: [{ id: 'proj:t' }] });
+    const r = await engine.action('refreshRepo', { repoPath: projDir });
+    assert.equal(r.ok, true, `refreshRepo 应成功: ${r.message}`);
+    assert.match(r.message, /refresh-fixture/);
+    assert.ok(r.snapshot, '应返回落盘路径');
+    assert.ok(fs.existsSync(path.join(snapDir, 'snapshot.json')), '快照应写入沙箱目录');
+    assert.ok(r.stats && Object.keys(r.stats).length > 0, '应携带 objectCounts 统计');
+    // 守卫：不存在的 repoPath → ok:false
+    const bad = await engine.action('refreshRepo', { repoPath: '/nonexistent/dir-nope' });
+    assert.equal(bad.ok, false);
+    assert.match(bad.message, /不存在/);
+  } finally {
+    setSnapshotDir(prevOverride ?? null);
+  }
 });

@@ -16,7 +16,7 @@
 
 import { ARCH_LAYERS } from './semantics.js';
 import { ONTOLOGY_META, OBJECT_TYPES, LINK_TYPES } from './blueprint.js';
-import { ACTION_DEFS } from './blueprintActions.js';
+import { ACTION_DEFS } from './actionDefs.js'; // E-2：纯定义单源（blueprintActions.js 仍 re-export 兼容）
 import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
 import { SHARED_CSS } from '../themes/sharedCss.js';
 
@@ -3650,5 +3650,5 @@ function renderActionCardHtml(c) {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

@@ -15,7 +15,9 @@ import { writeServeRuntime, cleanupServeRuntime } from './notifyServe.js';
 import { getSnapshotDirOverride, setSnapshotDir } from '../../paths.js';
 import { loadType, buildAskContextFromSql } from '../../storage/index.js';
 import { buildAskContext } from './askContext.js';
-import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META } from '../../ontology/blueprint.js';
+import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META, createBlueprint } from '../../ontology/blueprint.js';
+import { applyOverlay, saveSnapshot as sqlSaveSnapshot } from '../../storage/index.js'; // E-3 /action overlay 双写
+import { parseObjectId } from '../../storage/objectId.js';
 import {
   buildHandshakeResponse,
   parseFrame,
@@ -425,6 +427,98 @@ export const serveCommand = new Command('serve')
             })
           : null;
         respond(res, 200, JSON.stringify({ ok: true, broadcast: true, clients: wsClients.size }));
+        return;
+      }
+
+      // E-3（v0.35.0）：POST /action —— 蓝图 UI 动作卡片的提交端点。
+      // 四个动作与 CLI `nice-aos action <name>` 同语义；viewer 前端提交体为 {actionName, params}，
+      // 响应 {ok, message} 与前端 `j.ok ? '✓' : '✗'` 消费格式一致。角色裁决：minRoleFor → write。
+      if (req.method === 'POST' && url === '/action') {
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch (err) {
+          respond(res, 400, JSON.stringify({ ok: false, message: `请求体须为 JSON: ${err.message}` }));
+          return;
+        }
+        const name = typeof body?.actionName === 'string' ? body.actionName.trim() : '';
+        const params = body?.params && typeof body.params === 'object' ? body.params : {};
+        if (!ACTION_NAMES.includes(name)) {
+          respond(res, 400, JSON.stringify({ ok: false, message: `未知动作: ${name || '(空)'}。可用动作: ${ACTION_NAMES.join(', ')}` }));
+          return;
+        }
+        if (name === 'analyzeFile') {
+          // 只读动作：无需快照在场
+          const ops = await import('../../ontology/actionOps.js');
+          const result = await ops.runAnalyzeFile(params);
+          respond(res, result.ok ? 200 : 400, JSON.stringify(result));
+          return;
+        }
+        if (name === 'refreshRepo') {
+          // 重扫后直接落盘到本服务的数据源目录（saveTo），运行期实时探测立即生效
+          const ops = await import('../../ontology/actionOps.js');
+          const result = await ops.runRefreshRepo(params, { saveTo: snapPath });
+          respond(res, result.ok ? 200 : 400, JSON.stringify(result));
+          return;
+        }
+        // markReviewed / addNote：写快照 + SQLite overlay 双写（与 action.js 同语义）
+        if (snapState !== 'ok') {
+          const reason = snapState === 'gone' ? '快照 JSON 损坏，请先执行 nice-aos action refreshRepo' : '快照缺失，请先执行 refreshRepo 动作或 nice-aos action refreshRepo';
+          respond(res, snapState === 'gone' ? 500 : 404, JSON.stringify({ ok: false, message: reason }));
+          return;
+        }
+        const objectId = params.objectId;
+        if (!objectId || typeof objectId !== 'string') {
+          respond(res, 400, JSON.stringify({ ok: false, message: '缺少参数 objectId' }));
+          return;
+        }
+        let blueprintV1;
+        try {
+          blueprintV1 = createBlueprint(snap);
+        } catch (err) {
+          respond(res, 500, JSON.stringify({ ok: false, message: `快照蓝图构建失败: ${err?.message ?? err}` }));
+          return;
+        }
+        const obj = blueprintV1.find(objectId);
+        if (!obj) {
+          respond(res, 400, JSON.stringify({ ok: false, message: `对象不存在: ${objectId}` }));
+          return;
+        }
+        /** @type {Record<string, unknown>} 写回字段集 */
+        let patchFields;
+        if (name === 'markReviewed') {
+          obj.reviewed = true;
+          obj.reviewedAt = new Date().toISOString();
+          patchFields = { reviewed: true, reviewedAt: obj.reviewedAt };
+        } else {
+          const note = params.note;
+          if (!note || !String(note).trim()) {
+            respond(res, 400, JSON.stringify({ ok: false, message: 'note 不可为空' }));
+            return;
+          }
+          obj.notes = obj.notes ? `${obj.notes}\n${note}` : note;
+          patchFields = { notes: obj.notes };
+        }
+        fs.writeFileSync(snapPath, JSON.stringify(snap), 'utf-8');
+        // SQLite overlay 双写；no-snapshot 时先镜像当前 dataMap 再补 overlay（同 action.js 回退链）
+        let overlayNote = '';
+        try {
+          const { type, id } = parseObjectId(objectId);
+          let r = applyOverlay({ kind: 'code', type, id, patch: patchFields });
+          if (r && r.ok === false && r.reason === 'no-snapshot') {
+            const w = sqlSaveSnapshot({ kind: 'code', dataMap: snap });
+            if (w.ok) r = applyOverlay({ kind: 'code', type, id, patch: patchFields });
+          }
+          if (r && r.ok === false) overlayNote = `（SQLite 双写跳过: ${r.reason}，JSON 快照已更新）`;
+        } catch (err) {
+          overlayNote = `（SQLite 双写异常: ${err?.message ?? err}，JSON 快照已更新）`;
+        }
+        respond(res, 200, JSON.stringify({
+          ok: true,
+          message: name === 'markReviewed'
+            ? `已标记 ${objectId} 为已审查${overlayNote}`
+            : `已为 ${objectId} 添加注释${overlayNote}`,
+        }));
         return;
       }
 

@@ -516,7 +516,7 @@ export function createBlueprint(dataMap) {
 // =============================================================================
 
 import { createBlueprintEngine } from './blueprintEngine.js';
-import { ACTION_DEFS } from './blueprintActions.js';
+import { ACTION_DEFS } from './actionDefs.js'; // E-2：纯定义单源（blueprintActions.js 仍 re-export 兼容）
 
 /**
  * 蓝图 V2 工厂：把既有 dataMap 包装为 BlueprintEngine 实例。
@@ -585,14 +585,16 @@ export function createBlueprintV2(dataMap, opts = {}) {
       if (snapshotSave) snapshotSave(toLegacyDataMap(ctx.data));
       return { ok: true, message: `已为 ${objectId} 添加注释` };
     },
-    // refreshRepo / analyzeFile：由 serve 端点实际执行，引擎层返回引导信息
-    refreshRepo: (_ctx, input) => {
-      const repoPath = input?.repoPath || '.';
-      return { ok: false, message: `refreshRepo 需通过 serve 端点执行（repoPath=${repoPath}）。请使用 nice-aos serve 并 POST /action` };
+    // v0.35.0（E-3）：refreshRepo / analyzeFile 真实实现收敛到 ./actionOps.js；
+    // 此处动态 import 保持蓝图模块轻量并规避静态循环依赖。
+    // actionImpl 为异步 → 引擎 action() 对 thenable 返回 Promise，见 blueprintEngine.js。
+    refreshRepo: async (_ctx, input) => {
+      const ops = await import('./actionOps.js');
+      return ops.runRefreshRepo(input ?? {});
     },
-    analyzeFile: (_ctx, input) => {
-      const file = input?.file || '';
-      return { ok: false, message: `analyzeFile 需通过 serve 端点执行（file=${file}）。请使用 nice-aos serve 并 POST /action` };
+    analyzeFile: async (_ctx, input) => {
+      const ops = await import('./actionOps.js');
+      return ops.runAnalyzeFile(input ?? {});
     },
     ...extraActions,
   };

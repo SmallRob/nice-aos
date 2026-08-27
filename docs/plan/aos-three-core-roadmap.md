@@ -120,10 +120,10 @@
 
 | ID | 描述 | 文件 | 估时 |
 |----|------|------|------|
-| **E-2** | 动作定义三处重复（blueprint.js + blueprintActions.js + viewer.js） | 三文件统一到 `src/ontology/actionDefs.js` | 1.5d |
-| **E-3** | `refreshRepo` / `analyzeFile` 缺 actionImpl（引擎层只实现 markReviewed + addNote） | `src/ontology/blueprint.js:608-631` | 1d |
-| **E-4** | 前端 `renderActionCardHtml` 缺 enum/objectRef 渲染 | `src/ontology/viewer.js:3647` | 0.5d |
-| **E-5** | 增量解析 LRU 注释误称 FIFO | `src/analyzers/incrementalParser.js` | 0.1d |
+| **E-2** | 动作定义三处重复（blueprint.js + blueprintActions.js + viewer.js） | 三文件统一到 `src/ontology/actionDefs.js` | ✅ 已完成（v0.35.0：纯定义抽取到 actionDefs.js，blueprintActions re-export 兼容，blueprint/viewer 改取新单源） |
+| **E-3** | `refreshRepo` / `analyzeFile` 缺 actionImpl（引擎层只实现 markReviewed + addNote） | `src/ontology/blueprint.js:608-631` | ✅ 已完成（v0.35.0：真实现收敛到新增 `actionOps.js`；serve 新增 POST /action 打通 UI 提交；引擎支持异步 actionImpl；+7 回归/集成测试） |
+| **E-4** | 前端 `renderActionCardHtml` 缺 enum/objectRef 渲染 | `src/ontology/viewer.js:3647` | ✅ 已完成（此前版本已修；v0.35.0 补 esc() 单引号转义硬化） |
+| **E-5** | 增量解析 LRU 注释误称 FIFO | `src/analyzers/incrementalParser.js` | ✅ 已完成（v0.35.0：头注释/类 JSDoc 全部修正为 FIFO 表述） |
 | **E-8**（新增） | ask `--serve` 后台端口解析脆弱（regex `http://127\.0\.0\.1:(\d+)` 仅匹配首个 URL） | `src/cli/commands/ask.js:48` | 0.2d |
 | **E-9**（新增） | serve `--dir` 与全局 `--snapshot-dir` 在子命令层重名（Commander 行为陷阱） | `src/cli/commands/serve.js:89` | 已加注释说明，非阻塞 |
 
@@ -131,9 +131,9 @@
 
 | ID | 描述 | 文件 | 估时 |
 |----|------|------|------|
-| **E-6** | 深拷贝只做一层 | `src/ontology/blueprintEngine.js:154` | 0.3d |
-| **E-10**（新增） | 软链解析不完整（仅对起始路径 realpath，向上递归遇软链目录可能回环） | `src/analyzers/projectRootDetector.js` | 0.5d |
-| **E-11**（新增） | `mergeSnapshotByFiles` 路径字段匹配不全（仅 filePath / path / relPath） | `src/analyzers/incrementalParser.js` | 0.3d |
+| **E-6** | 深拷贝只做一层 | `src/ontology/blueprintEngine.js:154` | ✅ 已完成（deepCloneObj 递归实现；v0.35.0 补嵌套写穿回归测试） |
+| **E-10**（新增） | 软链解析不完整（仅对起始路径 realpath，向上递归遇软链目录可能回环） | `src/analyzers/projectRootDetector.js` | ✅ 已完成（detectUpward 每层 realpath + visited 防回环；v0.35.0 补软链回环/多层包裹测试） |
+| **E-11**（新增） | `mergeSnapshotByFiles` 路径字段匹配不全（仅 filePath / path / relPath） | `src/analyzers/incrementalParser.js` | ✅ 已完成（PATH_FIELDS 六字段；v0.35.0 补 sourceFile/file/source 匹配测试） |
 | **E-12**（新增） | `findObjectByPrefix` 占位实现（`typeName` 始终返回 'Unknown'） | `src/ontology/blueprintEngine.js:289` | 0.3d |
 | **E-13**（新增） | 对象搜索结果截断 200 条无提示 | `src/ontology/viewer.js:3669` | 0.2d |
 | **E-14**（新增） | `prefixOf` fallback 取类型名前 4 字符（与 nice-aos 实际 prefix 体系不符） | `src/ontology/blueprintEngine.js:305` | 0.3d |

@@ -355,3 +355,40 @@ test('PROJECT_MARKERS 顺序：Flutter pair 在 Dart 单 marker 之前', () => {
   assert.ok(idx2 >= 0, '应有 Dart 单 marker');
   assert.ok(idx < idx2, 'Flutter pair 优先级应高于 Dart 单 marker');
 });
+
+// =============================================================================
+// v0.35.0 技术债回归（E-10）：软链回环 / 多层软链包裹
+// =============================================================================
+
+test('软链回环：祖先路径含指回自身的软链组件时正常终止并命中真实项目根（E-10）', () => {
+  const dir = mkProject({ marker: 'package.json', markerContent: '{"name":"loop"}' });
+  try {
+    const inner = path.join(dir, 'a');
+    fs.mkdirSync(inner);
+    // 自指回环：dir/a/loop → dir/a，向上爬升会反复经过同一 realpath
+    fs.symlinkSync(inner, path.join(inner, 'loop'), 'dir');
+    const deep = path.join(inner, 'loop', 'a', 'x');
+    fs.mkdirSync(deep, { recursive: true });
+    const r = detectProjectRoot(deep);
+    assert.ok(r, '回环组件不应导致检测失败或挂起');
+    assert.equal(r.root, fs.realpathSync(dir), 'realpath 归一后应命中真实项目根');
+    assert.equal(r.marker, 'package.json');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('软链多层包裹：项目目录经两层目录软链暴露仍可解析到真实根（E-10）', () => {
+  const dir = mkProject({ marker: 'package.json', markerContent: '{"name":"wrapped"}' });
+  try {
+    fs.mkdirSync(path.join(dir, 'proj', 'src', 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'proj', 'package.json'), '{"name":"wrapped-inner"}');
+    // 层级链 l1 → proj；从 l1/src/deep 出发，等价于从 proj/src/deep 向上
+    fs.symlinkSync(path.join(dir, 'proj'), path.join(dir, 'l1'), 'dir');
+    const r = detectProjectRoot(path.join(dir, 'l1', 'src', 'deep'));
+    assert.ok(r);
+    assert.equal(r.root, fs.realpathSync(path.join(dir, 'proj')));
+  } finally {
+    cleanup(dir);
+  }
+});

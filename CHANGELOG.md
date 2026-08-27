@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-27
+
+### 技术债清偿（ADR 0002 审核报告 P0/P1/P2 全量闭环，自扫描/审核驱动）
+
+#### E-3（P1 核心）：refreshRepo / analyzeFile 真实实现 + serve /action 端点
+
+- **引擎动作真实现**：`createBlueprintV2` 的 refreshRepo / analyzeFile 由"ok:false 指引 stub"升级为真实执行——refreshRepo 走项目根检测（detectProjectRoot，优先级与 action.js 一致）+ 全量重扫 + 快照落盘；analyzeFile 单文件本体分析并输出对象统计。核心逻辑收敛至新增 `src/ontology/actionOps.js`（builder 唯一静态加载点；落盘策略可注入 saveTo）；blueprint.js 动态 import 加载，规避 ontology ↔ builder 静态循环依赖
+- **serve 新增 `POST /action`**：蓝图 UI 动作卡片提交端点打通（此前前端 `fetch('/action')` 直接 404）。markReviewed/addNote 写 JSON 快照 + SQLite overlay 双写（no-snapshot 回退镜像，语义同 action.js:149-195）；refreshRepo 重扫后直接落到本服务数据源目录（saveTo=snapPath），运行期实时探测立即生效；analyzeFile 纯只读。未知动作/缺参/对象不存在返回结构化 400；角色分级 `minRoleFor('/action')→write`；`ENDPOINTS` 登记，`/openapi.json` 与 `/api/status` 同步暴露
+- **引擎异步契约**：`blueprintEngine.action()` 支持异步 actionImpl——同步 impl 返回值保持原样同步返回（完全向后兼容）；返回 thenable 时才收敛为 Promise 且 rejection 统一映射 `{ok:false}`
+
+#### E-2：动作定义单源抽取
+
+- 新增 `src/ontology/actionDefs.js` 纯定义模块（`ACTION_DEFS` + `getActionsForType`），按 roadmap 原方案完成"定义/渲染"分离；blueprintActions.js 保留 re-export 兼容既有导入与"同一引用"防漂移测试断言；blueprint.js / viewer.js 取数改走新单源
+
+#### E-5 / E-4 收尾
+
+- incrementalParser.js 头注释与类 JSDoc 残留 "LRU" 表述修正为"FIFO 容量淘汰简化实现（非严格 LRU）"，测试名同步更新
+- viewer.js 前端 `esc()` 补齐单引号转义（与 blueprintActions escapeHtml 对齐）
+
+#### P2 回归测试补位（E-6 深拷贝 / E-10 软链 / E-11 路径字段已在早前版本实现，本次补测试锁定行为）
+
+- blueprintEngine.test.mjs +4：嵌套深拷贝防写穿（E-6）、同步/异步 actionImpl 契约、analyzeFile/refreshRepo 真实动作沙箱测试（临时目录快照重定向）
+- projectRootDetector.test.mjs +2：祖先软链回环终止性、多层软链包裹解析（E-10）
+- incrementalParser.test.mjs +1：sourceFile/file/source 扩展路径字段命中清除（E-11）
+- serve.test.mjs +3：POST /action 集成（未知动作 400 / 写盘回读含 addNote 累加 / 只读分析）
+
+### 测试
+
+- 测试基线 739 → **749**，新增用例全部通过。剩余偶发失败均为外部 CLI / spawn 时序敏感用例（ask 端到端降级链、mcpCli 握手、duplicates 超时），与本节改动无关（未修改的 HEAD 上同样复现）
+
 ## [0.34.0] - 2026-08-27
 
 ### 新增（output 命令）

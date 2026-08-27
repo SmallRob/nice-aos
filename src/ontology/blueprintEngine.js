@@ -214,7 +214,10 @@ export function createBlueprintEngine(bp) {
     return impl(src, buildCtx());
   };
 
-  // action：调 actionImpl；动作未注册则返回守卫失败
+  // action：调 actionImpl；动作未注册则返回守卫失败。
+  // v0.35.0：impl 可为异步（refreshRepo/analyzeFile 需动态 import builder 分析）——
+  // 同步 impl 的返回值原样同步返回（完全向后兼容）；返回 thenable 时才收敛为 Promise，
+  // 且 rejection 统一映射为 {ok:false, message}，不向外泄漏未捕获异常。
   const action = (name, input = {}) => {
     const impl = bp.actionImpls[name];
     if (!impl) {
@@ -224,7 +227,14 @@ export function createBlueprintEngine(bp) {
       };
     }
     try {
-      return impl(buildCtx(), input);
+      const r = impl(buildCtx(), input);
+      if (r && typeof r.then === 'function') {
+        return r.catch((err) => ({
+          ok: false,
+          message: `动作执行异常: ${err?.message ?? err}`,
+        }));
+      }
+      return r;
     } catch (err) {
       return {
         ok: false,

@@ -65,6 +65,17 @@ export const ENDPOINTS = [
     },
   },
   {
+    method: 'POST', path: '/action', role: 'write',
+    summary: '执行蓝图动作',
+    description: '蓝图 UI 动作卡片提交端点（E-3，v0.35.0）。动作与 CLI `nice-aos action <name>` 同语义：markReviewed/addNote 写快照 + SQLite overlay 双写；refreshRepo 重扫并落盘到本服务数据源目录；analyzeFile 单文件只读分析。未知动作或缺参返回 400。',
+    requestBody: {
+      required: ['actionName', 'params'],
+      optional: [],
+      example: { actionName: 'analyzeFile', params: { file: 'src/index.ts' } },
+      note: '可用动作名见 GET /api/schema 的 actionNames；refreshRepo 参数 {repoPath}，analyzeFile 参数 {file}，markReviewed 参数 {objectId}，addNote 参数 {objectId, note}',
+    },
+  },
+  {
     method: 'WS', path: '/ws/snapshot', role: 'read',
     summary: '快照/蓝图变更推送',
     description: 'WebSocket：snapshot.json / blueprint.html mtime 轮询广播 {type:"snapshot:changed"|"blueprint:changed", ts, mtime, size}。需 token 时同 Bearer（?token= 可用于浏览器构造）。',

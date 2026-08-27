@@ -1,5 +1,5 @@
 // 增量解析器单测：借鉴 asdm-aos v0.0.12 IncrementalParser 思路
-// 覆盖：未变 / 变更 / 新增 / 删除 / 冲突 / LRU / git diff 集成 / 合并策略
+// 覆盖：未变 / 变更 / 新增 / 删除 / 冲突 / FIFO 容量淘汰 / git diff 集成 / 合并策略
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -75,10 +75,10 @@ test('parse: 不同文件独立缓存', () => {
 });
 
 // =============================================================================
-// 2. LRU 淘汰
+// 2. 容量淘汰（FIFO 简化实现，非严格 LRU）
 // =============================================================================
 
-test('LRU 淘汰：超过 maxCacheSize 时删除最早的项', () => {
+test('FIFO 淘汰：超过 maxCacheSize 时删除最早的项', () => {
   const p = new IncrementalParser({ maxCacheSize: 3 });
   p.parse('a', '1', mockAnalyzer);
   p.parse('b', '2', mockAnalyzer);
@@ -89,7 +89,7 @@ test('LRU 淘汰：超过 maxCacheSize 时删除最早的项', () => {
   assert.equal(p.hasCache('d'), true);
 });
 
-test('LRU 大量插入后仍能正常工作', () => {
+test('FIFO 大量插入后仍能正常工作', () => {
   const p = new IncrementalParser({ maxCacheSize: 5 });
   for (let i = 0; i < 100; i++) {
     p.parse('f' + i, 'content' + i, mockAnalyzer);
@@ -452,4 +452,32 @@ test('性能：1000 文件项目，10 个文件变更场景下增量 < 全量耗
   assert.equal(stats.miss, 1010, '1000 首次 + 10 变更 = 1010 miss');
   assert.equal(stats.hit, 990, '990 命中');
   assert.equal(stats.invalidated, 10, '10 个文件被失效');
+});
+
+// =============================================================================
+// v0.35.0 技术债回归（E-11）：路径字段匹配覆盖全部 PATH_FIELDS
+// =============================================================================
+
+test('mergeSnapshotByFiles: sourceFile/file/source 等扩展路径字段的旧对象同样被清除（E-11）', () => {
+  // 各对象类型使用不同路径字段名（field ↔ 文件一一对应）
+  const oldSnapshot = {
+    FilePathObj: [{ id: 'a:1', filePath: 'src/a.ts' }],
+    RelPathObj: [{ id: 'b:1', relPath: 'src/b.ts' }],
+    SourceFileObj: [{ id: 'c:1', name: 'c', sourceFile: 'src/c.ts' }],
+    FileObj: [{ id: 'd:1', file: 'src/d.ts' }],
+    SourceObj: [{ id: 'e:1', source: 'src/e.ts' }],
+    PathObj: [{ id: 'f:1', path: 'src/f.ts' }],
+    Kept: [{ id: 'g:1', path: 'src/untouched.ts' }], // 未变更文件 → 保留
+  };
+  const changed = ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts'];
+  const merged = mergeSnapshotByFiles(oldSnapshot, changed, {
+    'src/a.ts': { FilePathObj: [{ id: 'a:1', filePath: 'src/a.ts', version: 2 }] },
+  });
+
+  assert.equal(merged.FilePathObj.length, 1);
+  assert.equal(merged.FilePathObj[0].version, 2, '变更文件对象被新分析结果替换');
+  for (const type of ['RelPathObj', 'SourceFileObj', 'FileObj', 'SourceObj', 'PathObj']) {
+    assert.equal(merged[type].length, 0, `${type} 用对应路径字段命中后应被清除`);
+  }
+  assert.equal(merged.Kept.length, 1, '未变更文件的对象保留');
 });

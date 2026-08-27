@@ -64,8 +64,8 @@ test('serve 端点契约：默认目录解析 + CORS + 各端点响应', async (
   assert.equal(st.json.snapshot.ready, true);
   assert.equal(st.json.snapshot.state, 'ok');
   assert.equal(st.json.blueprint.ready, true);
-  // v0.34.0：endpoints 清单改由 serveOpenApi.ENDPOINTS 派生（含新增端点）
-  assert.deepEqual(st.json.endpoints, ['/', '/snapshot.json', '/blueprint.html', '/openapi.json', '/api/status', '/api/stats', '/api/schema', '/api/objects/{type}', '/api/ask/context', '/api/rate-limit', '/api/ask', '/ws/snapshot']);
+  // v0.34.0：endpoints 清单改由 serveOpenApi.ENDPOINTS 派生（含新增端点）；v0.35.0 增加 POST /action（E-3）
+  assert.deepEqual(st.json.endpoints, ['/', '/snapshot.json', '/blueprint.html', '/openapi.json', '/api/status', '/api/stats', '/api/schema', '/api/objects/{type}', '/api/ask/context', '/api/rate-limit', '/api/ask', '/action', '/ws/snapshot']);
   assert.equal(st.json.root, dir);
 
   // /snapshot.json：完整快照可解析
@@ -265,3 +265,82 @@ function startServeSqliteOff(args, t) {
     child.on('exit', (code) => { clearTimeout(timer); reject(new Error(`serve 提前退出(${code})，输出: ${out}`)); });
   });
 }
+
+// =============================================================================
+// v0.35.0（E-3）：POST /action —— 蓝图 UI 动作卡片提交端点
+// =============================================================================
+
+const postAction = async (port, body) => {
+  const res = await fetch(`http://127.0.0.1:${port}/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* */ }
+  return { status: res.status, json };
+};
+
+test('POST /action：未知动作返回 400 + 可用动作提示（E-3）', async (t) => {
+  const dir = mkFixture();
+  const { port } = await startServe(['--root', dir], t);
+  const r = await postAction(port, { actionName: 'nopeAction', params: {} });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.ok, false);
+  assert.match(r.json.message, /未知动作/);
+});
+
+test('POST /action：markReviewed 写快照落盘可回读 + addNote 累加（E-3）', async (t) => {
+  const dir = mkFixture();
+  const snapFile = path.join(dir, '.nice-aos', 'data', 'snapshot.json');
+  const { port } = await startServe(['--root', dir], t);
+
+  const reviewed = await postAction(port, { actionName: 'markReviewed', params: { objectId: 'comp:A' } });
+  assert.equal(reviewed.status, 200);
+  assert.equal(reviewed.json.ok, true);
+  assert.match(reviewed.json.message, /已标记 comp:A/);
+
+  const note1 = await postAction(port, { actionName: 'addNote', params: { objectId: 'comp:A', note: '第一条' } });
+  const note2 = await postAction(port, { actionName: 'addNote', params: { objectId: 'comp:A', note: '第二条' } });
+  assert.equal(note1.json.ok, true);
+  assert.equal(note2.json.ok, true);
+
+  // 快照回读：写动作必须真实持久化
+  const snapAfter = JSON.parse(fs.readFileSync(snapFile, 'utf-8'));
+  const comp = snapAfter.Component.find((c) => c.id === 'comp:A');
+  assert.equal(comp.reviewed, true);
+  assert.ok(comp.reviewedAt, 'reviewedAt 已写入');
+  assert.equal(comp.notes, '第一条\n第二条');
+
+  // 守卫：对象不存在 → 400；缺参 → 400；快照缺失目录 → 404
+  const missing = await postAction(port, { actionName: 'markReviewed', params: { objectId: 'comp:Nope' } });
+  assert.equal(missing.status, 400);
+  const noId = await postAction(port, { actionName: 'markReviewed', params: {} });
+  assert.equal(noId.status, 400);
+  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-serve-empty-'));
+  t.after(() => { try { fs.rmSync(emptyDir, { recursive: true, force: true }); } catch { /* */ } });
+  const { port: port2 } = await startServe(['--root', emptyDir], t);
+  const noSnap = await postAction(port2, { actionName: 'markReviewed', params: { objectId: 'comp:A' } });
+  assert.equal(noSnap.status, 404);
+});
+
+test('POST /action：analyzeFile 只读分析单文件成功 + 缺参/坏路径 400（E-3）', async (t) => {
+  const dir = mkFixture();
+  const targetTs = path.join(dir, 'widget.tsx');
+  fs.writeFileSync(targetTs, "export function Hello(){ return <p>hi</p>; }\n");
+  const { port } = await startServe(['--root', dir], t);
+
+  const okRes = await postAction(port, { actionName: 'analyzeFile', params: { file: targetTs } });
+  assert.equal(okRes.status, 200);
+  assert.equal(okRes.json.ok, true);
+  assert.match(okRes.json.message, /widget\.tsx/);
+  assert.ok((okRes.json.stats?.SourceFile ?? 0) >= 1, '应至少产出 1 个 SourceFile');
+
+  const noParam = await postAction(port, { actionName: 'analyzeFile', params: {} });
+  assert.equal(noParam.status, 400);
+  assert.match(noParam.json.message, /缺少参数 file/);
+  const badPath = await postAction(port, { actionName: 'analyzeFile', params: { file: '/nonexistent/x.ts' } });
+  assert.equal(badPath.status, 400);
+  assert.match(badPath.json.message, /文件不存在/);
+});

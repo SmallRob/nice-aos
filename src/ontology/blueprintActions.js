@@ -14,65 +14,12 @@
 //   const cards = buildActionCards({ dataMap, blueprintSchema, selectedObjId });
 //   const html = renderActionCardHtml(cards[0]); // 单个卡片 HTML
 
+// 动作定义的单一事实源自 v0.35.0 起收敛到 ./actionDefs.js（E-2 技术债）；
+// 本文件保留 re-export 兼容既有导入与"同一引用"测试断言。
 import { paramDefsToFormFields, PARAM_RENDER_DEFAULTS } from './paramDefs.js';
 
-/**
- * 内置动作的元数据。
- * 借鉴 aos 的 ActionDef + ParamDef；此为动作定义的单一数据源，blueprint.js / viewer.js 均从此导入。
- */
-export const ACTION_DEFS = [
-  {
-    name: 'markReviewed',
-    label: '标记已审查',
-    description: '将指定对象标记为已审查（不影响 DataMap 其他字段）',
-    params: [
-      { name: 'objectId', kind: 'text', label: '对象 ID', placeholder: '如 method:Foo.bar 或 comp:Button' },
-    ],
-    applicableTypes: '*', // 所有类型
-  },
-  {
-    name: 'addNote',
-    label: '添加注释',
-    description: '为指定对象添加注释（多行累加）',
-    params: [
-      { name: 'objectId', kind: 'text', label: '对象 ID', placeholder: '如 method:Foo.bar' },
-      { name: 'note', kind: 'text', label: '注释内容', placeholder: '自由文本' },
-    ],
-    applicableTypes: '*',
-  },
-  {
-    name: 'refreshRepo',
-    label: '刷新仓库',
-    description: '重新分析指定 git 仓库路径',
-    params: [
-      { name: 'repoPath', kind: 'text', label: '仓库路径', placeholder: '项目根或 .' },
-    ],
-    applicableTypes: ['Project'], // 仅 Project 可用
-  },
-  {
-    name: 'analyzeFile',
-    label: '分析单文件',
-    description: '对单个文件运行本体分析，输出 DataMap',
-    params: [
-      { name: 'file', kind: 'text', label: '文件路径', placeholder: '相对 cwd 或绝对路径' },
-    ],
-    applicableTypes: '*',
-  },
-];
-
-/**
- * 按对象类型过滤可用动作。
- * 借鉴 aos 的 getActionsForType（src/web/components/ActionPanel.tsx:65-77）。
- *
- * @param {string} typeName 对象类型名（如 'Component' / 'Project'）
- * @returns {Array} 适用的 ActionDef 列表
- */
-export function getActionsForType(typeName) {
-  return ACTION_DEFS.filter((a) => {
-    if (a.applicableTypes === '*') return true;
-    return Array.isArray(a.applicableTypes) && a.applicableTypes.includes(typeName);
-  });
-}
+export { ACTION_DEFS, getActionsForType } from './actionDefs.js';
+import { ACTION_DEFS, getActionsForType } from './actionDefs.js';
 
 /**
  * 构造当前选中对象可用的动作卡片数据。
