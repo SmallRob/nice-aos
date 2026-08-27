@@ -86,6 +86,27 @@ export function inferFileArchLayer(input) {
     return 'shared';
   }
   if (relPath.endsWith('.d.ts')) return 'types';
+  // PHP 项目分层（zentaopms 惯例）：module/<x>/control.php 为表现层（方法即路由）；
+  // model.php / config.php 为业务层；view/lang 为展示资产；framework/ 为共享层
+  if (relPath.endsWith('.php')) {
+    if (/\/control\.php$/.test(relPath)) return 'presentation';
+    if (/\/(model|config)\.php$/.test(relPath)) return 'service';
+    if (/\/(view|ui|lang)(\/|$)/.test(relPath)) return 'presentation';
+    if (/(^|\/)(dao|dal|repositories?|services?|models?)(\/|$)/.test(relPath)) return 'service';
+    if (/(^|\/)(controllers?|routes?|api)(\/|$)/.test(relPath)) return 'presentation';
+    if (/(^|\/)framework(\/|$)/.test(relPath)) return 'shared';
+    return 'shared';
+  }
+  // Kotlin 项目分层（Android/JVM 惯例）：Activity/Fragment/Compose 文件为表现层；
+  // Repository/UseCase/Service/ViewModel 归业务层；di/ 数据层归共享
+  if (relPath.endsWith('.kt') || relPath.endsWith('.kts')) {
+    if (/(Activity|Fragment|Screen|Page)\.kt$/.test(relPath)) return 'presentation';
+    if (/\/(ui|compose|views?|screens?|pages?)(\/|$)/.test(relPath)) return 'presentation';
+    if (/(Repository|UseCase|Interactor|Service|RepositoryImpl)\.kt$/.test(relPath)) return 'service';
+    if (/(ViewModel)\.kt$/.test(relPath)) return 'presentation';
+    if (/\/(di|data|datasource|db|network|api|remote|local)(\/|$)/.test(relPath)) return 'service';
+    return 'shared';
+  }
   if (isEntry) return 'entry';
   const serviceish = SERVICE_NAME_RE.test(stemOf(relPath)) || /\/services\//.test(relPath);
   const integrationish = /\/(api|apis|clients?|http|network|gateways?|adapters?|repositories)\//.test(relPath);

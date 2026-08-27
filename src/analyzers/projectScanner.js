@@ -8,7 +8,7 @@ import { isUserScriptCandidate } from './userScriptAnalyzer.js';
 //   - 9 种"配置/视图/SQL/部署"（轻量级：行数 + 顶层 key/标签/对象名）
 // 后者由 configAnalyzer.js 处理；不进 import 解析、不进主 analyzer 的 AST 路径
 const SOURCE_EXTENSIONS = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart', '.go', '.py',
+  '.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart', '.go', '.py', '.kt', '.kts', '.php',
   '.css', '.html', '.sql', '.yml', '.yaml',
   '.conf', '.toml', '.ini', '.env',
 ]);
@@ -707,12 +707,16 @@ export function collectExternalTestImports(projectRoot, scannedFiles) {
   };
 }
 
-function detectFramework({ deps, configs, hostDir, packageJson, userScriptCount, codeSignals, flutterDetected, dartDetected, goDetected }) {
+function detectFramework({ deps, configs, hostDir, packageJson, userScriptCount, codeSignals, flutterDetected, dartDetected, goDetected, phpDetected, kotlinDetected }) {
   // Flutter/Dart 客户端（pubspec.yaml + lib/）优先
   if (flutterDetected) return 'flutter';
   if (dartDetected) return 'dart';
   // Go 项目（go.mod + .go 源码）：CLI / agent / Gin 后端，混合仓库时 Go 后端为主体
   if (goDetected) return 'go';
+  // PHP 项目（composer.json + .php 源码）：zentaopms / Laravel / Symfony 后端
+  if (phpDetected) return 'php';
+  // Kotlin 项目（build.gradle.kts + .kt 源码）：Android/JVM/KMP
+  if (kotlinDetected) return 'kotlin';
   // 元框架优先（依赖更具体的信号，react/vue 基座只作兜底）
   if (deps.expo) return 'expo';
   if (deps['react-native']) return 'react-native';
@@ -897,7 +901,7 @@ export function scanProject(projectRoot, options = {}) {
   // 兄弟项目发现：定位仓库根后识别同级项目（用户定位子项目/代码子目录场景）
   const siblingProjects = discoverSiblingProjects(projectRoot);
 
-  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0, py: 0, css: 0, html: 0, sql: 0, yml: 0, yaml: 0, conf: 0, toml: 0, ini: 0, env: 0 };
+  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0, py: 0, kt: 0, kts: 0, php: 0, css: 0, html: 0, sql: 0, yml: 0, yaml: 0, conf: 0, toml: 0, ini: 0, env: 0 };
   for (const f of files) {
     const ext = path.extname(f).slice(1);
     if (counts[ext] !== undefined) counts[ext] += 1;
@@ -926,6 +930,10 @@ export function scanProject(projectRoot, options = {}) {
   }
 
   const allDeps = { ...(packageJson?.dependencies ?? {}), ...(packageJson?.devDependencies ?? {}), ...Object.keys(pubspecDeps).reduce((a, k) => { a[k] = pubspecDeps[k].version; return a; }, {}), ...Object.fromEntries(goAllDeps.map((d) => [d.name, d.version])) };
+  // PHP / Kotlin 探测（composer.json / build.gradle.kts + 对应源码计数）
+  const phpDetected = fs.existsSync(path.join(projectRoot, 'composer.json')) && counts.php > 0;
+  const kotlinDetected = (fs.existsSync(path.join(projectRoot, 'build.gradle.kts'))
+    || fs.existsSync(path.join(projectRoot, 'settings.gradle.kts'))) && (counts.kt + counts.kts) > 0;
   const framework = detectFramework({
     deps: allDeps,
     configs: hostConfigs,
@@ -936,6 +944,8 @@ export function scanProject(projectRoot, options = {}) {
     flutterDetected: flutterDetected && Object.keys(pubspecDeps).includes('flutter'),
     dartDetected: flutterDetected && !Object.keys(pubspecDeps).includes('flutter'),
     goDetected: goModule !== null && counts.go > 0,
+    phpDetected,
+    kotlinDetected,
   });
   // unplugin-vue-components / unplugin-auto-import 自动注册目录（vite.config 词法解析）：
   // 依赖存在但未显式配置 dirs 时，unplugin-vue-components 默认扫描 src/components
@@ -979,6 +989,8 @@ export function scanProject(projectRoot, options = {}) {
     goModule: goModule ? { name: goModule.name, goVersion: goModule.goVersion, dir: goModule.dir } : null,
     goModuleDirs: goModuleDirs,
     pyFileCount: counts.py,
+    kotlinFileCount: counts.kt + counts.kts,
+    phpFileCount: counts.php,
     subProjects,
     siblingProjects,
     tauriDetected,

@@ -11,6 +11,8 @@ import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { analyzeDartFile, analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
 import { analyzeGoFile, analyzeGoFileFromDisk } from '../analyzers/goAnalyzer.js';
 import { analyzePythonFile, analyzePythonFileFromDisk, checkPythonSyntaxBulk } from '../analyzers/pythonAnalyzer.js';
+import { analyzeKotlinFileFromDisk } from '../analyzers/kotlinAnalyzer.js';
+import { analyzePhpFileFromDisk } from '../analyzers/phpAnalyzer.js';
 import { analyzeConfigFileFromDisk, analyzeConfigFile } from '../analyzers/configAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
@@ -178,9 +180,11 @@ function findCycles(fileObjects) {
 function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
   const interfaces = [];
   const classes = [];
+  const traits = [];
   const methods = [];
   const ifaceIdUsed = new Set();
   const classIdUsed = new Set();
+  const traitIdUsed = new Set();
   const methodIdUsed = new Set();
   const localTypesByFile = new Map(); // relPath -> Map(name -> id)，本文件全部类型（含未导出）
   const typeSpanById = new Map();     // id -> {pos, end}，声明范围（用于引用计数，不进快照）
@@ -274,6 +278,11 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
         // 数据模型标识（借鉴 asdm-aos Class.isDataModel/dataModelType）
         isDataModel: !!cls.isDataModel,
         dataModelType: cls.dataModelType ?? null,
+        // 控制器标识（PHP control / zentaopms 惯例）
+        isController: !!cls.isController,
+        // PHP trait use（class 体内 `use Trait1, Trait2;`；usesTraitIds 在 linkTraitUses 阶段回填）
+        usesTraitIds: [],
+        usesTraits: cls.usesTraits ?? [],
         deadCandidate: false, deadReason: null,
         reviewed: false, notes: null,
       };
@@ -311,6 +320,41 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
       classes.push(entity);
     }
 
+    // PHP trait：方法复用单元（usesTrait/usedByTrait 双向链接的 trait: 端）
+    for (const tr of facts.traits ?? []) {
+      const id = uniqueId(`trait:${relPath}#${tr.name}`, traitIdUsed);
+      registerLocalType(relPath, tr.name, id);
+      typeSpanById.set(id, { pos: tr.pos, end: tr.end });
+      const entity = {
+        id, name: tr.name,
+        fileId: fileObj.id, filePath: relPath,
+        line: tr.line,
+        exported: true,
+        language: tr.language ?? 'php',
+        methodIds: [],
+        usedByIds: [],
+        deadCandidate: false, deadReason: null,
+        reviewed: false, notes: null,
+      };
+      for (const m of tr.methods) {
+        const mid = uniqueId(`method:${relPath}#${tr.name}#${m.name}`, methodIdUsed);
+        methods.push({
+          id: mid, name: m.name,
+          ownerKind: 'trait', ownerId: id, ownerName: tr.name,
+          fileId: fileObj.id, filePath: relPath,
+          line: m.line,
+          isStatic: m.isStatic ?? false, isAsync: false, isOverride: false, exported: false,
+          signature: m.signature,
+          overridesId: null, overriddenByIds: [],
+          health: m.health ?? { available: false, reason: 'non-ts', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
+          deadCandidate: false, deadReason: null,
+          reviewed: false, notes: null,
+        });
+        entity.methodIds.push(mid);
+      }
+      traits.push(entity);
+    }
+
     for (const fn of facts.moduleFunctions ?? []) {
       const id = uniqueId(`method:${relPath}#${fn.name}`, methodIdUsed);
       typeSpanById.set(id, { pos: fn.pos, end: fn.end });
@@ -344,7 +388,7 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
       methods.push(entity);
     }
   }
-  return { interfaces, classes, methods, localTypesByFile, typeSpanById, refsOutsideSpan };
+  return { interfaces, classes, traits, methods, localTypesByFile, typeSpanById, refsOutsideSpan };
 }
 
 // 方法级 overrides：实现类方法与其实现接口/父类中的同名方法建立双向链接
@@ -664,13 +708,17 @@ export async function buildOntologyData(projectRoot, options = {}) {
             ? analyzeDartFileFromDisk(diskPath, projectRoot)
             : diskPath.endsWith('.py')
               ? analyzePythonFileFromDisk(diskPath, projectRoot)
-              : diskPath.endsWith('.vue')
-                ? analyzeVueFileFromDisk(diskPath, projectRoot)
-                : (scan.userScriptFiles?.has(diskPath)
-                  ? analyzeUserScriptFromDisk(diskPath, projectRoot)
-                  : CONFIG_EXTS.has(ext)
-                    ? analyzeConfigFileFromDisk(diskPath, projectRoot, ext)
-                    : analyzeFileFromDisk(diskPath, projectRoot));
+              : (diskPath.endsWith('.kt') || diskPath.endsWith('.kts'))
+                ? analyzeKotlinFileFromDisk(diskPath, projectRoot)
+                : diskPath.endsWith('.php')
+                  ? analyzePhpFileFromDisk(diskPath, projectRoot)
+                  : diskPath.endsWith('.vue')
+                    ? analyzeVueFileFromDisk(diskPath, projectRoot)
+                    : (scan.userScriptFiles?.has(diskPath)
+                      ? analyzeUserScriptFromDisk(diskPath, projectRoot)
+                      : CONFIG_EXTS.has(ext)
+                        ? analyzeConfigFileFromDisk(diskPath, projectRoot, ext)
+                        : analyzeFileFromDisk(diskPath, projectRoot));
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
@@ -681,7 +729,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
         useCalls: [], overlayOpens: [], stores: [], lazyWrappers: [], components: [],
         hooks: [], primaryComponentName: null, hasSingletonClass: false, hasClassExport: false,
         importMap: new Map(), vueRoutes: [], vueRouteMeta: null,
-        interfaces: [], classes: [], moduleFunctions: [],
+        interfaces: [], classes: [], traits: [], routes: [], moduleFunctions: [],
       };
       factsMap.set(relPath, empty);
       return empty;
@@ -699,6 +747,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
   for (const [relPath, facts] of factsMap) {
     const isRust = relPath.endsWith('.rs');
     const isGo = relPath.endsWith('.go');
+    // PHP use / Kotlin import：命名空间导入，不走 TS resolver（避免 Foo\Bar 误判为 npm 包）
+    // PHP 的 module:xxx / lang:xxx 跨模块引用与 Kotlin 的 java.* 依赖体系由各自生态管辖，统一标记 unresolved
+    const isPhp = relPath.endsWith('.php');
+    const isKotlin = relPath.endsWith('.kt') || relPath.endsWith('.kts');
     for (const imp of facts.imports) {
       if (isRust) {
         const r = resolveRustImport(relPath, imp.specifier);
@@ -713,6 +765,12 @@ export async function buildOntologyData(projectRoot, options = {}) {
           if (!externalImports.has(r.package)) externalImports.set(r.package, new Set());
           externalImports.get(r.package).add(imp.specifier);
         }
+        continue;
+      }
+      if (isPhp || isKotlin) {
+        // 外部依赖按命名空间首段归并（php: foo\bar → foo；kotlin: java.net.Proxy → java）
+        const pkg = imp.specifier.split(/[\\/.]/)[0] ?? '';
+        imp.resolved = { kind: 'external', package: pkg || null, ecosystem: isPhp ? 'php' : 'kotlin' };
         continue;
       }
       const resolved = resolver.resolve(relPath, imp.specifier);
@@ -985,10 +1043,24 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
-  // 5b-0. 类型实体：Interface / Class / Method（跨文件 implements/extends/overrides + 函数级死代码候选）
+  // 5b-0. 类型实体：Interface / Class / Trait / Method（跨文件 implements/extends/overrides + 函数级死代码候选）
   const {
-    interfaces, classes, methods, localTypesByFile, typeSpanById, refsOutsideSpan,
+    interfaces, classes, traits, methods, localTypesByFile, typeSpanById, refsOutsideSpan,
   } = collectTypeEntities(scan.files, factsMap, fileObjectByPath);
+
+  // 5b-0a. PHP trait use 链接：class.usesTraits（名字）→ 全仓库 trait 对象（id）回填
+  // 双向写入：class.usesTraitIds / trait.usedByIds（供 blueprint link usesTrait/usedByTrait 消费）
+  const traitByName = new Map();
+  for (const t of traits) traitByName.set(t.name, t);
+  for (const cls of classes) {
+    if (!cls.usesTraits || cls.usesTraits.length === 0) continue;
+    for (const name of cls.usesTraits) {
+      const t = traitByName.get(name);
+      if (!t) continue;
+      cls.usesTraitIds.push(t.id);
+      if (!t.usedByIds.includes(cls.id)) t.usedByIds.push(cls.id);
+    }
+  }
 
   // 5b-0b. AST fingerprint 后处理（v0.32.0+）：给每个有 pos/end 的 method 挂整树 hash
   // 借鉴 code-graph-rag 的去标识符/去字面量/去注释 → SHA-256 算法（src/ontology/fingerprint.js）
@@ -1109,10 +1181,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
     return null;
   };
   for (const iface of interfaces) {
-    iface.extendsIds = iface.extendsNames.map((n) => resolveTypeRef(iface.filePath, n)).filter(Boolean);
+    iface.extendsIds = (iface.extendsNames ?? []).map((n) => resolveTypeRef(iface.filePath, n)).filter(Boolean);
   }
   for (const cls of classes) {
-    cls.implementsIds = cls.implementsNames.map((n) => resolveTypeRef(cls.filePath, n)).filter(Boolean);
+    cls.implementsIds = (cls.implementsNames ?? []).map((n) => resolveTypeRef(cls.filePath, n)).filter(Boolean);
     if (cls.extendsName) cls.extendsId = resolveTypeRef(cls.filePath, cls.extendsName);
   }
 
@@ -2050,6 +2122,45 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
+  // PHP 路由（zentaopms 惯例）：module/<x>/control.php 内 public function xxx → Route(routeType='php')
+  // path = /<module>-<method>（与 zentaopms createLink('module','method') 的 URL 形态一致）
+  {
+    const phpRouteIds = new Set();
+    for (const [relPath, facts] of factsMap) {
+      if (!relPath.endsWith('.php') || !facts.routes?.length) continue;
+      // handler Method 关联：control 类名 = module 名（zentaopms 命名惯例），按类名查 methodKey
+      const ctrlClassMatch = /module\/([^/]+)\/control\.php$/.exec(relPath.replace(/\\/g, '/'));
+      const ctrlClass = ctrlClassMatch ? ctrlClassMatch[1] : null;
+      for (const r of facts.routes) {
+        const id = uniqueId(`route:${r.path}`, phpRouteIds);
+        const handlerId = (ctrlClass && methodKey.get(`${relPath}#${ctrlClass}#${r.handler}`)) ?? null;
+        routes.push({
+          id,
+          overlayId: r.path,
+          name: r.handler,
+          routePath: r.path,
+          backTarget: null,
+          hidesNav: null,
+          domain: r.module ?? 'root',
+          group: relPath,
+          componentRef: r.handler,
+          componentFileId: `file:${relPath}`,
+          componentId: handlerId,
+          navigatesToIds: [],
+          hasPropsFactory: false,
+          factoryProps: [],
+          routeType: 'php',
+          rawPath: r.path, layoutFileIds: [], specialFiles: [],
+          isDynamic: false,
+          isClient: null,
+          apiMethods: null,
+          description: null,
+          reviewed: false, notes: null,
+        });
+      }
+    }
+  }
+
   // GoRouter 导航边：任意 .dart 文件内 context.go('/path') / context.push(AppRouter.xxx) → 该文件组件所属路由 → 目标路由
   // 常量引用参数（AppRouter.fengshui / home）用全仓库路由常量表回填；动态变量（feature.route）查不到即忽略
   const dartConstPathByName = new Map(); // 全仓库路由常量名 → path（跨文件常量引用回填）
@@ -2595,6 +2706,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
       if ((scan.dartFileCount ?? 0) > 0) parts.push('Dart');
       if ((scan.goFileCount ?? 0) > 0) parts.push('Go');
       if ((scan.pyFileCount ?? 0) > 0) parts.push('Python');
+      if ((scan.kotlinFileCount ?? 0) > 0) parts.push('Kotlin');
+      if ((scan.phpFileCount ?? 0) > 0) parts.push('PHP');
       return parts.join(' + ') || 'JavaScript';
     })(),
     commitHash: scan.commitHash,
@@ -2608,6 +2721,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
     dartFileCount: scan.dartFileCount ?? 0,
     goFileCount: scan.goFileCount ?? 0,
     pyFileCount: scan.pyFileCount ?? 0,
+    kotlinFileCount: scan.kotlinFileCount ?? 0,
+    phpFileCount: scan.phpFileCount ?? 0,
     goModule: scan.goModule ?? null,
     subProjects: scan.subProjects ?? [],
     siblingProjects: scan.siblingProjects ?? [],
@@ -2656,7 +2771,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       objectCounts: {
         Module: modules.length, SourceFile: fileObjects.length, Component: components.length,
         Hook: hooks.length, Store: stores.length, Service: services.length,
-        Interface: interfaces.length, Class: classes.length, Method: methods.length,
+        Interface: interfaces.length, Class: classes.length, Trait: traits.length, Method: methods.length,
         PropEdge: propEdges.length,
         Route: routes.length, Dependency: dependencies.length,
         UserScript: userScripts.length, GmApiUsage: gmApiUsages.length,
@@ -2673,6 +2788,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
     Service: services,
     Interface: interfaces,
     Class: classes,
+    Trait: traits,
     Method: methods,
     PropEdge: propEdges,
     Route: routes,
@@ -2743,7 +2859,7 @@ export async function buildSingleFileOntology(absFilePath) {
   const fileObjectByPath = new Map([[fileName, fileObj]]);
 
   // 类型实体：非导出实体按本文件引用计数判死；导出实体不判死（单文件模式无法判定跨文件使用）
-  const { interfaces, classes, methods, localTypesByFile } = collectTypeEntities([fileName], factsMap, fileObjectByPath);
+  const { interfaces, classes, traits, methods, localTypesByFile } = collectTypeEntities([fileName], factsMap, fileObjectByPath);
 
   // 本文件内 implements/extends 解析（本文件声明的类型；跨文件导入名留存原名不报错）
   const localType = (name) => localTypesByFile.get(fileName)?.get(name) ?? null;
@@ -2753,6 +2869,16 @@ export async function buildSingleFileOntology(absFilePath) {
   for (const cls of classes) {
     cls.implementsIds = cls.implementsNames.map(localType).filter(Boolean);
     if (cls.extendsName) cls.extendsId = localType(cls.extendsName);
+    // 本文件内 trait use 回填（单文件模式）
+    if (cls.usesTraits && cls.usesTraits.length > 0) {
+      for (const name of cls.usesTraits) {
+        const t = traits.find((x) => x.name === name);
+        if (t) {
+          cls.usesTraitIds.push(t.id);
+          if (!t.usedByIds.includes(cls.id)) t.usedByIds.push(cls.id);
+        }
+      }
+    }
   }
   linkMethodOverrides(interfaces, classes, methods);
 
@@ -2771,6 +2897,7 @@ export async function buildSingleFileOntology(absFilePath) {
         SourceFile: 1,
         Interface: interfaces.length,
         Class: classes.length,
+        Trait: traits.length,
         Method: methods.length,
         UserScript: us.userScript ? 1 : 0,
         GmApiUsage: us.gmApiUsages.length,
@@ -2782,6 +2909,7 @@ export async function buildSingleFileOntology(absFilePath) {
     SourceFile: [fileObj],
     Interface: interfaces,
     Class: classes,
+    Trait: traits,
     Method: methods,
     UserScript: us.userScript ? [us.userScript] : [],
     GmApiUsage: us.gmApiUsages,

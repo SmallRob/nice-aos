@@ -9,12 +9,12 @@ export const ONTOLOGY_META = {
   abstractionLevels: [
     { level: 'L3', name: '架构层', description: '产品级聚合：整体架构画像与功能域划分', types: ['Project', 'Domain'] },
     { level: 'L2', name: '结构层', description: '代码组织结构：模块、文件、路由、脚本与运行环境', types: ['Module', 'SourceFile', 'Route', 'UserScript', 'Dependency'] },
-    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Method', 'PropEdge', 'ScriptFunction'] },
+    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction'] },
     { level: 'L0', name: '事实层', description: '审计事实（AuditFact 概念族）：从代码提取的行为证据', types: ['GmApiUsage', 'InjectionPoint', 'NetworkEndpoint'] },
   ],
   categories: [
     { category: 'Container', label: '容器', description: '按结构聚合代码单元的节点', types: ['Project', 'Domain', 'Module', 'SourceFile'] },
-    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Method', 'PropEdge', 'ScriptFunction'] },
+    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction'] },
     { category: 'EntryPoint', label: '行为入口', description: '用户可触达的行为入口', types: ['Route'] },
     { category: 'Script', label: '油猴脚本', description: '独立于宿主应用的脚本形态（自带子对象体系）', types: ['UserScript'] },
     { category: 'Environment', label: '运行环境', description: '外部环境要素', types: ['Dependency'] },
@@ -33,6 +33,7 @@ export const OBJECT_TYPES = [
   { type: 'Service', prefix: 'svc:', category: 'CodeUnit', level: 'L1', description: '服务/引擎模块' },
   { type: 'Interface', prefix: 'iface:', category: 'CodeUnit', level: 'L1', description: '接口（TS interface / Rust trait / Dart abstract class；含方法签名与 extends 继承）' },
   { type: 'Class', prefix: 'class:', category: 'CodeUnit', level: 'L1', description: '类（TS class / Rust struct/enum / Dart class：kind 区分，含 implements/extends 关系、derives/fields/variants、isWidget/isStore 与单例标记）' },
+  { type: 'Trait', prefix: 'trait:', category: 'CodeUnit', level: 'L1', description: '方法复用单元（PHP trait；同一命名空间，可被多个 Class `use` 注入方法；含 usesTraits 反向链接使用方）' },
   { type: 'Method', prefix: 'method:', category: 'CodeUnit', level: 'L1', description: '方法/函数（类方法、接口方法签名、模块函数、Rust impl fn、Dart 方法；含 overrides、callIds/calledByIds 逻辑调用链与 deadCandidate）' },
   { type: 'PropEdge', prefix: 'prop:', category: 'CodeUnit', level: 'L1', description: '组件间 props 传递边（含来源分类 forward/state/store/handler/literal/computed/spread）' },
   { type: 'ScriptFunction', prefix: 'fn:', category: 'CodeUnit', level: 'L1', description: '脚本函数/类/对象（含业务角色 roles：render/data/state/event/ui/logic）' },
@@ -48,6 +49,7 @@ export const LINK_TYPES = [
   'contains', 'imports', 'importedBy', 'renders', 'renderedBy', 'passesProps', 'navigatesTo', 'registers', 'usesStore', 'usesHook',
   'implements', 'implementedBy', 'extends', 'extendedBy', 'overrides', 'overriddenBy',
   'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy', 'belongsTo',
+  'usesTrait', 'usedByTrait',
   'mapsToTable', 'mappedFromCode',
 ];
 
@@ -59,7 +61,7 @@ export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addN
 export const BLUEPRINT_SCHEMA = {
   id: 'nice-aos-ontology',
   name: '代码本体蓝图',
-  description: 'React/Vue/Flutter/Go/Rust/Python/油猴脚本的多语言代码本体',
+  description: 'React/Vue/Flutter/Go/Rust/Python/Kotlin/PHP/油猴脚本的多语言代码本体',
   version: '2.0', // 与 ONTOLOGY_META.version 对齐
   objectTypes: OBJECT_TYPES,
   linkTypes: LINK_TYPES,
@@ -156,6 +158,7 @@ export function createBlueprint(dataMap) {
   const scriptFunctions = dataMap.ScriptFunction ?? [];
   const interfaces = dataMap.Interface ?? [];
   const classes = dataMap.Class ?? [];
+  const traits = dataMap.Trait ?? [];
   const methods = dataMap.Method ?? [];
 
   const linkImpls = {
@@ -181,6 +184,7 @@ export function createBlueprint(dataMap) {
         out.push(...(dataMap.Service ?? []).filter((s) => s.filePath === filePath));
         out.push(...interfaces.filter((i) => i.filePath === filePath));
         out.push(...classes.filter((c) => c.filePath === filePath));
+        out.push(...traits.filter((t) => t.filePath === filePath));
         out.push(...methods.filter((m) => m.filePath === filePath));
         out.push(...userScripts.filter((u) => u.filePath === filePath));
         return out;
@@ -459,6 +463,23 @@ export function createBlueprint(dataMap) {
       return out;
     },
 
+    // ---- Trait 复用链（双向：class: → use 的 trait:；trait: → 使用它的 class:）----
+    // PHP trait 专属：class 体内 `use Trait1, Trait2;` 由 phpAnalyzer 抽到 usesTraits →
+    // builder 写入 usesTraitIds；trait 对象反向聚合 usedByIds
+    usesTrait(srcId) {
+      if (!srcId.startsWith('class:')) return [];
+      const obj = getObject(index, srcId);
+      if (!obj) return [];
+      return objectsForIds(index, obj.usesTraitIds ?? []);
+    },
+
+    usedByTrait(srcId) {
+      if (!srcId.startsWith('trait:')) return [];
+      const traitObj = getObject(index, srcId);
+      if (!traitObj) return [];
+      return objectsForIds(index, traitObj.usedByIds ?? []);
+    },
+
     // ---- 功能域归属（双向：dom: 列成员；mod:/comp:/store:/hook:/route: 反查所属域）----
     belongsTo(srcId) {
       if (srcId.startsWith('dom:')) {
@@ -619,7 +640,7 @@ export function createBlueprintV2(dataMap, opts = {}) {
   return createBlueprintEngine({
     id: 'nice-aos-ontology',
     name: '代码本体蓝图',
-    description: 'React/Vue/Flutter/Go/Rust/Python/油猴脚本的多语言代码本体',
+    description: 'React/Vue/Flutter/Go/Rust/Python/Kotlin/PHP/油猴脚本的多语言代码本体',
     objectTypes,
     linkTypes,
     actionDefs,

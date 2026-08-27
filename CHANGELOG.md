@@ -4,6 +4,81 @@
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-08-27
+
+### 新增 PHP / Kotlin 分析器 v0.36.0（ADR 0006）
+
+完整方案对比与不借鉴项决策见 `docs/adr/0006-php-kotlin-analyzer.md`。
+
+#### P0：新 PHP 分析器（zentaopms / Laravel / Symfony）
+
+- **新模块** `src/analyzers/phpAnalyzer.js` —— 沿用 tsAnalyzer/rustAnalyzer 的"轻量状态机 + 等长噪声剥离"范式，零运行时依赖
+- 实体映射：class（含 `extends model` → `isDataModel: true` / `extends control` → `isController: true` / abstract / final / readonly 修饰）、interface（含 extends 多继承）、trait（独立对象类型）、method（含 `__construct` 构造器、`static` 修饰）、property（`public $name` / `public string $name`）
+- `use Trait1, Trait2;`（class 体内）→ `usesTraits` 数组
+- `use ... as` 别名 + `use Baz\{ Qux, Quux as Q };` 群组导入解析
+- `namespace Foo\Bar` → `moduleName: 'Foo.Bar'`（反斜杠归一点号）
+- 字符串/注释噪声剥离（DAO 链中的 `'<类定义>'` 字符串不产生幽灵实体）
+- `module/<x>/control.php` 内 public 非构造方法 → Route（`routeType: 'php'`，`path: '/<module>-<method>'`）
+- API 边界：`sqlQueries` / `crossModuleImports` 在 v1 留空数组契约（DAO 链抽取 Phase-2 接入）
+
+#### P0：新 Kotlin 分析器（Android / JVM / KMP）
+
+- **新模块** `src/analyzers/kotlinAnalyzer.js` —— 与 PHP analyzer 同范式独立共存
+- 实体映射：class（含 data_class / sealed_class / object 单例 / enum_class / companion_object 内嵌 5 种变体）、interface、fun（含 `suspend fun` → `isAsync: true` 标注 + `inline` / `operator` / `infix` 修饰）、val|var Property
+- supertype 列表解析（含点号嵌套 `Call.Factory`）
+- `import foo.Bar` / `import foo.Bar as Baz` / `import foo.*` 解析
+- 噪声剥离覆盖三引号原始字符串（含 `${}` 插值）、字符字面量
+
+#### P0：本体扩展：Trait 对象类型
+
+- 新对象类型 `Trait`（`trait:` 前缀，L1/CodeUnit）—— 描述为"方法复用单元（PHP trait；同一命名空间，可被多个 Class `use` 注入方法）"
+- 新链接类型 `usesTrait`（class → trait）与 `usedByTrait`（trait → class）—— 双向
+- `dataMap.Trait` 数组、`Class.usesTraitIds` / `Class.usesTraits` 字段、`Trait.usedByIds` / `Trait.methodIds` 字段
+- `OBJECT_TYPES` 19→20，`LINK_TYPES` 24→26
+- `blueprint.js` 的 `contains(file:)` 同步包含 trait
+- `viewModel` 已支持 `kind: 'trait'` 配色（cyan 描边，v0.34 之前已就绪）
+
+#### P0：builder.js 集成
+
+- analyzer 分发嵌套三元扩 `.kt` / `.kts` / `.php` 分支
+- import 解析：PHP / Kotlin 按命名空间首段归并为 external（避免 `Foo\Bar` 被 TS resolver 误判为 npm 包）
+- trait 链接双向回填：builder 阶段用 `usesTraits` 名字查全仓库 `traitByName` 表，写 `usesTraitIds` / `usedByIds`
+- PHP 路由生成：handler Method 关联到 control 类同名方法
+- 失败 `catch` 块补 `traits: []` / `routes: []` 兜底
+- `objectCounts.Trait` 记账同步
+- `buildSingleFileOntology` 镜像 trait 处理（单文件模式）
+
+#### P0：项目扫描 & 框架检测
+
+- `projectScanner.js` 扩 `.kt` / `.kts` / `.php` 进 `SOURCE_EXTENSIONS`
+- `detectFramework` 新增 `php` / `kotlin` 早返回分支
+- `phpDetected` 判定：`composer.json` 存在 + `.php` 文件数 > 0
+- `kotlinDetected` 判定：`build.gradle.kts` 或 `settings.gradle.kts` 存在 + `.kt` + `.kts` 文件数 > 0
+- `Project.kotlinFileCount` / `phpFileCount` 字段加（与 `pyFileCount` 平级）
+- `Project.language` 拼接 +Kotlin +PHP
+
+#### P1：架构层语义
+
+`semantics.js#inferFileArchLayer` 新增 PHP / Kotlin 分层规则：
+
+- PHP（zentaopms 惯例）：`control.php` → presentation；`(model|config).php` → service；`view|ui|lang/` → presentation；`dao|dal|repositories|services|models/` → service；`framework/` → shared
+- Kotlin（Android 惯例）：`*(Activity|Fragment|Screen|Page).kt` → presentation；`*(Repository|UseCase|Service).kt` → service；`*ViewModel.kt` → presentation；`di|data|datasource|db|network|api/` → service
+
+#### P0：测试
+
+- `test/phpAnalyzer.test.mjs` —— 11 tests（实体/方法/属性/trait/namespace/use 群组/control 路由/接口/抽象类/死代码契约/DAO 链空契约）
+- `test/kotlinAnalyzer.test.mjs` —— 12 tests（class 变体/supertype/fun+suspend/import/三引号字符串/死代码/enum/object 单例等）
+- `test/kotlinPhpIntegration.test.mjs` —— 1 e2e test（fixture 项目 → buildOntologyData 全链路，含 trait 双向链接 / 路由 / 架构层 / objectCounts 验证）
+- `test/blueprintEngine.test.mjs` —— 同步更新到 20 OBJECT_TYPES / 26 LINK_TYPES
+
+#### 后续候选（v0.36+）
+
+1. PHP/Kotlin PSR-4 内部 import 解析（读 composer.json autoload / build.gradle.kts sourceSets 区分内/外）
+2. `phpDetected` / `kotlinDetected` 暴露到 scan 结果（与 `goDetected` / `flutterDetected` 对齐）
+3. Kotlin receiver-constrained 调用图（借鉴 GitNexus P3）
+4. PHP DAO 链抽取（Phase-2，复用 `pythonAnalyzer.sqlQueries` 通道）
+5. PHP `lang/` 翻译资源实体（i18n 覆盖度图谱）
+
 ## [0.35.1] - 2026-08-27
 
 ### 借鉴 GitNexus：图谱协议层 v0.35.1（ADR 0005）
