@@ -41,6 +41,7 @@ import { loadSession, appendTurn, formatHistory, isValidSessionId } from './askS
 import { resolveSavePath, formatAskArchive, writeAskArchive } from './askSave.js';
 import { buildSinceContext } from './askDiffContext.js';
 import { registerEvalCommand } from './askEval.js';
+import { runToolLoop, createCliTools } from './toolLoop.js';
 
 // 后台启动 serve（--port 0 自动分配），从 stdout 解析实际端口
 // 失败/超时返回 null（不阻塞 ask 主流程）
@@ -251,6 +252,7 @@ async function doAsk(question, opts) {
     let answer;
     let answeredBy;
     let streamed = false;
+    let toolLoopMeta = null;
     const failedAgents = [];
     let lastErr = null;
     for (let i = 0; i < chain.length; i++) {
@@ -258,6 +260,23 @@ async function doAsk(question, opts) {
       const isLast = i === chain.length - 1;
       try {
         if (agent.kind === 'api') {
+          // x-1：--tool-call 启用自治工具循环（ReAct ≤5 步，子进程执行真实 sub-command）
+          if (opts.toolCall) {
+            const loop = await runToolLoop({
+              initialPrompt: fullPrompt,
+              chatFn: (p) => invokeApiChat({ ...apiConfig, prompt: p, timeout: timeoutMs }),
+              tools: createCliTools({ cwd: process.cwd() }),
+              maxSteps: Number.isInteger(opts.maxToolSteps) && opts.maxToolSteps > 0 ? opts.maxToolSteps : 5,
+              onEvent: quiet ? undefined : (e) => {
+                if (e.kind === 'tool') console.error(`ℹ️  [step ${e.step}] 工具调用: ${e.detail.tool} ${JSON.stringify(e.detail.args ?? {}).slice(0, 120)}`);
+                else if (e.kind === 'done' && e.detail?.reason === 'max-steps-reached') console.error('⚠️  达到 --max-tool-steps 上限，已强制收尾');
+              },
+            });
+            answer = loop.answer;
+            toolLoopMeta = { steps: loop.steps, calls: loop.toolCalls };
+            answeredBy = agent.name;
+            break;
+          }
           if (opts.stream && !quiet) {
             // 流式：边收边打 token；最终 answer 仍是完整文本
             streamed = true;
@@ -278,7 +297,10 @@ async function doAsk(question, opts) {
           }
         } else {
           // CLI agent：execFileSync 同步阻塞，不支持 token-by-token；
-          // --stream 下给一次温和提示后走同步路径
+          // --stream / --tool-call 下给一次温和提示后走同步路径
+          if (opts.toolCall && !quiet) {
+            console.error(`ℹ️  --tool-call 仅模型服务通道可用（CLI agent 无法多轮回调）；${agent.name} 将忽略工具循环，如需自治取证请改用 --tools`);
+          }
           if (opts.stream && !opts.json && !quiet) {
             console.error(`ℹ️  ${agent.name} 走 CLI agent 路径暂不支持流式，同步等待完整回答...`);
           }
@@ -324,6 +346,8 @@ async function doAsk(question, opts) {
         contextSource: ctx.contextSource,
         durationMs: Date.now() - started,
         streamed,
+        toolCalls: toolLoopMeta?.calls ?? null,
+        toolSteps: toolLoopMeta?.steps ?? null,
         fallbackFrom: failedAgents,
         session: sessionId,
         sessionTurnCount,
@@ -358,6 +382,8 @@ export const askCommand = new Command('ask')
   .option('--cwd <path>', '项目根目录（默认当前目录；影响快照目录解析链）')
   .option('--serve', '同时后台启动 serve，把 HTTP URL 拼进 prompt 供 AI 深查完整快照')
   .option('--tools', '自治深查模式（隐含 --serve）：把 query/link/export CLI 与 HTTP 端点使用指引注入 prompt，让 AI 按需自行取证并引用对象 id')
+  .option('--tool-call', '自治工具循环（sub-tool 正式版，仅模型服务通道）：AI 输出 aos-tool JSON 块 → 进程执行真实 query/link/output → 结果回填再生成，≤5 步收敛')
+  .option('--max-tool-steps <n>', '--tool-call 的最大循环步数（默认 5）', parseInt)
   .option('--no-auto-refresh', '跳过空数据自动快照（无快照/空项目时不自动 refreshRepo，直接按现状处理）')
   .option('--timeout <ms>', 'agent / 模型服务调用超时（默认 120000）', '120000')
   .option('--stream', '流式输出（仅 --agent api 有效：token 逐字打到 stdout；CLI agent 不支持流式，自动降级到非流式）')
@@ -409,6 +435,7 @@ export const askCommand = new Command('ask')
         contextSource: meta.contextSource,
         durationMs: meta.durationMs,
         streamed: meta.streamed,
+        ...(meta.toolCalls ? { toolSteps: meta.toolSteps, toolCalls: meta.toolCalls } : {}),
         ...(meta.session ? { session: { id: meta.session, turnCount: meta.sessionTurnCount } } : {}),
         ...(meta.since ? { since: meta.since } : {}),
         ...(meta.tools ? { tools: true } : {}),

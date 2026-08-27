@@ -1,3 +1,64 @@
+// ---------- out-4 / out-6（v0.34.0）：类型过滤与全套渲染纯函数 ----------
+
+/**
+ * 按对象类型过滤 dataMap。
+ *   - include 白名单优先应用；exclude 黑名单随后剔除
+ *   - 两者的类型名都必须真实存在于快照中（拼错 = 静默产出空报告，违背"如实呈现"哲学 → fail）
+ *   - _meta 始终保留；过滤后同步修正 _meta.objectCounts 保持画像与内容一致
+ * @param {Object} dataMap 快照
+ * @param {{ include?: string[], exclude?: string[] }} opts 类型名数组
+ * @returns {{ dataMap: Object, removed: number, kept: number }}
+ * @throws {Error} 未知类型名（message 含可用类型清单）
+ */
+export function filterObjectTypes(dataMap, { include, exclude } = {}) {
+  const types = Object.keys(dataMap).filter((k) => k !== '_meta');
+  const available = types.join(', ');
+  for (const [label, list] of [['--include', include], ['--exclude', exclude]]) {
+    for (const t of list ?? []) {
+      if (!types.includes(t)) {
+        throw new Error(`${label} 中的类型 "${t}" 不在当前快照中。可用类型: ${available}`);
+      }
+    }
+  }
+  let out;
+  if (include?.length) {
+    out = { _meta: dataMap._meta };
+    for (const t of include) out[t] = dataMap[t];
+  } else {
+    out = { ...dataMap };
+  }
+  for (const t of exclude ?? []) delete out[t];
+  // objectCounts 与过滤后内容对齐（避免导出报告画像/表格自相矛盾）
+  const counts = out._meta?.objectCounts;
+  if (counts && typeof counts === 'object') {
+    for (const t of Object.keys(counts)) {
+      if (!(t in out)) delete counts[t];
+    }
+  }
+  const kept = Object.keys(out).filter((k) => k !== '_meta').reduce((s, k) => s + (out[k]?.length ?? 0), 0);
+  const totalAll = types.reduce((s, k) => s + (dataMap[k]?.length ?? 0), 0);
+  return { dataMap: out, removed: totalAll - kept, kept };
+}
+
+/**
+ * 渲染三件套（out-6 --format all）：markdown + html + viewmodel
+ * html 部分沿用 viewer 的主题解析链；模板仅作用于 markdown 分支。
+ * @param {Object} dataMap 已过滤/合并的最终 dataMap
+ * @param {{ theme?: string, templateStr?: string, sinceCtx?: Object }} opts
+ * @returns {{ markdown: string, html: string, viewmodel: string }}
+ */
+export function renderAll(dataMap, opts = {}) {
+  const markdown = opts.templateStr != null
+    ? renderTemplate(opts.templateStr, dataMap)
+    : exportToMarkdown(dataMap, opts.sinceCtx ? { since: opts.sinceCtx } : undefined);
+  const viewmodel = JSON.stringify(buildViewerModel(dataMap), null, 2);
+  const html = renderViewerHtml(buildViewerModel(dataMap), { theme: opts.theme });
+  return { markdown, html, viewmodel };
+}
+
+import { buildViewerModel, renderViewerHtml } from './viewer.js';
+import { renderTemplate } from './template.js';
+
 function table(headers, rows) {
   const head = `| ${headers.join(' | ')} |`;
   const sep = `| ${headers.map(() => '---').join(' | ')} |`;

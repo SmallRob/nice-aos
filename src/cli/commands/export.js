@@ -1,27 +1,76 @@
 // export / output 命令：导出本体快照为 Markdown / JSON / HTML 蓝图 / 视图模型 JSON
 // 增量模式（--since <ref>）：git diff 解析 + 末尾追加"增量变更摘要"节
+//
+// v0.34.0 升级：
+//   - out-3 `--merge <paths...>` 多快照合并（见 src/ontology/merge.js；冲突策略 first-wins / rename）
+//   - out-4 `--include <types>` / `--exclude <types>` 类型过滤（作用于全部格式）
+//   - out-5 theme 子命令组：add/list/remove 管理用户自定义主题（~/.nice-aos/themes/）
+//   - out-6 `--format all`：一条命令产出 markdown + html + viewmodel 三件套
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
 import { loadSnapshot } from '../../ontology/snapshot.js';
-import { exportToMarkdown } from '../../ontology/exporter.js';
+import { exportToMarkdown, filterObjectTypes, renderAll } from '../../ontology/exporter.js';
 import { buildViewerModel, renderViewerHtml } from '../../ontology/viewer.js';
 import { fail } from '../shared.js';
-import { listThemeNames } from '../../themes/index.js';
+import { listThemeNames, resolveTheme, registerTheme, syncUserThemes } from '../../themes/index.js';
+import { saveUserTheme, listUserThemes, removeUserTheme, readUserTheme, isValidThemeName } from './themeStore.js';
 import { listChangedFiles, listChangedFilesSince, filterObjectsByFiles, isValidRangeSpec, findGitRoot } from '../../analyzers/gitDiff.js';
 import { renderTemplate } from '../../ontology/template.js';
+import { mergeSnapshots } from '../../ontology/merge.js';
+import { notifyServe } from './notifyServe.js';
+import { getSnapshotDir } from '../../paths.js';
+
+function parseTypeList(raw) {
+  return String(raw ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 export const exportCommand = new Command('export')
   .description('导出本体快照为 Markdown / JSON / HTML 蓝图 / 视图模型 JSON（亦名 output：作为三大核心命令之一，对应用户视角的"产出报告"）')
-  .option('--format <format>', '导出格式: markdown | json | html | viewmodel', 'markdown')
-  .option('--output <path>', '写入文件（默认输出到 stdout）')
-  .option('--theme <name>', `HTML 主题风格（默认 deep-blue，可选: ${listThemeNames().join(' / ')}）`, 'deep-blue')
+  .option('--format <format>', '导出格式: markdown | json | html | viewmodel | all（all = md+html+viewmodel 三件套，需 --output）', 'markdown')
+  .option('--output <path>', '写入文件（默认输出到 stdout）；--format all 时作为基准路径派生 .md/.html/.viewmodel.json')
+  .option('--theme <name>', `HTML 主题风格（默认 deep-blue，内置与用户主题可用: 见 nice-aos output theme list）`, 'deep-blue')
   .option('--since <ref>', '增量导出：仅列出 ref 以来变更涉及的对象（git diff --name-only <ref>..HEAD；含未跟踪文件）；末尾追加"增量变更摘要"节。ref 语法：HEAD / HEAD~1 / abc..def / abc123')
   .option('--staged', '配合 --since：只列已暂存变更（git diff --staged）；用于"pre-commit 体检"')
   .option('--template <path>', '自定义 Markdown 模板：使用 {{Project.name}} / {{stats.Component}} / {{ObjectCounts.Module}} 等占位符；模板文件不存在时报错。详见 docs/plan/aos-three-core-roadmap.md 与 src/ontology/template.js 注释')
+  .option('--merge <paths...>', '多快照合并导出：2 份及以上领域快照文件路径（空格分隔），合并为一份总览后再渲染。冲突策略 --merge-strategy first-wins(默认) | rename')
+  .option('--merge-strategy <strategy>', '合并冲突策略: first-wins（保留先出现者并计数上报）| rename（后到冲突对象重前缀 + 引用字段泛键回填）', 'first-wins')
+  .option('--include <types>', '类型白名单（逗号分隔，如 Component,Hook）：仅导出这些类型的对象（作用于全部格式）')
+  .option('--exclude <types>', '类型黑名单（逗号分隔）：从导出中剔除这些类型（include 应用后再剔除）')
   .action((opts) => {
-    const dataMap = loadSnapshot();
-    let content;
+    // out-3 合并：多快照路径 → 合成 dataMap（在 dataMap 层合成，全格式自然复用）
+    let dataMap;
+    if (opts.merge?.length) {
+      if (opts.merge.length < 2) {
+        fail(`--merge 需要至少 2 份快照路径（收到 ${opts.merge.length} 个）。示例: --merge a/snapshot.json b/snapshot.json`);
+      }
+      if (!['first-wins', 'rename'].includes(opts.mergeStrategy)) {
+        fail(`未知合并策略: ${opts.mergeStrategy}（可选 first-wins | rename）`);
+      }
+      const merged = mergeSnapshotFiles(opts.merge, opts.mergeStrategy);
+      dataMap = merged.dataMap;
+      console.error(`ℹ️  合并 ${merged.meta.sources.length} 份快照: ${merged.meta.sources.map((s) => s.name).join(' + ')}`);
+      if (merged.meta.conflicts > 0) {
+        console.error(`   id 冲突 ${merged.meta.conflicts} 处（策略=${opts.mergeStrategy}${opts.mergeStrategy === 'rename' ? `，重命名 ${merged.meta.renamedCount} 个对象` : '，first-wins 丢弃后者'}）`);
+      }
+    } else {
+      dataMap = loadSnapshot();
+    }
+
+    // out-4 类型过滤（先于 since 过滤计算，保证 byType 计数口径一致）
+    if (opts.include || opts.exclude) {
+      try {
+        const r = filterObjectTypes(dataMap, { include: parseTypeList(opts.include), exclude: parseTypeList(opts.exclude) });
+        dataMap = r.dataMap;
+        if (r.removed > 0) console.error(`ℹ️  类型过滤: 剔除 ${r.removed} 个对象（保留 ${r.kept}）`);
+      } catch (err) {
+        fail(err.message);
+      }
+    }
+
     // --since 预处理：解析 git diff → 文件列表 + 按类型分组的涉及对象
     let sinceCtx = null;
     if (opts.since) {
@@ -49,45 +98,175 @@ export const exportCommand = new Command('export')
         gitRoot,
       };
     }
-    if (opts.format === 'json') {
-      content = JSON.stringify(dataMap, null, 2);
-    } else if (opts.format === 'markdown') {
-      if (opts.template) {
-        // 自定义模板：读文件 → 渲染占位符
-        if (!fs.existsSync(opts.template)) {
-          fail(`--template 模板文件不存在: ${opts.template}`);
-        }
-        let tplStr;
-        try {
-          tplStr = fs.readFileSync(opts.template, 'utf-8');
-        } catch (err) {
-          fail(`--template 读取失败: ${err.message}`);
-        }
-        content = renderTemplate(tplStr, dataMap);
-      } else {
-        content = exportToMarkdown(dataMap, sinceCtx ? { since: sinceCtx } : undefined);
+
+    let templateStr = null;
+    if (opts.template) {
+      if (!fs.existsSync(opts.template)) {
+        fail(`--template 模板文件不存在: ${opts.template}`);
       }
+      try {
+        templateStr = fs.readFileSync(opts.template, 'utf-8');
+      } catch (err) {
+        fail(`--template 读取失败: ${err.message}`);
+      }
+    }
+
+    const writtenPaths = [];
+    const writeOut = (filePath, content) => {
+      fs.writeFileSync(filePath, content, 'utf-8');
+      writtenPaths.push(filePath);
+      console.error(`已写入: ${filePath}`);
+    };
+
+    if (opts.format === 'all') {
+      // out-6 三件套：--output 为基准路径 → 派生 .md/.html/.viewmodel.json；无 --output 时 fail（避免三份内容刷屏）
+      if (!opts.output) {
+        fail('--format all 需要 --output 指定输出基准路径（将派生 <base>.md / <base>.html / <base>.viewmodel.json）');
+      }
+      const base = stripKnownExt(opts.output);
+      let theme;
+      try {
+        theme = resolveTheme(opts.theme).vars ? opts.theme : opts.theme; // resolveTheme 兼做存在性校验
+      } catch (err) {
+        fail(err.message);
+      }
+      const renders = renderAll(dataMap, { theme, templateStr, sinceCtx });
+      writeOut(`${base}.md`, renders.markdown);
+      writeOut(`${base}.html`, renders.html);
+      writeOut(`${base}.viewmodel.json`, renders.viewmodel);
+    } else if (opts.format === 'json') {
+      emit(opts, JSON.stringify(dataMap, null, 2), writeOut);
+    } else if (opts.format === 'markdown') {
+      const content = templateStr != null
+        ? renderTemplate(templateStr, dataMap)
+        : exportToMarkdown(dataMap, sinceCtx ? { since: sinceCtx } : undefined);
+      emit(opts, content, writeOut);
     } else if (opts.format === 'html') {
       // 本体蓝图查看器：数据聚合 → 自包含 HTML（领域蓝图 / 业务数据图 / 业务逻辑流向）
-      let theme = opts.theme;
-      if (!listThemeNames().includes(theme)) {
-        fail(`未知主题: ${theme}（可选: ${listThemeNames().join(' / ')}）`);
+      try {
+        resolveTheme(opts.theme);
+      } catch (err) {
+        fail(err.message);
       }
-      content = renderViewerHtml(buildViewerModel(dataMap), { theme });
+      emit(opts, renderViewerHtml(buildViewerModel(dataMap), { theme: opts.theme }), writeOut);
     } else if (opts.format === 'viewmodel') {
       // 视图模型 JSON（供 agent / 其他前端直接消费的聚合数据）
-      content = JSON.stringify(buildViewerModel(dataMap), null, 2);
+      emit(opts, JSON.stringify(buildViewerModel(dataMap), null, 2), writeOut);
     } else {
-      fail(`未知格式: ${opts.format}（支持 markdown / json / html / viewmodel）`);
+      fail(`未知格式: ${opts.format}（支持 markdown / json / html / viewmodel / all）`);
     }
-    if (opts.output) {
-      fs.writeFileSync(opts.output, content, 'utf-8');
-      console.error(`已写入: ${opts.output}`);
-      if (sinceCtx) {
-        const objCount = Object.values(sinceCtx.byType).reduce((s, a) => s + a.length, 0);
-        console.error(`  since=${sinceCtx.spec}${opts.staged ? ' (staged)' : ''} 涉及 ${sinceCtx.files.length} 文件 / ${objCount} 对象`);
+
+    if (writtenPaths.length > 0 && sinceCtx) {
+      const objCount = Object.values(sinceCtx.byType).reduce((s, a) => s + a.length, 0);
+      console.error(`  since=${sinceCtx.spec}${opts.staged ? ' (staged)' : ''} 涉及 ${sinceCtx.files.length} 文件 / ${objCount} 对象`);
+    }
+    if (writtenPaths.length > 0) {
+      // x-3 导出完成广播（serve 运行中才生效；内部静默降级不阻塞导出主流程）
+      notifyServe({ dataDir: getSnapshotDir(), event: 'report:changed', paths: writtenPaths })
+        .then((r) => {
+          if (r.notified) console.error('ℹ️  已通知运行中的 serve 广播 report:changed');
+        })
+        .catch(() => { /* 网络层异常静默 */ });
+    }
+  });
+
+function emit(opts, content, writeOut) {
+  if (opts.output) writeOut(opts.output, content);
+  else console.log(content);
+}
+
+function stripKnownExt(p) {
+  return p.replace(/\.(md|markdown|html?|viewmodel\.json|json)$/i, '');
+}
+
+// ---------- out-3 多快照合并接入 ----------
+
+function mergeSnapshotFiles(paths, strategy) {
+  const snapshots = paths.map((p) => {
+    if (!fs.existsSync(p)) fail(`--merge 快照不存在: ${p}`);
+    try {
+      return JSON.parse(fs.readFileSync(p, 'utf-8'));
+    } catch (err) {
+      fail(`--merge 快照解析失败 ${p}: ${err.message}`);
+    }
+  });
+  return mergeSnapshots(snapshots, {
+    strategy,
+    sources: paths.map((p, i) => ({ name: inferSourceName(p, i), path: p })),
+  });
+}
+
+// 源名推断：<proj>/snapshot.json → proj；<proj>/.nice-aos/data/snapshot.json → proj；兜底文件所在目录名
+function inferSourceName(filePath, idx) {
+  const base = path.basename(filePath);
+  if (base === 'snapshot.json') return path.basename(path.dirname(filePath)) || `snap-${idx}`;
+  return path.basename(path.dirname(filePath)) || `snap-${idx}`;
+}
+
+// ---------- x-3 广播通知已由 notifyServe.js 提供（见 action 尾部调用） ----------
+
+// ---------- out-5 主题管理子命令组 ----------
+
+const themeCmd = exportCommand.command('theme')
+  .description('管理用户自定义蓝图主题（HTML 变量 token 集），落盘 ~/.nice-aos/themes/，add 后即刻可用于 --theme');
+
+themeCmd.command('add')
+  .description('注册/覆盖用户主题：--name midnight-teal --file theme.json（JSON 形态 {"label","dark","vars"}，vars 至少含 --bg/--fg）')
+  .requiredOption('--name <name>', '主题名（小写字母数字中划线，≤40 字符）')
+  .requiredOption('--file <path>', '主题定义 JSON 文件路径')
+  .action((opts) => {
+    if (!fs.existsSync(opts.file)) fail(`主题定义文件不存在: ${opts.file}`);
+    let definition;
+    try {
+      definition = JSON.parse(fs.readFileSync(opts.file, 'utf-8'));
+    } catch (err) {
+      fail(`主题定义不是合法 JSON: ${err.message}`);
+    }
+    if (!isValidThemeName(opts.name)) {
+      fail(`非法主题名: ${opts.name}（仅允许小写字母数字与中划线，≤40 字符）`);
+    }
+    // 先经语义校验（失败即中止且不落盘），再持久化
+    const reg = (() => {
+      try {
+        return registerTheme(opts.name, definition);
+      } catch (err) {
+        fail(err.message);
       }
-    } else {
-      console.log(content);
+    })();
+    const { filePath } = saveUserTheme(opts.name, definition);
+    console.log(JSON.stringify({
+      ok: true,
+      name: opts.name,
+      saved: filePath,
+      overriddenBuiltin: reg.overridden,
+      usage: `nice-aos output --theme ${opts.name} --format html`,
+    }, null, 2));
+  });
+
+themeCmd.command('list')
+  .description('列出全部可用主题（内置 + 用户；用户主题标注 [user]，损坏文件标注 [broken]）')
+  .action(() => {
+    syncUserThemes();
+    const rows = listThemeNames().map((n) => ({ name: n }));
+    for (const u of listUserThemes()) {
+      const row = rows.find((r) => r.name === u.name);
+      if (row) Object.assign(row, u, { user: true });
+      else rows.push({ ...u, user: true });
+    }
+    for (const r of rows) {
+      if (r.error) console.log(`${r.name}\t[broken]\t${r.error}`);
+      else console.log(`${r.name}\t${r.user ? '[user]' : '[builtin]'}\t${r.label ?? ''}${r.dark === false ? '（浅色）' : ''}`);
+    }
+  });
+
+themeCmd.command('remove')
+  .description('删除用户主题定义文件（内置主题不可删）')
+  .argument('<name>', '主题名')
+  .action((name) => {
+    try {
+      const { filePath } = removeUserTheme(name);
+      console.error(`已删除: ${filePath}（下次调用 resolveTheme 时不再出现）`);
+    } catch (err) {
+      fail(err.message);
     }
   });

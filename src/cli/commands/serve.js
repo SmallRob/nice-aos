@@ -3,7 +3,15 @@ import path from 'node:path';
 import http from 'node:http';
 import { Command } from 'commander';
 import { fail, parseWhere, matchesWhere } from '../shared.js';
-import { checkAuth } from './serveAuth.js';
+import { checkAuth, parseTokens, authorizeRole, minRoleFor, ROLES } from './serveAuth.js';
+import { createRateLimiter, clientKeyOf } from './rateLimiter.js';
+import { buildOpenApiSpec, ENDPOINTS } from './serveOpenApi.js';
+// srv-5 /api/ask 直连模型 + x-3 运行时广播（v0.34.0）
+import { loadAskConfig } from './askConfig.js';
+import { invokeApiChat } from './openaiCompat.js';
+import { isValidSessionId, loadSession, appendTurn } from './askSession.js';
+import { resolveSavePath, formatAskArchive, writeAskArchive } from './askSave.js';
+import { writeServeRuntime, cleanupServeRuntime } from './notifyServe.js';
 import { getSnapshotDirOverride, setSnapshotDir } from '../../paths.js';
 import { loadType, buildAskContextFromSql } from '../../storage/index.js';
 import { buildAskContext } from './askContext.js';
@@ -33,10 +41,27 @@ import {
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   };
 }
+
+/** 读取请求体（上限 1MB；超限抛错） */
+function readBody(req, limit = 1_000_000) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(new Error('请求体超过 1MB 上限')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    req.on('error', reject);
+  });
+}
+
+const isLoopbackAddr = (addr) => addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 
 // 鉴权实现已抽到 ./serveAuth.js（v0.33.0+ 拆分）。
 // checkAuth / timingSafeEqualStr 单独可单测；serve.js 不再含 security-sensitive 代码。
@@ -109,7 +134,9 @@ export const serveCommand = new Command('serve')
   .option('--dir <path>', '数据源目录（含 snapshot.json；默认 <root>/.nice-aos/data；等价于全局 --snapshot-dir，亦可用 NICE_AOS_SNAPSHOT_DIR 覆盖）')
   .option('--host <host>', '监听地址（默认 127.0.0.1，仅本机可访问）', '127.0.0.1')
   .option('--port <n>', '监听端口（默认 8420；传 0 自动分配可用端口）', '8420')
-  .option('--token <secret>', '启用 Bearer 鉴权（保护 /api/* 端点 + WebSocket /ws/snapshot；静态端点 /snapshot.json / /blueprint.html / / 豁免）。Authorization: Bearer <token> 头或 ?token=<secret> query 都可；NICE_AOS_SERVE_TOKEN 环境变量覆盖 --token')
+  .option('--token <secrets...>', '启用 Bearer 鉴权，可多值实现角色分级：--token admin-secret 等价 admin；--token ro-secret:read --token rw-secret:write（read<write<admin）。静态端点豁免。env: NICE_AOS_SERVE_TOKENS="s1,s2:read"（优先）或 NICE_AOS_SERVE_TOKEN（单值 admin）')
+  .option('--rate-limit <max>', '滑动窗口限流：窗口内每 IP 最大请求数（超限返回 429 + Retry-After）；不传关闭。配合 --window-ms（默认 60000）')
+  .option('--window-ms <ms>', '限流窗口时长毫秒（默认 60000）', '60000')
   .option('--ws-interval <ms>', 'WebSocket 推送：mtime 轮询间隔（毫秒；默认 2000；设 0 关闭）', '2000')
   .action((opts) => {
     const { root, dataDir } = resolveDirs(opts);
@@ -118,23 +145,47 @@ export const serveCommand = new Command('serve')
     const port = Number(opts.port);
     const host = opts.host;
     if (!Number.isInteger(port) || port < 0 || port > 65535) fail(`无效端口: ${opts.port}`);
-    // 鉴权 token：NICE_AOS_SERVE_TOKEN 覆盖 --token（CI 场景优先）
-    const authToken = process.env.NICE_AOS_SERVE_TOKEN?.trim() || opts.token?.trim() || null;
+    // 鉴权 tokens 分级（srv-6）：NICE_AOS_SERVE_TOKENS="s1,s2:read" > NICE_AOS_SERVE_TOKEN > --token...
+    // 单值形态等价 admin —— v0.33 用法完全向后兼容
+    const rawTokenSpec = process.env.NICE_AOS_SERVE_TOKENS
+      ?? process.env.NICE_AOS_SERVE_TOKEN?.trim()
+      ?? (Array.isArray(opts.token) ? opts.token.join(',') : opts.token)
+      ?? null;
+    const authTokens = parseTokens(rawTokenSpec);
+    const authToken = authTokens[0]?.secret ?? null; // WS 模块沿用单 secret 签名（ws 为 read 端点）
+
+    // srv-4 限流：--rate-limit 启用；对所有 HTTP 请求生效（含未鉴权探测，防爆破）
+    const rateMax = opts.rateLimit != null ? parseInt(opts.rateLimit, 10) : null;
+    const limiter = Number.isInteger(rateMax) && rateMax > 0
+      ? createRateLimiter({ max: rateMax, windowMs: Math.max(1000, parseInt(opts.windowMs, 10) || 60_000) })
+      : null;
 
     // SQL 端点数据目录对齐：storage 层 getSqlitePath 走 paths.js 的覆盖链，
     // 不设的话会用 cwd/.nice-aos/data 而非 serve 解析出的 --dir/--root 目录
     setSnapshotDir(dataDir);
 
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
       const url = (req.url || '/').split('?')[0];
       if (req.method === 'OPTIONS') { respond(res, 204, ''); return; }
 
-      // 鉴权：仅 /api/* 端点受保护；静态端点（/snapshot.json / /blueprint.html / /）豁免
-      if (authToken && url.startsWith('/api/')) {
-        const auth = checkAuth(req, authToken);
-        if (!auth.ok) {
+      // srv-4 限流先行（先于鉴权——防止无 token 爆破 /api/* 绕过计数）
+      if (limiter) {
+        const verdict0 = limiter.check(clientKeyOf(req));
+        if (!verdict0.allowed) {
+          res.setHeader('Retry-After', String(verdict0.retryAfterSec));
+          respond(res, 429, JSON.stringify({ ok: false, error: `请求过于频繁（窗口内每 IP 上限 ${rateMax}），请 ${verdict0.retryAfterSec}s 后重试`, retryAfterSec: verdict0.retryAfterSec }));
+          return;
+        }
+      }
+
+      // 鉴权 + 端点分级（srv-6）：静态端点豁免；其余按 minRoleFor(method,url) 校验角色
+      const PUBLIC_PATHS = new Set(['/', '/snapshot.json', '/blueprint.html', '/openapi.json']);
+      if (authTokens.length > 0 && !PUBLIC_PATHS.has(url)) {
+        const verdict = authorizeRole(req, authTokens, minRoleFor(req.method, url));
+        if (!verdict.ok) {
+          const insufficient = verdict.reason.includes('权限不足');
           res.setHeader('WWW-Authenticate', 'Bearer realm="aos"');
-          respond(res, 401, JSON.stringify({ ok: false, error: auth.reason }), { 'Content-Type': 'application/json; charset=utf-8' });
+          respond(res, insufficient ? 403 : 401, JSON.stringify({ ok: false, error: verdict.reason }), { 'Content-Type': 'application/json; charset=utf-8' });
           return;
         }
       }
@@ -158,15 +209,31 @@ export const serveCommand = new Command('serve')
         respond(res, 200, fs.readFileSync(bpPath), { 'Content-Type': 'text/html; charset=utf-8' });
         return;
       }
+      // srv-3：OpenAPI 端点描述（与 /api/status 的端点清单同源于 ENDPOINTS）
+      if (url === '/openapi.json') {
+        respond(res, 200, JSON.stringify(buildOpenApiSpec({ authEnabled: authTokens.length > 0, host: `http://${host}:${boundPort}` }), null, 2));
+        return;
+      }
+      // srv-4 观测端点
+      if (url === '/api/rate-limit') {
+        respond(res, 200, JSON.stringify({ ok: true, rateLimit: limiter ? limiter.stats() : { enabled: false } }));
+        return;
+      }
       if (url === '/api/status') {
         respond(res, 200, JSON.stringify({
           ok: true,
           root, snapshotDir: dataDir,
           snapshot: { ready: snapState === 'ok', path: snapPath, state: snapState },
           blueprint: { ready: bpReady, path: bpPath },
-          endpoints: ['/snapshot.json', '/blueprint.html', '/api/status', '/api/stats', '/api/schema', '/api/objects/:type', '/api/ask/context', '/ws/snapshot', '/'],
+          endpoints: [...ENDPOINTS.map((e) => e.path), '/ws/snapshot'].filter((v, i, a) => a.indexOf(v) === i),
           cors: '*',
-          auth: { enabled: !!authToken, protected: ['/api/*', '/ws/snapshot'], public: ['/snapshot.json', '/blueprint.html', '/'] },
+          auth: {
+            enabled: authTokens.length > 0,
+            roles: authTokens.length > 0 ? Object.fromEntries(authTokens.map((t) => [`${t.secret.slice(0, 3)}***`, t.role])) : undefined,
+            public: [...PUBLIC_PATHS],
+            protected: ['/api/*', '/internal/broadcast', '/ws/snapshot'],
+          },
+          rateLimit: limiter ? limiter.stats() : { enabled: false },
           ws: { enabled: wsIntervalMs > 0, intervalMs: wsIntervalMs, clients: wsClients.size },
         }));
         return;
@@ -269,6 +336,98 @@ export const serveCommand = new Command('serve')
         return;
       }
 
+      // srv-5 / x-4：POST /api/ask —— serve 内直连已配置的 OpenAI 兼容模型服务回答问题
+      // （不依赖本地 AI CLI；未配置模型服务返回 503 与配置指引）
+      if (req.method === 'POST' && url === '/api/ask') {
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch (err) {
+          respond(res, 400, JSON.stringify({ ok: false, error: `请求体须为 JSON: ${err.message}` }));
+          return;
+        }
+        const question = typeof body?.question === 'string' ? body.question.trim() : '';
+        if (!question) {
+          respond(res, 400, JSON.stringify({ ok: false, error: '缺少 question 字段（string）' }));
+          return;
+        }
+        const cfg = loadAskConfig();
+        if (!cfg) {
+          respond(res, 503, JSON.stringify({
+            ok: false,
+            error: '未配置模型服务。请执行 nice-aos ask config set --provider deepseek --api-key <key>，或设置 NICE_AOS_API_KEY / NICE_AOS_BASE_URL / NICE_AOS_MODEL 环境变量后重启本服务',
+          }));
+          return;
+        }
+        // 会话续聊（可选）
+        let historyPart = '';
+        if (body.session != null) {
+          if (!isValidSessionId(String(body.session))) {
+            respond(res, 400, JSON.stringify({ ok: false, error: `非法 session id: ${body.session}` }));
+            return;
+          }
+          const loaded = loadSession(String(body.session));
+          if (loaded.turns.length > 0) {
+            historyPart = loaded.turns.slice(-6).map((t) => `<turn>\nQ: ${t.question}\nA: ${String(t.answer).slice(0, 4000)}\n</turn>`).join('\n');
+          }
+        }
+        // 上下文两路取数（与 GET /api/ask/context 一致）
+        let context = buildAskContextFromSql({ kind: 'code', question });
+        let source = 'sqlite';
+        if (!context) {
+          context = snapState === 'ok' ? buildAskContext(snap) : '';
+          source = 'json';
+        }
+        const fullPrompt = [context, historyPart, `## 问题\n${question}`].filter(Boolean).join('\n\n');
+        try {
+          const t0 = Date.now();
+          const answer = await invokeApiChat({ ...cfg, prompt: fullPrompt, timeout: 120_000 });
+          const metaOut = { agent: 'api', model: cfg.model, provider: cfg.provider ?? 'custom', contextSource: source, durationMs: Date.now() - t0 };
+          const outPayload = { ok: true, ...metaOut, session: null, savedPath: null, answer };
+          if (body.session != null) {
+            try {
+              outPayload.session = { id: String(body.session), turnCount: appendTurn(String(body.session), { question, answer, agent: 'api', model: cfg.model, durationMs: metaOut.durationMs }) };
+            } catch (err) {
+              console.error(`⚠️  session 写入失败: ${err.message}`);
+            }
+          }
+          if (body.save === true) {
+            const { filePath } = resolveSavePath(undefined, dataDir);
+            writeAskArchive(filePath, formatAskArchive({
+              question, answer,
+              agent: 'api', model: cfg.model, provider: cfg.provider ?? 'custom',
+              contextSource: source, durationMs: metaOut.durationMs,
+              ...(outPayload.session ? { session: outPayload.session.id } : {}),
+            }));
+            outPayload.savedPath = filePath;
+          }
+          respond(res, 200, JSON.stringify(outPayload));
+        } catch (err) {
+          respond(res, 502, JSON.stringify({ ok: false, error: `模型服务调用失败: ${err.message}` }));
+        }
+        return;
+      }
+
+      // x-3：POST /internal/broadcast —— 本机回环专用；export 完成后触发 WS 广播
+      if (req.method === 'POST' && url === '/internal/broadcast') {
+        const remote = req.socket?.remoteAddress ?? '';
+        if (!isLoopbackAddr(remote)) {
+          respond(res, 403, JSON.stringify({ ok: false, error: '仅限本机回环调用' }));
+          return;
+        }
+        let body = {};
+        try { body = JSON.parse(await readBody(req)); } catch { /* 空/坏体容忍 */ }
+        wsClients.size > 0
+          ? wsState.broadcast?.({
+              type: typeof body.event === 'string' && /^[\w:-]+$/.test(body.event) ? body.event : 'report:changed',
+              paths: Array.isArray(body.paths) ? body.paths.filter((p) => typeof p === 'string').slice(0, 20) : [],
+              ts: Date.now(),
+            })
+          : null;
+        respond(res, 200, JSON.stringify({ ok: true, broadcast: true, clients: wsClients.size }));
+        return;
+      }
+
       respond(res, 404, JSON.stringify({ ok: false, error: `未支持路径: ${url}（可用端点见 /api/status）` }));
     });
 
@@ -289,9 +448,20 @@ export const serveCommand = new Command('serve')
       checkAuth,
     });
     const wsClients = wsState.clients;
+    let boundPort = port;
 
     server.listen(port, host, () => {
-      const actualPort = server.address()?.port ?? port; // --port 0 时为实际分配端口
+      boundPort = server.address()?.port ?? port; // --port 0 时为实际分配端口
+      const actualPort = boundPort;
+      // x-3：写运行时记录供 output/refreshRepo 进程发现并触发广播；进程退出时清理
+      writeServeRuntime(dataDir, { pid: process.pid, port: actualPort });
+      const cleanupOnce = () => cleanupServeRuntime(dataDir);
+      process.on('exit', cleanupOnce);
+      for (const sig of ['SIGINT', 'SIGTERM']) {
+        try {
+          process.on(sig, () => { cleanupOnce(); process.exit(0); });
+        } catch { /* ignore */ }
+      }
       const line = (label, ok, note) => `  ${ok ? '✓' : '✗'}  ${label.padEnd(18)} ${note || ''}`;
       const { state: snapState } = probeSnapshot(snapPath);
       const bpReady = fs.existsSync(bpPath);
@@ -299,10 +469,14 @@ export const serveCommand = new Command('serve')
       console.log('  --- 数据源目录 ---');
       console.log(`  root        ${root}`);
       console.log(`  snapshot    ${dataDir}`);
-      if (authToken) {
-        console.log(`  auth        Bearer 鉴权启用（/api/* + /ws/snapshot 需 token；长度 ${authToken.length}）`);
+      if (authTokens.length > 0) {
+        const roleSummary = authTokens.map((t) => `${t.secret.slice(0, 3)}***:${t.role}`).join(' ');
+        console.log(`  auth        Bearer 鉴权启用（角色分级 ${Object.keys(ROLES).join('/')}）：${roleSummary}`);
       } else {
-        console.log(`  auth        关闭（不传 --token 时所有端点公开；生产请加 --token <secret> 或 NICE_AOS_SERVE_TOKEN）`);
+        console.log(`  auth        关闭（不传 --token 时所有端点公开；生产请加 --token <secret> 或 NICE_AOS_SERVE_TOKENS）`);
+      }
+      if (limiter) {
+        console.log(`  rate-limit  每 IP 窗口内上限 ${rateMax}（${Math.round((parseInt(opts.windowMs, 10) || 60000) / 1000)}s 窗口）`);
       }
       if (wsIntervalMs > 0) {
         console.log(`  ws          /ws/snapshot 推送启用（mtime 轮询 ${wsIntervalMs}ms）`);
@@ -322,6 +496,9 @@ export const serveCommand = new Command('serve')
       console.log('    GET /api/schema         本体元模型(对象/链接/动作 schema,借鉴 asdm-aos)');
       console.log('    GET /api/objects/:type  对象级查询 ?where=k=v,k2~v2&limit=200 (SQLite 优先)');
       console.log('    GET /api/ask/context    ask 上下文 ?q=问题 (4 次 SQL 预过滤)');
+      console.log('    POST /api/ask           直连模型问答 {question, session?, save?} (write 角色 token)');
+      console.log('    GET /openapi.json       OpenAPI 3.0 端点描述');
+      if (limiter) console.log('    GET /api/rate-limit     限流器观测');
       console.log('\n  按 Ctrl+C 停止\n');
     });
   });

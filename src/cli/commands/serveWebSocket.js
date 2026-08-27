@@ -264,5 +264,5 @@ export function attachWebSocketUpgrade(server, opts) {
     socket.on('error', () => { wsClients.delete(socket); });
   });
 
-  return { enabled: wsIntervalMs > 0, intervalMs: wsIntervalMs, clients: wsClients };
+  return { enabled: wsIntervalMs > 0, intervalMs: wsIntervalMs, clients: wsClients, broadcast: broadcastWs };
 }

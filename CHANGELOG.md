@@ -4,7 +4,33 @@
 
 ## [Unreleased]
 
-### 新增（ask 命令升级 v0.34.0–v0.35.0 规划落地）
+## [0.34.0] - 2026-08-27
+
+### 新增（output 命令）
+
+- **`--merge <paths...>` 多快照合并**（out-3）：monorepo / 多子项目各一份快照合并出总览；冲突策略 `--merge-strategy first-wins`（默认，计数上报）/ `rename`（后到冲突对象重前缀 `<source>:<id>` + `*Id/*Ids` 引用字段泛键回填，收录时统一应用映射）；非首源 Project 折叠进 `_meta.mergedProjects`；合并发生在 dataMap 层 → 四格式自然复用。新增 `src/ontology/merge.js`
+- **`--include <types>` / `--exclude <types>` 类型过滤**（out-4）：作用于全部导出格式；未知类型 fail 并列出可用类型；过滤后 `_meta.objectCounts` 自动对齐
+- **主题 API + CLI**（out-5）：`themes/index.js` 暴露 `registerTheme(name, def)` 运行时注册与用户目录懒加载（`NICE_AOS_THEMES_DIR` 可覆盖）；新增 `output theme add/list/remove` 子命令，主题落盘 `~/.nice-aos/themes/<name>.json`
+- **`--format all`**（out-6）：一条命令产出 `<base>.md / <base>.html / <base>.viewmodel.json` 三件套（需 `--output`）
+
+### 新增（serve 服务）
+
+- **`GET /openapi.json`**（srv-3）：零依赖生成 OpenAPI 3.0.3 spec；端点清单单一事实源 `serveOpenApi.ENDPOINTS`（`/api/status.endpoints` 同源派生）。新增 `src/cli/commands/serveOpenApi.js`
+- **`--rate-limit <max>` / `--window-ms <ms>`**（srv-4）：滑动窗口、IP 维度限流，超限 429 + `Retry-After`；每 IP 时间戳数组 + maxIps 容量驱逐防 OOM；先于鉴权执行防爆破绕过；观测端点 `/api/rate-limit`
+- **`POST /api/ask`**（srv-5 / x-4）：serve 内直连已配置的 OpenAI 兼容模型服务回答问题（不依赖本地 AI CLI）；支持 `session` 续聊与 `save` 落盘；未配置模型时返回 503 配置指引；上下文两路取数与 GET /api/ask/context 同源
+- **端点分级 read/write/admin**（srv-6）：token 支持 `secret:role` 形态与多值 `--token s1:read s2:write`；env `NICE_AOS_SERVE_TOKENS="s1,s2:read"` 优先；单 `--token` 默认 admin 向后兼容；角色校验表 `minRoleFor(method,url)`（POST /api/ask 与 /internal/broadcast 需 write）
+
+### 新增（跨命令协同）
+
+- **`ask --tool-call` / `--max-tool-steps`**（x-1）：自治工具循环正式版——prompt 注入 query/link/output 参数说明 → 模型输出 ```aos-tool``` fenced JSON 块 → 子进程执行真实 sub-command → 结果截断 ≤8KB 回填再生成，≤5 步收敛 + 上限强制收尾；仅模型服务通道（CLI agent 提示改用 `--tools`）。新增 `src/cli/commands/toolLoop.js`
+- **output 完成后通知 serve 广播**（x-3）：serve 启动写 `<dataDir>/serve-runtime.json {pid,port}`（退出清理、陈旧 pid 按 ESRCH/EINVAL 判死）；export 写文件后经回环限定 `POST /internal/broadcast` 触发 WS 推送 `report:changed {paths,ts}`；serve 未运行静默跳过。新增 `src/cli/commands/notifyServe.js`
+
+### 内部
+
+- `serveAuth.js` 扩展 `ROLES / parseTokens / authorizeRole / minRoleFor / extractToken`；`serveWebSocket` 返回值暴露 `broadcast()`；CORS Allow-Methods 增加 POST
+- 测试基线 699 → 739：新增 `exportUpgrade.test.mjs`(11) / `exportMerge.test.mjs`(4) / `serveUpgrade.test.mjs`(16) / `toolLoop.test.mjs`(9)；既有 serve 契约断言随端点清单/横幅新形态同步
+
+## [0.33.1] - 2026-08-27
 
 - **Agent 解析翻转 + 注册表扩展**（`agentRunner.js`）：`--agent auto` 时已配置的自定义模型服务成为首选通道（原为 CLI 优先、模型兜底），其后按注册表序探测 CLI；注册表从 2 项扩展至 8 项（codebuddy / opencode / **trae / qoder / claude / codex / qwen / aider**，后六者 experimental 标记）；报错信息给出可用注册名与接入指引
 - **`--agent-cmd "<bin> [args...] {prompt}"`**：任意自定义 AI CLI 零代码接入——含 `{prompt}` 占位符按位注入（可多处），缺省追加末尾；未知名字不再死路一条

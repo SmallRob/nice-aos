@@ -389,6 +389,18 @@ export --format markdown --output report.md     # Markdown 全景报告
 export --format json | jq '._meta.cycles'       # JSON 供 jq 聚合
 export --format html --output blueprint.html    # 自包含蓝图 HTML（本体查看器）
 export --format viewmodel                       # 视图模型 JSON（聚合数据，供 agent 消费）
+export --format all --output report.html        # 三件套：report.md + report.html + report.viewmodel.json
+
+# 类型过滤（作用于全部格式；未知类型 fail 并列出可用类型）
+export --include Component,Hook --exclude Method --format markdown
+
+# 多快照合并（monorepo 多子项目出一份总览；冲突策略 first-wins | rename）
+export --merge app-a/snapshot.json app-b/snapshot.json --merge-strategy rename --format viewmodel
+
+# 用户自定义主题（HTML 变量 token 集，落盘 ~/.nice-aos/themes/，add 后即刻可用于 --theme）
+output theme add --name midnight-teal --file theme.json   # {"label","dark","vars"，vars 至少含 --bg/--fg}
+output theme list                                          # 内置 [builtin] + 用户 [user] 一览
+output theme remove midnight-teal                          # 删除用户主题（内置不可删）
 
 # 增量导出（--since）：仅列出 ref 以来变更涉及的对象 + 末尾追加"增量变更摘要"节
 export --format markdown --since HEAD --output diff.md                    # 工作区未暂存 + 未跟踪
@@ -396,7 +408,7 @@ export --format markdown --since HEAD~1..HEAD --output diff.md             # 上
 export --format markdown --since HEAD --staged --output pre-commit.md     # pre-commit 体检（仅已暂存）
 ```
 
-Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）、**接口与实现**（接口清单 + implementedBy 实现类 + 方法覆盖矩阵）、**类与方法**（类清单含 implements/extends/单例 + 契约热点 Top 30）与**死代码候选四级**（文件级 + 导出级 + 类型级 + 函数级）等章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。`--since` 模式会在报告末尾追加"增量变更摘要"节：列出 git diff 涉及的文件 + 涉及的对象（按类型分组，附 `id` 方便复制到 `query` / `link` 命令）。
+Markdown 报告含**执行摘要**（项目总结句 + 健康指标表）、**架构总览（语义分层）**（层/定位/文件数/占比）、**功能域地图（Domain）**（域/来源/路由/组件/Store/脚本/职责画像）、**接口与实现**（接口清单 + implementedBy 实现类 + 方法覆盖矩阵）、**类与方法**（类清单含 implements/extends/单例 + 契约热点 Top 30）与**死代码候选四级**（文件级 + 导出级 + 类型级 + 函数级）等章节，以及模块 Top 30（语义层 + 层构成 + 职责画像）。`--since` 模式会在报告末尾追加"增量变更摘要"节：列出 git diff 涉及的文件 + 涉及的对象（按类型分组，附 `id` 方便复制到 `query` / `link` 命令）。导出写文件完成后若检测到运行中的 serve，会自动经回环 `POST /internal/broadcast` 触发 WebSocket 推送 `report:changed`（serve 未运行时静默跳过）。
 
 ### update — 版本检测与一键升级
 
@@ -417,12 +429,19 @@ nice-aos serve --port 39481             # 指定端口（传 0 自动分配可�
 nice-aos serve --dir path/to/data       # 显式指定快照目录（等价全局 --snapshot-dir / NICE_AOS_SNAPSHOT_DIR）
 nice-aos serve --host 0.0.0.0           # 需要局域网访问时（默认仅本机 127.0.0.1）
 
-# 鉴权（v0.34.0）：--token 保护 /api/* 端点；静态端点（/snapshot.json / /blueprint.html / /）豁免
-nice-aos serve --token s3cret-abc123                              # Bearer 鉴权启用
-NICE_AOS_SERVE_TOKEN=s3cret-abc123 nice-aos serve                  # env 覆盖 --token（CI 场景）
+# 鉴权（v0.34.0）：--token 保护 /api/* 端点；静态端点（/snapshot.json / /blueprint.html / /openapi.json）豁免
+nice-aos serve --token s3cret-abc123                              # Bearer 鉴权启用（默认 admin 角色）
+nice-aos serve --token ro-secret:read --token rw-secret:write      # 多 token 角色分级（read < write < admin）
+NICE_AOS_SERVE_TOKENS="s1,s2:read" nice-aos serve                  # env 批量配置（覆盖 --token，CI 场景）
 curl http://127.0.0.1:8420/api/status                             # → 401
 curl -H "Authorization: Bearer s3cret-abc123" .../api/status       # → 200
 curl "http://127.0.0.1:8420/api/status?token=s3cret-abc123"        # → 200（query 形式，油猴脚本友好）
+
+# 限流 + 端点描述 + 直连问答（v0.34.0）
+nice-aos serve --rate-limit 120 --window-ms 60000                  # 每 IP 滑动窗口限流，超限 429 + Retry-After；观测: GET /api/rate-limit
+curl http://127.0.0.1:8420/openapi.json                            # OpenAPI 3.0 spec（与 /api/status 同一端点事实源）
+curl -X POST .../api/ask -H 'Content-Type: application/json' \
+     -d '{"question":"这个项目有哪些功能域？","save":true}'          # 直连已配置的模型服务回答（需 write 角色 token；未配置模型 → 503 指引）
 ```
 
 为 AI agent / 油猴脚本 / 网页提供跨源 HTTP 数据源（全端点 CORS `*`）：
@@ -436,6 +455,10 @@ curl "http://127.0.0.1:8420/api/status?token=s3cret-abc123"        # → 200（q
 | `GET /api/schema` | 本体元模型：`OBJECT_TYPES`（19 个）/ `LINK_TYPES`（24 个）/ `ACTION_NAMES`（4 个）+ 概念范畴与抽象层级（abstractionLevels / categories）+ prefix → type 反查映射，供 agent 自动发现能力 |
 | `GET /api/objects/:type` | 对象级查询：`?where=k=v,k2~v2&limit=200`（`=` 精确 / `~` 子串忽略大小写 / `limit=0` 不限；SQLite 优先，无镜像时回退 JSON） |
 | `GET /api/ask/context` | ask 上下文：`?q=问题`（4 次 SQL 预过滤的项目上下文，与 `ask` 命令同一构建器；无 SQLite 镜像回退 JSON） |
+| `POST /api/ask` | **直连模型问答**：body `{question, session?, save?}`——serve 内调已配置的 OpenAI 兼容模型服务回答（不依赖本地 AI CLI）；需 write 角色 |
+| `GET /openapi.json` | OpenAPI 3.0 spec 自动描述（agent 能力发现） |
+| `GET /api/rate-limit` | 限流器观测（启用 `--rate-limit` 时有效） |
+| `WS /ws/snapshot` | 快照/蓝图 mtime 变更推送 `{type:"snapshot:changed"\|"blueprint:changed"}`；v0.34.0 起另有 `report:changed`（export 完成后经回环 `/internal/broadcast` 触发） |
 | `GET /` | 状态首页（HTML） |
 
 就绪状态**每次请求实时探测**——"先起服务、后 `refreshRepo` / `export`"的工作流无需重启；快照缺失返回 404（附生成指引）、JSON 损坏返回 500。目录解析链：`--dir` → 全局 `--snapshot-dir` → `NICE_AOS_SNAPSHOT_DIR` → `<root>/.nice-aos/data`。典型配套用法见 [contrib/blueprint-ai-agent](./contrib/blueprint-ai-agent)。
@@ -630,6 +653,9 @@ nice-aos ask "这个项目有哪些功能域？"                 # auto：已配
 nice-aos ask "架构分层的文件分布？" --agent opencode   # 显式指定 agent
 nice-aos ask "Q" --agent-cmd "myai --ask {prompt}"    # 接入任意其他 AI CLI（{prompt} 占位符按位注入，缺省追加末尾）
 nice-aos ask "依赖健康度？" --tools                   # 自治深查：后台起 serve + 把 query/link/export 使用指引注入 prompt，AI 按需自行取证并引用对象 id
+nice-aos ask "Q" --tool-call                         # 自治工具循环（正式版）：AI 输出 aos-tool JSON 块 → 进程执行真实 sub-command → 结果回填再生成（≤5 步；仅模型通道）
+nice-aos ask "这次重构影响谁？" --since HEAD~1         # 跨快照 diff 问答：增量变更文件与涉及对象折叠进 prompt（--staged 只看暂存区）
+nice-aos ask "依赖健康度？" --save answers/a.md       # 回答落盘为自包含 Markdown 存档（省略路径 → <snapshotDir>/answers/ask-<时间戳>.md）
 nice-aos ask "这次重构影响谁？" --since HEAD~1         # 跨快照 diff 问答：增量变更文件与涉及对象折叠进 prompt（--staged 只看暂存区）
 nice-aos ask "依赖健康度？" --save answers/a.md       # 回答落盘为自包含 Markdown 存档（省略路径 → <snapshotDir>/answers/ask-<时间戳>.md）
 nice-aos ask "有哪些循环依赖？" --serve               # 后台起 serve，HTTP URL 拼进 prompt 供深查
@@ -876,9 +902,9 @@ node src/cli/index.js --help
 - **已完成于 Unreleased 的配套升级**：agent 解析翻转（自定义模型服务为 auto 首选通道）+ 注册表扩至 8 CLI + `--agent-cmd` 任意 CLI 零代码接入
 
 ### `output` 轴（输出 / `export` 顶层别名）
-- **P0**：`output` 作为 `export` 的 commander 顶层别名（v0.33.0，✅ 已发）
-- **P1**：增量导出 `--since`（git diff）（v0.34.0）｜模板化 `--template`（v0.34.0）｜多快照合并 `--merge`（v0.34.0）｜类型过滤 `--include/--exclude`（v0.34.0）
-- **P2**：主题 API `registerTheme`（v0.35.0）｜`--format all`（v0.35.0）｜PDF 导出（v0.36.0+）
+- **P0**：`output` 作为 `export` 的 commander 顶层别名（✅ v0.33.0 已发）
+- **P1**：增量导出 `--since`（✅ v0.33.x）｜模板化 `--template`（✅ v0.33.x）｜多快照合并 `--merge/--merge-strategy`（✅ v0.34.0）｜类型过滤 `--include/--exclude`（✅ v0.34.0）
+- **P2**：主题 API `registerTheme` + `output theme add/list/remove`（✅ v0.34.0）｜`--format all` 三件套（✅ v0.34.0）｜HTML 分章导出 / PDF 导出（v0.35.0+ 待做）
 
 ### `serve` 轴（服务）
 - **P1**：Bearer 鉴权 `--token`（v0.34.0）｜`/ws/snapshot` WebSocket 推送（v0.34.0）｜`/openapi.json` 端点描述（v0.34.0）｜限流（v0.34.0）
