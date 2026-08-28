@@ -245,7 +245,7 @@ test('propFlow 模型层与渲染：来源分布/出入度/SVG 传递图', async
     };
     const prevDocument = globalThis.document;
     globalThis.document = {
-      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'), addEventListener() {},
     };
     try {
       new Function(script)();

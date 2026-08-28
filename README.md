@@ -383,7 +383,7 @@ action markReviewed --params '{"objectId":"comp:TalentResultPage"}'
 action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页面"}'
 ```
 
-`analyzeFile` 支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart 与油猴脚本（相对 cwd 或绝对路径）；油猴文件输出 UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction 五类，其余文件输出 Interface/Class/Method；单文件模式下仅"本文件内零引用"的非导出实体判死（导出实体无法判定跨文件使用，一律不判死）。
+`analyzeFile` 支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart/.py/.kt/.kts/.php 与油猴脚本（相对 cwd 或绝对路径，v0.36.1 起扩展名路由到各自语言的 analyzer）；油猴文件输出 UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction 五类，其余文件输出 Interface/Class/Trait/Method（PHP/Kotlin 文件含各自语言实体与字段）；单文件模式下仅"本文件内零引用"的非导出实体判死（导出实体无法判定跨文件使用，一律不判死）。
 
 ### export — 导出
 
@@ -721,7 +721,7 @@ nice-aos storage status                   # 查看镜像状态与版本
 
 ## 解析能力
 
-- **导入解析**：tsconfig `paths` 别名（`@/*` → `src/*`）、vue.config.js `configureWebpack.resolve.alias`、jsconfig.json paths、子路径别名、相对路径 + 扩展名探测（.ts/.tsx/.js/.jsx/.vue/.dart/index.*）、`.js` → `.ts` 回退；vue-cli 项目（vue.config.js + `src/`）自动兜底 `@/* → src/*`；Dart `package:/dart:` 导入（`package:自身包名/...` → 项目内 lib/ 路径，其余 → pub 依赖；`dart:` 内置库跳过；无 `./` 前缀的裸相对导入同样解析）；**PHP / Kotlin 命名空间导入不走 TS resolver**（避免 `Foo\Bar` 误判为 npm 包），按命名空间首段归并为 external 依赖（`ecosystem: php/kotlin`）；资产后缀（css/png/svg…）跳过；tsconfig.json 含 `//`/`/* */` 注释也能解析（自动剥离）
+- **导入解析**：tsconfig `paths` 别名（`@/*` → `src/*`）、vue.config.js `configureWebpack.resolve.alias`、jsconfig.json paths、子路径别名、相对路径 + 扩展名探测（.ts/.tsx/.js/.jsx/.vue/.dart/index.*）、`.js` → `.ts` 回退；vue-cli 项目（vue.config.js + `src/`）自动兜底 `@/* → src/*`；Dart `package:/dart:` 导入（`package:自身包名/...` → 项目内 lib/ 路径，其余 → pub 依赖；`dart:` 内置库跳过；无 `./` 前缀的裸相对导入同样解析）；**PHP / Kotlin 命名空间导入不走 TS resolver**（避免 `Foo\Bar` 误判为 npm 包），内部解析走各自生态（PHP：composer PSR-4 + 声明限定名；Kotlin：声明包 + 限定类名 + 路径后缀，见「PHP 适配」「Kotlin 适配」章节），未命中内部按命名空间首段归并为 external 依赖（`ecosystem: php/kotlin`）；资产后缀（css/png/svg…）跳过；tsconfig.json 含 `//`/`/* */` 注释也能解析（自动剥离）
 - **组件识别（React）**：`.tsx` 导出的 PascalCase 符号；支持 `export default function X`、`export const X: React.FC`、分离式 `export default X`、`memo()/forwardRef()` 包装；kind 按名称后缀推断（Page/Modal/Card/…），`pages/` 目录下被路由直接引用的组件自动升级为 page
 - **组件识别（Vue）**：`.vue` SFC 整文件即组件；`defineOptions({ name })` 与 `<script setup name="X">` 属性优先，否则文件名派生（`index.vue` → 目录名）；`defineProps` 数组/对象形式计数；template 标签（kebab/PascalCase 统一）供 renders 关系
 - **Hook/Composable 识别**：导出的 `useXxx` 符号（含 React Hook 与 Vue composable），含 JSDoc 描述提取
@@ -845,6 +845,8 @@ nice-aos storage status                   # 查看镜像状态与版本
 - **Trait 复用链**：class 体内 `use Trait1, Trait2;` → `usesTraits` → builder 全仓库名字匹配回填 `usesTraitIds` / `Trait.usedByIds` 双向链接（`link usesTrait --src "class:..."` / `link usedByTrait --src "trait:..."`）
 - **zentaopms 路由**：`module/<x>/control.php` 内 public 非抽象非构造方法 → Route（`routeType=php`，`path: /<module>-<method>`，与 `createLink('module','method')` 的 URL 形态一致），handler 关联到 control 类同名 Method
 - **命名空间**：`namespace Foo\Bar` → moduleName（反斜杠归一点号）；`use X\Y as Z` 别名与 `use Baz\{ Qux, Quux as Q }` 群组导入解析
+- **导入解析（v0.36.1）**：composer.json autoload PSR-4/PSR-0 前缀映射（最长前缀优先，`App\` → `app/`）区分内部/外部；无 composer 映射时按全仓库声明限定名（`namespace + class/interface/trait`）兜底解析内部引用（zentaopms 遗留库）；内部 use 产生 `file:` 导入边，外部按命名空间首段归并（`ecosystem: php`）
+- **DAO 链（v0.36.1）**：方法体内 zentaopms `dao` 链静态识别 → `Method.sqlQueries`（`select(...)->from(TABLE_X)` → SELECT、`update(TABLE_X)` / `insert(...)` / `delete()->from(...)` → UPDATE/INSERT/DELETE、`leftJoin/innerJoin/rightJoin` → JOIN）；`TABLE_X` 常量经全仓库 `define('TABLE_X', 'zt_x')` 值解析为真实表名，喂给 mapsToTable/mappedFromCode 代码↔表链接通道（`define()` 提取兼容反引号值）
 - **架构层**：`control.php` / `view|ui|lang/` / `controllers|routes|api/` → presentation；`model|config.php` / `dao|dal|repositories|services|models/` → service；`framework/` → shared
 
 ### Kotlin 适配（Android / JVM / KMP，自动探测）
@@ -855,6 +857,7 @@ nice-aos storage status                   # 查看镜像状态与版本
 - **实体映射**：`class` → Class（**5 种变体 kind**：class / `data class` → data_class / `sealed class` → sealed_class / `object` → 单例 / `enum class` → enum_class（枚举常量 → variants）；`data class` 主构造器 `val/var` 参数 → fields）；`interface`（含 `fun interface` SAM）→ Interface；`companion object` → 嵌套 companion_object Class（成员并入宿主类）；顶层 `fun` → Method（ownerKind=module）
 - **方法与属性**：`suspend fun` → isAsync；inline/operator/infix/open/override 等修饰保留；接收者语法 `fun Foo.bar()` 解析 receiverType；`val/var` 属性提取类型与可变性
 - **supertype 与 import**：`: Bar, Baz.K, Qux(...)` 超类型列表（含点号嵌套 `Call.Factory`、泛型、构造参数）；`import foo.Bar` / `import foo.Bar as Baz` / `import foo.*` / `import foo.{ A, B }` 群组解析
+- **导入解析（v0.36.1）**：声明 package + 限定类名（`com.example.Client`）+ 源码路径后缀匹配（任意源码根下 `com/example/Client.kt`，等效覆盖自定义 sourceSets srcDir，无需解析 build.gradle.kts）区分内部/外部；通配 `import a.b.*` 关联整包文件（imports 边多目标，与 Go package 导入同构）；外部按首段归并（`java` / `androidx` / `kotlin`…，`ecosystem: kotlin`）
 - **噪声剥离**：三引号原始字符串（含 `${}` 插值）、普通字符串、字符字面量、行/块/KDoc 注释等长替换，字符串内的类定义不产生幽灵实体
 - **架构层**：`*(Activity|Fragment|Screen|Page).kt` / `ui|compose|screens/` / `*ViewModel.kt` → presentation；`*(Repository|UseCase|Interactor|Service).kt` / `di|data|datasource|db|network|api/` → service；其余 → shared
 
@@ -878,8 +881,8 @@ nice-aos storage status                   # 查看镜像状态与版本
 - Rust 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 rustc）：泛型约束 / 关联类型 / macro 生成代码不解析；`mod` 声明文件树按目录约定映射（`mod models;` → `models.rs` 或 `models/mod.rs`）；`.rs` 文件仅在 Tauri 组件语境下扫描，独立 Rust 工程（纯后端 crate）不纳入
 - Dart 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 analyzer）：泛型方法/闭包体内声明、动态拼接路由 path、`Navigator.push(MaterialPageRoute(...))` 导航不解析；构造器不实体化为 Method；调用链为静态提取（变量间接调用/回调透传不解析）
 - Go 解析为轻量语法级（深度状态机 + 双通道噪声剥离，不依赖 gopls）：泛型（type parameters）不解析（两参考项目均为 Go 1.17/1.18 前风格）；调用链为静态提取（变量间接调用/回调透传/goroutine 内闭包捕获不解析）；cobra `Run` 内联闭包不实体化为 Method；前端 httpCalls 限定 `API.x/axios.x/fetch` 标识符 + 字符串字面量首参（变量拼接 URL 取静态前缀，完整外链 URL 进未匹配清单）；Java/Python 后端不在扫描范围
-- PHP 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 php-parser）：heredoc/nowdoc 体内的声明、反射/macro 生成的实体不解析；trait use 仅按名字全仓库匹配（同名 trait 跨命名空间不区分）；`$this->model->...` DAO 链抽取为 Phase-2（`sqlQueries` v1 留空契约）；PSR-4 内部 import 不解析（composer.json autoload 区分内/外为后续候选），命名空间导入统一按首段归并 external
-- Kotlin 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 kotlinc）：泛型约束（`where T : Comparable<T>`）、委托（`by Delegates`）、类型别名（typealias）右侧不展开；调用链/调用图未实现（receiver-constrained 调用图为后续候选）；内部 import 不解析（sourceSets 区分内/外为后续候选），命名空间导入统一按首段归并 external
+- PHP 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 php-parser）：heredoc/nowdoc 体内的声明、反射/macro 生成的实体不解析；trait use 仅按名字全仓库匹配（同名 trait 跨命名空间不区分）；DAO 链抽取为语句级静态识别（`dao->select(...)->from(TABLE_X)` / `update(TABLE_X)` / `insert(...)` / `leftJoin(...)`；`TABLE_X` 常量经 `define()` 值解析为真实表名，`$var` 动态表名标 `dynamic:true` 不参与 mapsToTable；多语句拼接变量表名不解析）；内部 import 解析覆盖 composer.json autoload PSR-4/PSR-0 前缀映射 + 全仓库声明限定名兜底（无 composer 的遗留库如 zentaopms），其余按命名空间首段归并 external
+- Kotlin 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 kotlinc）：泛型约束（`where T : Comparable<T>`）、委托（`by Delegates`）、类型别名（typealias）右侧不展开；调用链/调用图未实现（receiver-constrained 调用图为后续候选）；内部 import 解析覆盖声明 package + 限定类名 + 源码路径后缀匹配（等效覆盖自定义 sourceSets srcDir，不解析 build.gradle.kts），通配 `import a.b.*` 关联整包文件，其余按首段归并 external
 - 跨文件 implements/extends 按具名导入静态解析；命名空间导入、`export *` 再导出与动态 `import()` 的目标文件整体豁免死代码判定（无法按名追踪，保守不误报）；仅被测试文件使用的导出符号会被判为死代码候选（测试文件不入扫描范围，删除前请人工确认）
 - `renders` 归属文件主组件（default export 优先），同文件多组件不细分
 - 函数透传式导航（`onOpenOverlay: app.setActiveOverlay`）不产生跳转边

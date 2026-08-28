@@ -81,8 +81,11 @@ test('mcp --dir 合法快照能启动 + stderr 包含 "就绪" + 工具数 + 工
   let stderr = '';
   child.stderr.on('data', (d) => { stderr += d.toString(); });
 
-  // 等 1.5s 后 SIGTERM（mcp server 是长驻进程，需要外部终止）
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  // 轮询 stderr 直到出现 "就绪" 再 SIGTERM（固定 1.5s 在全量测试并行负载下会时序抖动；上限 8s）
+  const readyDeadline = Date.now() + 8000;
+  while (Date.now() < readyDeadline && !/就绪/.test(stderr)) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
   child.kill('SIGTERM');
 
   await new Promise((resolve) => {

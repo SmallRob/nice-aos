@@ -13,7 +13,7 @@ description: |
   语义本体引擎：20 种对象按概念范畴与抽象层级（L3 架构/L2 结构/L1 单元/L0 事实）组织，
   架构分层（archLayer）按内容信号推断而非目录名直译，功能域（Domain）聚合横向业务切片，
   Project/Domain/Module 自动生成职责画像与自然语言总结（summary/architecture/health）。
-  单文件分析（action analyzeFile）：不落盘直接输出单文件本体 JSON（类型实体 + 油猴五类对象 + 死代码候选；支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart）。
+  单文件分析（action analyzeFile）：不落盘直接输出单文件本体 JSON（类型实体 + 油猴五类对象 + 死代码候选；支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart/.py/.kt/.kts/.php）。
   本体查看器（viewer）：export --format html 生成自包含蓝图 HTML（领域蓝图/业务数据图/
   业务逻辑流向/脚本蓝图，零依赖可离线打开，宽屏分档适配），--format viewmodel 输出聚合视图模型 JSON 供 agent 直接消费。
   基于 TypeScript Compiler API 静态解析，不做类型检查；React/Vue 项目全量分析约 3.5 秒
@@ -215,7 +215,7 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 | 动作 | 用途 | 守卫 |
 |------|------|------|
 | refreshRepo | 重新分析仓库（全量；React/Vue 项目约 3.5s，大型油猴仓库可达数十秒） | repoPath 必须为存在的目录（纯油猴脚本仓库无需 package.json） |
-| analyzeFile | 单文件分析（不落盘，stdout 输出 dataMap 形状 JSON；支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart 与油猴脚本） | file 必须为存在的普通文件 |
+| analyzeFile | 单文件分析（不落盘，stdout 输出 dataMap 形状 JSON；支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart/.py/.kt/.kts/.php 与油猴脚本） | file 必须为存在的普通文件 |
 | markReviewed | 标记对象已 review（持久化到快照） | objectId 必须存在 |
 | addNote | 给对象加注释（持久化） | objectId 存在且 note 非空 |
 

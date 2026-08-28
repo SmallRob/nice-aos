@@ -69,6 +69,68 @@ function computeLineStarts(src) {
   for (let i = 0; i < src.length; i += 1) if (src.charCodeAt(i) === 10) starts.push(i + 1);
   return starts;
 }
+
+// DAO 链 SQL 表名提取（zentaopms `dao` 惯例；复用 pythonAnalyzer/tsAnalyzer sqlQueries 通道）：
+//   $this->dao->select('*')->from(TABLE_BUG)->where(...)->fetch()   → { kind:'SELECT', table:'TABLE_BUG', dynamic:true }
+//   $this->dao->update(TABLE_BUG)->set(...)->exec()                 → { kind:'UPDATE', ... }
+//   $this->dao->insert('zt_bug')->data(...)->exec()                 → { kind:'INSERT', table:'zt_bug', dynamic:false }
+//   ->leftJoin(TABLE_USER)                                          → { kind:'JOIN', ... }
+// 表参数为 TABLE_X 常量 / $var 时标 dynamic，builder 阶段经 defines 表解析为真实表名。
+// 按语句（; 分隔）扫描：zentaopms 每条 DAO 链是单语句，链头与 from() 同句。
+function extractDaoQueries(bodyText) {
+  if (!bodyText || !bodyText.includes('dao->')) return [];
+  const out = [];
+  const seen = new Set();
+  const push = (kind, argText) => {
+    if (!argText) return;
+    const a = argText.trim();
+    let table = null;
+    let dynamic = false;
+    if (/^(?:'[^']*'|"[^"]*")$/.test(a)) {
+      table = a.slice(1, -1).replace(/`/g, '').trim();
+    } else if (/^`[^`]*`$/.test(a)) {
+      table = a.slice(1, -1).trim();
+    } else if (/^\$[A-Za-z_]\w*$/.test(a)) {
+      table = a.slice(1); dynamic = true;
+    } else if (/^[A-Z][A-Z0-9_]*$/.test(a)) {
+      table = a; dynamic = true;
+    } else {
+      return;
+    }
+    if (!table) return;
+    const key = `${kind}:${table}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ kind, table, dynamic });
+  };
+  for (const stmt of bodyText.split(';')) {
+    if (!stmt.includes('dao->')) continue;
+    const head = /dao\s*->\s*(select|selectAll|update|insert|replace|delete)\b/.exec(stmt);
+    if (head) {
+      const kind = { select: 'SELECT', selectAll: 'SELECT', update: 'UPDATE', insert: 'INSERT', replace: 'INSERT', delete: 'DELETE' }[head[1]];
+      // from(ARG) 优先（select/delete 链），否则链头内联（update/insert/replace）
+      const fromM = /->\s*from\s*\(\s*([^()]+?)\s*\)/.exec(stmt);
+      if (fromM) push(kind, fromM[1]);
+      else {
+        const inlineM = new RegExp(`dao\\s*->\\s*${head[1]}\\s*\\(\\s*([^()]+?)\\s*\\)`).exec(stmt);
+        if (inlineM) push(kind, inlineM[1]);
+      }
+    }
+    for (const jm of stmt.matchAll(/->\s*(?:leftJoin|innerJoin|rightJoin)\s*\(\s*([^()]+?)\s*\)/g)) {
+      push('JOIN', jm[1]);
+    }
+  }
+  return out;
+}
+
+// define('TABLE_BUG', '`zt_bug`') 常量表提取（原始文本；值定界符可为引号或反引号，值去反引号）
+function extractDefines(src) {
+  const defines = {};
+  for (const m of src.matchAll(/\bdefine\s*\(\s*['"]([A-Za-z_]\w*)['"]\s*,\s*['"`]([^'"`]*)['"`]/g)) {
+    defines[m[1]] = m[2].replace(/`/g, '').trim();
+  }
+  return defines;
+}
 function lineAt(ls, pos) {
   if (pos < 0) return 1;
   let lo = 0, hi = ls.length - 1;
@@ -567,6 +629,7 @@ export function analyzePhpFile(relPath, content) {
       exported: m.visibility !== 'private', hasBody: m.hasBody,
       isConstructor: m.name === '__construct',
       isMagic: ['__construct', '__destruct', '__call', '__get', '__set', '__isset', '__unset', '__toString', '__invoke', '__clone'].includes(m.name),
+      sqlQueries: extractDaoQueries(src.slice(m.start, m.end)),
     })),
     properties: c.properties,
   }));
@@ -591,6 +654,7 @@ export function analyzePhpFile(relPath, content) {
       name: m.name, language: 'php', line: m.line, pos: m.start, end: m.end,
       signature: m.signature, visibility: m.visibility, modifiers: m.modifiers,
       isStatic: !!m.isStatic,
+      sqlQueries: extractDaoQueries(src.slice(m.start, m.end)),
     })),
     properties: t.properties,
   }));
@@ -609,9 +673,11 @@ export function analyzePhpFile(relPath, content) {
     moduleFunctions: moduleFunctions.filter((m) => m.name).map((m) => ({
       name: m.name, language: 'php', line: m.line,
       pos: m.start, end: m.end, signature: m.signature, hasBody: m.hasBody, exported: true,
+      sqlQueries: m.hasBody ? extractDaoQueries(src.slice(m.start, m.end)) : [],
     })),
     moduleName, visibility: null, routes,
     sqlQueries: [], crossModuleImports: [],
+    defines: extractDefines(src),
     // 与 tsAnalyzer 契约对齐（builder 消费的字段；PHP 无组件/overlay 语义，全部为空）
     jsxTags: new Set(),
     useCalls: [], overlayOpens: [], stores: [], lazyWrappers: [], components: [], hooks: [],

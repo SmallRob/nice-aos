@@ -4,6 +4,45 @@
 
 ## [Unreleased]
 
+## [0.36.1] - 2026-08-28
+
+v0.36.0 后续候选高价值项闭环（候选 0 / 1 / 2 / 4）。
+
+### 候选 0：`action analyzeFile` 单文件模式接入 `.kt/.kts/.php` analyzer 分发
+
+- `buildSingleFileOntology` 分发链补 `.kt` / `.kts` → kotlinAnalyzer、`.php` → phpAnalyzer 分支（此前回落 tsAnalyzer 产生错误解析）
+- 修复单文件模式 `cls.implementsNames.map` 空指针（Kotlin facts 无 implementsNames 字段；对齐全扫描的 `?? []` 空值安全写法）
+- 单文件模式同步接入 PHP DAO 常量解析（本文件内 `define()` 可见；跨文件常量表在全仓库扫描解析）
+
+### 候选 2：`phpDetected` / `kotlinDetected` 暴露
+
+- `scanProject` 返回对象新增 `phpDetected` / `kotlinDetected`（与 `goDetected` / `flutterDetected` 对齐）
+- Project 快照对象新增 `goDetected` / `phpDetected` / `kotlinDetected` 三字段（此前 flutter/tauri/electron 有而 go/php/kotlin 缺）
+
+### 候选 1：PHP / Kotlin 内部 import 解析
+
+- **新模块** `src/analyzers/phpKotlinImportResolver.js`（输出契约与 importResolver / goResolver 对齐：internal/external/unresolved）
+- PHP：composer.json autoload **PSR-4 / PSR-0 前缀映射**（最长前缀优先，目录归一）→ 目标 `.php` 文件存在则 internal；无 composer 映射时按**全仓库声明限定名**兜底（namespace + class/interface/trait，小写归一匹配，覆盖 zentaopms 遗留库）；未命中按命名空间首段归并 external（`ecosystem: php`）
+- Kotlin：**声明 package + 限定类名**精确匹配 → **源码路径后缀匹配**（任意源码根下 `com/example/Client.kt`，等效覆盖自定义 sourceSets srcDir，无需解析 build.gradle.kts）→ 未命中按首段归并 external（`ecosystem: kotlin`）
+- 通配 `import a.b.*` 关联整包文件（imports 边多目标，与 Go package 导入同构；`file` 指向包内首个文件兼容单文件消费者）
+- builder 导入边消费分支支持 `files` 数组（此前仅单 `file`）；`tf === relPath` 自引用跳过
+
+### 候选 4：PHP DAO 链抽取（Phase-2 → 落地）
+
+- `phpAnalyzer` 方法体语句级静态识别 zentaopms `dao` 链：`select(...)->from(X)` → SELECT、`update(X)` / `insert(X)` / `replace(X)`（内联表参）→ UPDATE/INSERT、`delete()->from(X)` → DELETE、`leftJoin/innerJoin/rightJoin(X)` → JOIN
+- 表参三态：字符串字面量（静态）/ `TABLE_X` 常量（dynamic 占位）/ `$var`（dynamic 不参与链接）
+- **常量解析**：全仓库 `define('TABLE_X', 'zt_x')` 值提取（兼容反引号值 `` '`zt_bug`' ``）→ builder 后置解析 pass 把 `Method.sqlQueries` 中 dynamic 常量改写为真实表名并清 dynamic（单文件模式仅本文件 define 可见）
+- `Method.sqlQueries` 挂载扩展：class 方法 / trait 方法实体同步拷贝（此前仅模块级函数通道）；mapsToTable / mappedFromCode 代码↔表链接自动消费（含 JOIN 表）
+
+### 测试
+
+- `test/singleFileKotlinPhp.test.mjs` —— 4 tests（.php/.kt/.kts 单文件分发 + trait 单文件回填 + suspend/isDataModel 字段）
+- `test/phpKotlinImportResolve.test.mjs` —— 4 tests（PSR-4 前缀归一 / PHP internal+external / Kotlin 限定名+通配+外部 / e2e 文件边）
+- `test/phpDaoChain.test.mjs` —— 3 tests（DAO 链五形态提取 / defines 反引号剥离 / e2e 常量解析 + mapsToTable/mappedFromCode 链接）
+- `test/kotlinPhpIntegration.test.mjs` 补 `phpDetected` / `kotlinDetected` / `goDetected` Project 字段断言
+- **修复 v0.35.1 遗留的 10 个 viewer 测试失败**：`document` stub 缺 `addEventListener`（v0.35.1 邻接聚焦交互新增的顶层调用），按 dbViewer/serviceViewer 后写的 stub 样式补齐 5 个文件 8 个站点
+- `test/mcpCli.test.mjs`：固定 1.5s 等待改轮询 stderr "就绪"（上限 8s），消除全量并行负载下的时序抖动
+
 ## [0.36.0] - 2026-08-27
 
 ### 新增 PHP / Kotlin 分析器 v0.36.0（ADR 0006）

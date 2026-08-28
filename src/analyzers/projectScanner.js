@@ -991,6 +991,8 @@ export function scanProject(projectRoot, options = {}) {
     pyFileCount: counts.py,
     kotlinFileCount: counts.kt + counts.kts,
     phpFileCount: counts.php,
+    phpDetected,
+    kotlinDetected,
     subProjects,
     siblingProjects,
     tauriDetected,

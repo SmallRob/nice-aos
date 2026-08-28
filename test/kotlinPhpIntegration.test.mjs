@@ -81,6 +81,10 @@ test('端到端：Kotlin + PHP fixture → buildOntologyData 全链路', async (
     const project = dataMap.Project[0];
     assert.ok(project.kotlinFileCount >= 1, 'kotlinFileCount 统计');
     assert.ok(project.phpFileCount >= 3, 'phpFileCount 统计');
+    // 框架检测暴露（与 goDetected / flutterDetected 对齐）
+    assert.equal(project.kotlinDetected, true, 'kotlinDetected 暴露到 Project');
+    assert.equal(project.phpDetected, true, 'phpDetected 暴露到 Project');
+    assert.equal(project.goDetected, false, '非 Go 项目 goDetected=false');
     // 语言画像
     assert.ok(project.language.includes('Kotlin'));
     assert.ok(project.language.includes('PHP'));

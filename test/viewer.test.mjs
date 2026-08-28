@@ -223,7 +223,7 @@ test('代码统计 / 代码图谱 Tab：KPI + 环形图 + 力导向图 SVG 渲�
     };
     const prevDocument = globalThis.document;
     globalThis.document = {
-      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'), addEventListener() {},
     };
     try {
       new Function(script)();
@@ -305,7 +305,7 @@ test('架构分层条形图：层名不换行压缩、描述独立副行（无�
     };
     const prevDocument = globalThis.document;
     globalThis.document = {
-      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'), addEventListener() {},
     };
     try {
       new Function(script)();
@@ -404,7 +404,7 @@ test('实体类图 Tab：跨语言 UML 类框 + 关系边渲染（内嵌脚本�
     };
     const prevDocument = globalThis.document;
     globalThis.document = {
-      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'), addEventListener() {},
     };
     try {
       new Function(script)();
@@ -475,7 +475,7 @@ test('蓝图页头生成时间显示本机时区（不显示 UTC 标准时间）
     };
     const prevDocument = globalThis.document;
     globalThis.document = {
-      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'), addEventListener() {},
     };
     try {
       new Function(script)();

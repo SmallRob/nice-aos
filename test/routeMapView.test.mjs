@@ -125,7 +125,7 @@ test('routeMap 渲染：路由地图 Tab 输出导航链 SVG / 层级树 / 域�
     };
     const prevDocument = globalThis.document;
     globalThis.document = {
-      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'), addEventListener() {},
     };
     try {
       new Function(script)();

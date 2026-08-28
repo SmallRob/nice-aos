@@ -11,8 +11,9 @@ import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { analyzeDartFile, analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
 import { analyzeGoFile, analyzeGoFileFromDisk } from '../analyzers/goAnalyzer.js';
 import { analyzePythonFile, analyzePythonFileFromDisk, checkPythonSyntaxBulk } from '../analyzers/pythonAnalyzer.js';
-import { analyzeKotlinFileFromDisk } from '../analyzers/kotlinAnalyzer.js';
-import { analyzePhpFileFromDisk } from '../analyzers/phpAnalyzer.js';
+import { analyzeKotlinFile, analyzeKotlinFileFromDisk } from '../analyzers/kotlinAnalyzer.js';
+import { analyzePhpFile, analyzePhpFileFromDisk } from '../analyzers/phpAnalyzer.js';
+import { createPhpImportResolver, createKotlinImportResolver } from '../analyzers/phpKotlinImportResolver.js';
 import { analyzeConfigFileFromDisk, analyzeConfigFile } from '../analyzers/configAnalyzer.js';
 import {
   ARCH_LAYERS, inferFileArchLayer, inferModuleArchLayer, buildDomains,
@@ -297,6 +298,8 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
           signature: m.signature,
           // AST 位置（v0.32.0 用于挂 fingerprint + 后续 IDE 跳转）
           pos: m.pos ?? null, end: m.end ?? null,
+          // SQL 表名提取（PHP DAO 链；TS 侧为空数组契约）
+          sqlQueries: m.sqlQueries ?? [],
           overridesId: null, overriddenByIds: [],
           // 方法级健康度（从 tsAnalyzer 传入；非 ts 来源兜底为 placeholder）
           health: m.health ?? { available: false, reason: 'non-ts', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
@@ -345,6 +348,7 @@ function collectTypeEntities(relPaths, factsMap, fileObjectByPath) {
           line: m.line,
           isStatic: m.isStatic ?? false, isAsync: false, isOverride: false, exported: false,
           signature: m.signature,
+          sqlQueries: m.sqlQueries ?? [],
           overridesId: null, overriddenByIds: [],
           health: m.health ?? { available: false, reason: 'non-ts', complexity: {}, lambdas: {}, testInfo: { isTest: false }, risk: 'unknown' },
           deadCandidate: false, deadReason: null,
@@ -741,6 +745,18 @@ export async function buildOntologyData(projectRoot, options = {}) {
   // Rust use 路径解析器（crate::a::b::Name → 目标 .rs 文件；serde::X → Rust 外部 crate，不进 npm 依赖体系）
   const resolveRustImport = (relPath, specifier) => resolveRustUse(relPath, specifier, rustFiles);
 
+  // PHP / Kotlin 内部导入解析（v0.36.1）：composer PSR-4 / 声明包与限定名，区分内部（file: 边）与外部（命名空间首段归并）
+  const isKtPath = (f) => f.endsWith('.kt') || f.endsWith('.kts');
+  const phpImportResolver = createPhpImportResolver({
+    projectRoot: scan.root,
+    phpFiles: scan.files.filter((f) => f.endsWith('.php')),
+    phpFacts: new Map([...factsMap].filter(([f]) => f.endsWith('.php'))),
+  });
+  const kotlinImportResolver = createKotlinImportResolver({
+    ktFiles: scan.files.filter(isKtPath),
+    ktFacts: new Map([...factsMap].filter(([f]) => isKtPath(f))),
+  });
+
   // 2. 依赖对象（package.json 声明 + 代码中实际导入；Rust 外部 crate 为 Cargo.toml 管辖，不计入）
   const depUsedCount = new Map();
   const externalImports = new Map(); // package -> Set<specifier>
@@ -768,9 +784,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
         continue;
       }
       if (isPhp || isKotlin) {
-        // 外部依赖按命名空间首段归并（php: foo\bar → foo；kotlin: java.net.Proxy → java）
-        const pkg = imp.specifier.split(/[\\/.]/)[0] ?? '';
-        imp.resolved = { kind: 'external', package: pkg || null, ecosystem: isPhp ? 'php' : 'kotlin' };
+        // v0.36.1：内部（PSR-4 / 包限定名命中）与外部（首段归并，php: foo\bar → foo；kotlin: java.net.Proxy → java）
+        imp.resolved = (isPhp ? phpImportResolver : kotlinImportResolver).resolve(imp.specifier);
         continue;
       }
       const resolved = resolver.resolve(relPath, imp.specifier);
@@ -880,10 +895,15 @@ export async function buildOntologyData(projectRoot, options = {}) {
       }
       const r = imp.resolved ?? resolver.resolve(relPath, imp.specifier);
       if (r.kind === 'internal') {
-        if (!seen.has(`file:${r.file}`)) { importIds.push(`file:${r.file}`); seen.add(`file:${r.file}`); }
+        // Kotlin 通配 import a.b.* → files 数组（整包关联）；常规 internal → 单 file
+        const targets = r.files ?? (r.file ? [r.file] : []);
+        for (const tf of targets) {
+          if (tf === relPath) continue;
+          if (!seen.has(`file:${tf}`)) { importIds.push(`file:${tf}`); seen.add(`file:${tf}`); }
+        }
         resolutionStats.totalResolvedImports += 1;
       } else if (r.kind === 'external') {
-        if (!seen.has(`dep:${r.package}`)) { importIds.push(`dep:${r.package}`); seen.add(`dep:${r.package}`); }
+        if (r.package && !seen.has(`dep:${r.package}`)) { importIds.push(`dep:${r.package}`); seen.add(`dep:${r.package}`); }
         resolutionStats.totalResolvedImports += 1;
       } else if (r.kind === 'unresolved') {
         if (!unresolvedImports.includes(imp.specifier)) unresolvedImports.push(imp.specifier);
@@ -1059,6 +1079,21 @@ export async function buildOntologyData(projectRoot, options = {}) {
       if (!t) continue;
       cls.usesTraitIds.push(t.id);
       if (!t.usedByIds.includes(cls.id)) t.usedByIds.push(cls.id);
+    }
+  }
+
+  // 5b-0a'. PHP DAO 链常量解析：sqlQueries 中 TABLE_X（dynamic）→ define 值（config/config.php
+  // `define('TABLE_BUG', '`zt_bug`')`），命中则改写为真实表名并清 dynamic（blueprint mapsToTable 通道消费）
+  const phpDefines = {};
+  for (const [, f] of factsMap) Object.assign(phpDefines, f.defines ?? {});
+  if (Object.keys(phpDefines).length > 0) {
+    for (const m of methods) {
+      if (!m.sqlQueries?.length) continue;
+      for (const q of m.sqlQueries) {
+        if (!q.dynamic) continue;
+        const resolved = phpDefines[q.table];
+        if (resolved) { q.table = resolved; q.dynamic = false; }
+      }
     }
   }
 
@@ -2729,6 +2764,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
     flutterDetected: scan.flutterDetected ?? false,
     tauriDetected: scan.tauriDetected ?? false,
     electronDetected: scan.electronDetected ?? false,
+    goDetected: scan.goDetected ?? false,
+    phpDetected: scan.phpDetected ?? false,
+    kotlinDetected: scan.kotlinDetected ?? false,
     userScriptFileCount: scan.userScriptFileCount ?? 0,
     analysisErrors,
     reviewed: false, notes: null,
@@ -2816,7 +2854,8 @@ export async function buildSingleFileOntology(absFilePath) {
   const fileName = path.basename(absFilePath);
   const dir = path.dirname(absFilePath);
 
-  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.py → pythonAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
+  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.py → pythonAnalyzer；
+  // .kt/.kts → kotlinAnalyzer；.php → phpAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
   let facts;
   if (fileName.endsWith('.rs')) {
     facts = analyzeRustFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
@@ -2826,6 +2865,10 @@ export async function buildSingleFileOntology(absFilePath) {
     facts = analyzeDartFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
   } else if (fileName.endsWith('.py')) {
     facts = analyzePythonFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
+  } else if (fileName.endsWith('.kt') || fileName.endsWith('.kts')) {
+    facts = analyzeKotlinFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
+  } else if (fileName.endsWith('.php')) {
+    facts = analyzePhpFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
   } else if (fileName.endsWith('.vue')) {
     facts = analyzeVueFileFromDisk(fileName, dir);
   } else if (isUserScriptCandidate(absFilePath)) {
@@ -2861,13 +2904,23 @@ export async function buildSingleFileOntology(absFilePath) {
   // 类型实体：非导出实体按本文件引用计数判死；导出实体不判死（单文件模式无法判定跨文件使用）
   const { interfaces, classes, traits, methods, localTypesByFile } = collectTypeEntities([fileName], factsMap, fileObjectByPath);
 
+  // PHP DAO 链常量解析（单文件模式：define 仅本文件可见，跨文件常量表在全仓库扫描解析）
+  const phpDefines = facts.defines ?? {};
+  for (const m of methods) {
+    for (const q of m.sqlQueries ?? []) {
+      if (!q.dynamic) continue;
+      const resolved = phpDefines[q.table];
+      if (resolved) { q.table = resolved; q.dynamic = false; }
+    }
+  }
+
   // 本文件内 implements/extends 解析（本文件声明的类型；跨文件导入名留存原名不报错）
   const localType = (name) => localTypesByFile.get(fileName)?.get(name) ?? null;
   for (const iface of interfaces) {
     iface.extendsIds = iface.extendsNames.map(localType).filter(Boolean);
   }
   for (const cls of classes) {
-    cls.implementsIds = cls.implementsNames.map(localType).filter(Boolean);
+    cls.implementsIds = (cls.implementsNames ?? []).map(localType).filter(Boolean);
     if (cls.extendsName) cls.extendsId = localType(cls.extendsName);
     // 本文件内 trait use 回填（单文件模式）
     if (cls.usesTraits && cls.usesTraits.length > 0) {

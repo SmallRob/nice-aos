@@ -488,7 +488,7 @@ test('端到端：viewer 实体类图 Go 配色（节点描边/分布条/图例 
   };
   const prevDocument = globalThis.document;
   globalThis.document = {
-    getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+    getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'), addEventListener() {},
   };
   try {
     new Function(script)();

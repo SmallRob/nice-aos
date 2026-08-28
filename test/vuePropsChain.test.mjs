@@ -464,7 +464,7 @@ test('viewer：propFlow 消费 Vue PropEdge + 类视图 renders 边渲染', asyn
     };
     const prevDocument = globalThis.document;
     globalThis.document = {
-      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'),
+      getElementById: makeEl, querySelectorAll: () => [], querySelector: () => makeEl('generic'), addEventListener() {},
     };
     try {
       new Function(script)();
