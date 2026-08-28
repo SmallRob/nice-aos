@@ -14,6 +14,13 @@ export const ENDPOINTS = [
   { method: 'GET', path: '/', public: true, summary: '数据源信息页', description: '快照/蓝图就绪状态一览与端点导航。' },
   { method: 'GET', path: '/snapshot.json', public: true, summary: '本体快照 JSON', description: '完整本体快照（供 AI agent 拉取）。' },
   { method: 'GET', path: '/blueprint.html', public: true, summary: '蓝图页面', description: '`output --format html` 生成的自包含交互蓝图。' },
+  { method: 'GET', path: '/docs', public: true, summary: '项目文档浏览页', description: '`output docs` 生成的自包含 md 文档浏览器（缺 docs.html 返回 404 与生成提示）。' },
+  {
+    method: 'GET', path: '/context/{path}', public: true,
+    summary: '文档静态资源',
+    description: 'output docs 产物目录（.nice-aos/context/）的静态服务：md 正文、tree.json 索引等。逐段解码并做路径穿越校验；.md → text/markdown、.json → application/json。',
+    params: [{ name: 'path', in: 'path', required: true, schema: { type: 'string' }, description: '相对文档目录的资源路径（如 index.md、domains/health.md、tree.json）' }],
+  },
   { method: 'GET', path: '/openapi.json', public: true, role: 'read', summary: '本描述文档', description: 'OpenAPI 3.0 端点描述。' },
   {
     method: 'GET', path: '/api/status', role: 'read',

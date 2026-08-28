@@ -32,8 +32,8 @@ nice-aos 的 13 个子命令收敛为 **4 个面向"人与 AI agent"的入口 + 
 | 命令 | 角色 | 一句话 |
 |------|------|--------|
 | `ask` | **输入** | 基于本体快照向 AI CLI 或模型服务提问；上下文 SQLite 预过滤毫秒级构建，CLI 超时自动降级到模型服务 |
-| `output` | **输出** | Markdown 全景报告 / JSON / 自包含 HTML 蓝图 / viewmodel 视图模型（`output` 是 `export` 别名，两名等价） |
-| `serve` | **服务** | 一行启动本地 HTTP 数据源（CORS `*`）：快照 JSON、蓝图 HTML 与 7 个 `/api/*` 端点，供 agent / 油猴脚本 / 网页跨源拉取 |
+| `output` | **输出** | Markdown 全景报告 / JSON / 自包含 HTML 蓝图 / viewmodel 视图模型 / **分层上下文文档树**（`output docs` → `.nice-aos/context/`，三明治 L1/L2/L3 md + docs.html 浏览器）（`output` 是 `export` 别名，两名等价） |
+| `serve` | **服务** | 一行启动本地 HTTP 数据源（CORS `*`）：快照 JSON、蓝图 HTML、**`/docs` 项目文档在线浏览**与 `/api/*` 端点，供 agent / 油猴脚本 / 网页跨源拉取 |
 | `mcp` | **协议** | 以 [MCP server](https://modelcontextprotocol.io) 把 7 个能力暴露为 tools，Claude Code / Cursor 等客户端**直接调用**——零上下文复制 |
 
 领域型命令：`db`（数据库）/ `deploy`（部署）/ `service`（Java 后端）/ `planning`（PRD 规划）/ `overview`（多项目全景）；原子型：`query` / `link` / `action`；运维：`update` / `storage`。详见 `nice-aos --help`。
@@ -404,6 +404,11 @@ export --merge app-a/snapshot.json app-b/snapshot.json --merge-strategy rename -
 output theme add --name midnight-teal --file theme.json   # {"label","dark","vars"，vars 至少含 --bg/--fg}
 output theme list                                          # 内置 [builtin] + 用户 [user] 一览
 output theme remove midnight-teal                          # 删除用户主题（内置不可删）
+
+# 分层上下文文档树（v0.38）：三明治 L1/L2/L3 md → .nice-aos/context/（context-builder skill 的 CLI 支撑）
+output docs                                    # md 树 + tree.json 索引 + docs.html 自包含浏览器
+output docs --format md                        # 纯 agent 模式（无 docs.html）
+output docs && nice-aos serve                  # serve 后访问 /docs 在线浏览（目录树 + TOC + 搜索）
 
 # 增量导出（--since）：仅列出 ref 以来变更涉及的对象 + 末尾追加"增量变更摘要"节
 export --format markdown --since HEAD --output diff.md                    # 工作区未暂存 + 未跟踪

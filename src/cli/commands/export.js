@@ -18,6 +18,8 @@ import { saveUserTheme, listUserThemes, removeUserTheme, readUserTheme, isValidT
 import { listChangedFiles, listChangedFilesSince, filterObjectsByFiles, isValidRangeSpec, findGitRoot } from '../../analyzers/gitDiff.js';
 import { renderTemplate } from '../../ontology/template.js';
 import { mergeSnapshots } from '../../ontology/merge.js';
+import { buildContextDocs } from '../../ontology/contextDocs.js';
+import { renderDocsHtml } from '../../ontology/docsViewer.js';
 import { notifyServe } from './notifyServe.js';
 import { getSnapshotDir } from '../../paths.js';
 
@@ -269,4 +271,70 @@ themeCmd.command('remove')
     } catch (err) {
       fail(err.message);
     }
+  });
+
+// ---------- v0.38 docs 子命令：三明治上下文文档树（context-builder skill 的 CLI 支撑） ----------
+//
+// nice-aos output docs
+//   → .nice-aos/context/：L1 index.md / architecture.md / modules.md / domains/_index.md
+//     + L2 domains/<slug>.md + L3 domains/<slug>/{components,routes,state,services}.md
+//     + tree.json（目录树索引）+ docs.html（自包含浏览器，--format all）
+// `nice-aos serve` 后访问 /docs 在线浏览。
+
+const docsCmd = exportCommand.command('docs')
+  .description('生成分层上下文文档树到 .nice-aos/context/（L1 顶层索引 / L2 领域索引 / L3 领域详情 + tree.json 索引；--format all 附自包含 docs.html 浏览器，配合 serve 的 /docs 在线浏览）')
+  .option('--format <format>', '输出内容: all（默认；md 文档树 + tree.json + docs.html 浏览器）| md（仅 md 文档树 + tree.json，供 agent 消费）', 'all')
+  .option('--output <dir>', '输出目录（默认 .nice-aos/context，相对当前目录）', path.join('.nice-aos', 'context'))
+  .action((opts) => {
+    // commander 限制：子命令与父命令（export）同名选项时，用户传参会落在父命令 opts
+    // （与 serve.js 不重复定义 --snapshot-dir 同一类问题）——此处从两级 opts 中取有效值
+    const parentOpts = exportCommand.opts();
+    const format = [parentOpts.format, opts.format].find((v) => v === 'md' || v === 'all') ?? 'all';
+    const outRaw = parentOpts.output ?? opts.output;
+    const t0 = Date.now();
+    const dataMap = loadSnapshot();
+    const { files, tree, generated } = buildContextDocs(dataMap);
+    const outDir = path.resolve(outRaw);
+    fs.mkdirSync(outDir, { recursive: true });
+
+    const written = [];
+    for (const f of files) {
+      const target = path.join(outDir, f.path);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, f.content, 'utf-8');
+      written.push(target);
+    }
+    const treePath = path.join(outDir, 'tree.json');
+    fs.writeFileSync(treePath, JSON.stringify(tree, null, 2), 'utf-8');
+    written.push(treePath);
+
+    if (format === 'all') {
+      const docsPath = path.join(outDir, 'docs.html');
+      fs.writeFileSync(docsPath, renderDocsHtml({ projectName: dataMap.Project?.[0]?.name ?? '' }), 'utf-8');
+      written.push(docsPath);
+    }
+
+    for (const p of written) console.error(`已写入: ${p}`);
+    const domains = (dataMap.Domain || []).length;
+    const summary = {
+      ok: true,
+      outputDir: outDir,
+      format,
+      mdFiles: files.length,
+      domains,
+      treeFiles: tree.totalFiles,
+      generated,
+      elapsedMs: Date.now() - t0,
+    };
+    if (format === 'all') {
+      summary.browse = 'nice-aos serve  # 启动后访问 /docs 在线浏览';
+    }
+    console.log(JSON.stringify(summary, null, 2));
+
+    // 与 export 主命令一致：写盘后广播 serve（运行中才生效，静默降级）
+    notifyServe({ dataDir: getSnapshotDir(), event: 'docs:changed', paths: written.slice(0, 20) })
+      .then((r) => {
+        if (r.notified) console.error('ℹ️  已通知运行中的 serve 广播 docs:changed');
+      })
+      .catch(() => { /* 网络层异常静默 */ });
   });

@@ -2,16 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isUserScriptCandidate } from './userScriptAnalyzer.js';
+import { isShellScriptCandidate, detectShellLanguage } from './shellScriptAnalyzer.js';
+import { isCMakeCandidate } from './cmakeAnalyzer.js';
+import { isPkgbuildCandidate } from './pkgbuildAnalyzer.js';
+import { isNixCandidate } from './nixAnalyzer.js';
 
 // 代码本体扫描的扩展名白名单：
 //   - 9 种"主语言"（深度解析：组件/类/方法/路由/依赖）
 //   - 9 种"配置/视图/SQL/部署"（轻量级：行数 + 顶层 key/标签/对象名）
+//   - v0.38.0: 加入 .sh/.bash/.zsh/.ps1/.psm1/.cmake/.nix + PKGBUILD/CMakeLists.txt（走专门 analyzer）
 // 后者由 configAnalyzer.js 处理；不进 import 解析、不进主 analyzer 的 AST 路径
 const SOURCE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.vue', '.rs', '.dart', '.go', '.py', '.kt', '.kts', '.php',
   '.css', '.html', '.sql', '.yml', '.yaml',
   '.conf', '.toml', '.ini', '.env',
+  '.sh', '.bash', '.zsh', '.ps1', '.psm1', '.cmake', '.nix',
 ]);
+// v0.38.0: 无扩展名但走专门 analyzer 的约定文件名（与各 analyzer 的候选检测严格同名，大小写敏感）
+const EXTENSIONLESS_CANDIDATES = new Set(['CMakeLists.txt', 'PKGBUILD']);
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'dist-ssr', 'build', 'out',
   'coverage', '.next', '.nuxt', 'public', 'docs',
@@ -64,7 +72,7 @@ function walk(dir, projectRoot, files, seen = new Set()) {
       // 单独按文件名匹配；统一加 "#env" 后缀，builder 据此规范化 ext 并路由到 configAnalyzer
       const lowerName = entry.name.toLowerCase();
       const isEnvFile = lowerName === '.env' || lowerName.startsWith('.env.');
-      if (!isEnvFile && !SOURCE_EXTENSIONS.has(ext)) continue;
+      if (!isEnvFile && !SOURCE_EXTENSIONS.has(ext) && !EXTENSIONLESS_CANDIDATES.has(entry.name)) continue;
       if (entry.name.endsWith('.backup')) continue;
       const rel = path.relative(projectRoot, full).split(path.sep).join('/');
       const finalRel = isEnvFile ? `${rel}#env` : rel;
@@ -823,6 +831,19 @@ export function scanProject(projectRoot, options = {}) {
     if (isUserScriptCandidate(path.join(projectRoot, f))) userScriptFiles.add(f);
   }
 
+  // v0.38.0: Shell 脚本 / CMake / PKGBUILD / Nix 探测（按扩展名 + 文件名严格匹配）
+  const shellScriptFiles = new Set();
+  const cmakeFiles = new Set();
+  const pkgbuildFiles = new Set();
+  const nixFiles = new Set();
+  for (const f of files) {
+    const full = path.join(projectRoot, f);
+    if (isShellScriptCandidate(full)) shellScriptFiles.add(f);
+    if (isCMakeCandidate(full)) cmakeFiles.add(f);
+    if (isPkgbuildCandidate(full)) pkgbuildFiles.add(f);
+    if (isNixCandidate(full)) nixFiles.add(f);
+  }
+
   // 宿主项目定位：扫描目录自身有 package.json/pubspec.yaml 优先（monorepo 子包）；
   // 否则向上查找宿主根（如扫描 src/ 时定位项目根），读取 src 同级配置文件辅助框架识别
   const ownPackageJson = readJson(path.join(projectRoot, 'package.json'));
@@ -901,7 +922,7 @@ export function scanProject(projectRoot, options = {}) {
   // 兄弟项目发现：定位仓库根后识别同级项目（用户定位子项目/代码子目录场景）
   const siblingProjects = discoverSiblingProjects(projectRoot);
 
-  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0, py: 0, kt: 0, kts: 0, php: 0, css: 0, html: 0, sql: 0, yml: 0, yaml: 0, conf: 0, toml: 0, ini: 0, env: 0 };
+  const counts = { ts: 0, tsx: 0, js: 0, jsx: 0, vue: 0, rs: 0, dart: 0, go: 0, py: 0, kt: 0, kts: 0, php: 0, css: 0, html: 0, sql: 0, yml: 0, yaml: 0, conf: 0, toml: 0, ini: 0, env: 0, sh: 0, bash: 0, zsh: 0, ps1: 0, psm1: 0, cmake: 0, nix: 0 };
   for (const f of files) {
     const ext = path.extname(f).slice(1);
     if (counts[ext] !== undefined) counts[ext] += 1;
@@ -1000,6 +1021,19 @@ export function scanProject(projectRoot, options = {}) {
     flutterDetected,
     userScriptFiles,
     userScriptFileCount: userScriptFiles.size,
+    // v0.38.0: Shell / CMake / PKGBUILD / Nix 维度
+    shellScriptFiles,
+    shellScriptFileCount: shellScriptFiles.size,
+    cmakeFiles,
+    cmakeFileCount: cmakeFiles.size,
+    pkgbuildFiles,
+    pkgbuildFileCount: pkgbuildFiles.size,
+    nixFiles,
+    nixFileCount: nixFiles.size,
+    shFileCount: counts.sh + counts.bash + counts.zsh,
+    ps1FileCount: counts.ps1 + counts.psm1,
+    cmakeExtFileCount: counts.cmake,
+    nixExtFileCount: counts.nix,
     tsconfigPaths,
     autoComponentDirs,
     autoImportDirs: unpluginDirs.autoImportDirs,

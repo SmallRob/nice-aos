@@ -8,16 +8,17 @@ export const ONTOLOGY_META = {
   version: '2.0',
   abstractionLevels: [
     { level: 'L3', name: '架构层', description: '产品级聚合：整体架构画像与功能域划分', types: ['Project', 'Domain'] },
-    { level: 'L2', name: '结构层', description: '代码组织结构：模块、文件、路由、脚本与运行环境', types: ['Module', 'SourceFile', 'Route', 'UserScript', 'Dependency'] },
-    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction'] },
+    { level: 'L2', name: '结构层', description: '代码组织结构：模块、文件、路由、脚本与运行环境', types: ['Module', 'SourceFile', 'Route', 'UserScript', 'ShellScript', 'PsScript', 'CMakeTarget', 'CMakeModule', 'ArchPackage', 'NixFlake', 'Dependency', 'NixInput'] },
+    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction', 'BashFunction', 'PsFunction', 'CMakeFunction', 'NixPackage', 'ArchPackageFunction', 'BashBuiltin', 'Cmdlet', 'CMakeOption'] },
     { level: 'L0', name: '事实层', description: '审计事实（AuditFact 概念族）：从代码提取的行为证据', types: ['GmApiUsage', 'InjectionPoint', 'NetworkEndpoint'] },
   ],
   categories: [
     { category: 'Container', label: '容器', description: '按结构聚合代码单元的节点', types: ['Project', 'Domain', 'Module', 'SourceFile'] },
-    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction'] },
+    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction', 'BashFunction', 'PsFunction', 'CMakeFunction', 'NixPackage', 'ArchPackageFunction'] },
     { category: 'EntryPoint', label: '行为入口', description: '用户可触达的行为入口', types: ['Route'] },
-    { category: 'Script', label: '油猴脚本', description: '独立于宿主应用的脚本形态（自带子对象体系）', types: ['UserScript'] },
-    { category: 'Environment', label: '运行环境', description: '外部环境要素', types: ['Dependency'] },
+    { category: 'Script', label: '脚本/包描述符', description: '独立于宿主应用的脚本形态与系统级包描述符（自带子对象体系）', types: ['UserScript', 'ShellScript', 'PsScript', 'CMakeTarget', 'CMakeModule', 'ArchPackage', 'NixFlake'] },
+    { category: 'Builtin', label: '内建/扩展点', description: '外部命令/cmdlet/CMake 选项/内置函数一类的小粒度可调用单元', types: ['BashBuiltin', 'Cmdlet', 'CMakeOption'] },
+    { category: 'Environment', label: '运行环境', description: '外部环境要素', types: ['Dependency', 'NixInput'] },
     { category: 'AuditFact', label: '审计事实', description: '安全/行为审计的原子事实', types: ['GmApiUsage', 'InjectionPoint', 'NetworkEndpoint'] },
   ],
 };
@@ -43,6 +44,22 @@ export const OBJECT_TYPES = [
   { type: 'GmApiUsage', prefix: 'gm:', category: 'AuditFact', level: 'L0', description: 'GM API 使用（@grant 声明比对）' },
   { type: 'InjectionPoint', prefix: 'inject:', category: 'AuditFact', level: 'L0', description: 'DOM 注入点（含归属函数 fns/fnIds，构成逻辑注入链）' },
   { type: 'NetworkEndpoint', prefix: 'net:', category: 'AuditFact', level: 'L0', description: '网络端点（含归属函数 fns/fnIds）' },
+  // ---- v0.38.0: Shell / CMake / PKGBUILD / Nix 维度 ----
+  { type: 'ShellScript', prefix: 'sh:', category: 'Script', level: 'L2', description: 'Bash / Zsh 脚本（CLI/安装器/构建/运维；含 fnCount/cliParams/builtinCalls/risks）' },
+  { type: 'PsScript', prefix: 'ps:', category: 'Script', level: 'L2', description: 'PowerShell 脚本（CLI/安装器；含 CmdletBinding/Parameters/cmdletCalls/registryOps）' },
+  { type: 'BashFunction', prefix: 'bashfn:', category: 'CodeUnit', level: 'L1', description: 'Bash 函数体（startLine/endLine/role：install/check/network/lifecycle/ui/entry/parse/logic）' },
+  { type: 'PsFunction', prefix: 'psfn:', category: 'CodeUnit', level: 'L1', description: 'PowerShell function 块（Verb-Noun 形态；role：read/write/check/exec/resolve/transform）' },
+  { type: 'BashBuiltin', prefix: 'bashb:', category: 'Builtin', level: 'L1', description: 'Bash 已知外部命令（curl/tar/sudo/jq/sha256sum 等；调用计数）' },
+  { type: 'Cmdlet', prefix: 'cmd:', category: 'Builtin', level: 'L1', description: 'PowerShell cmdlet（Verb-Noun 形态；分类 read/write/exec/check/transform）' },
+  { type: 'CMakeTarget', prefix: 'cmt:', category: 'Script', level: 'L2', description: 'CMake 目标（add_executable / add_library / add_custom_target）' },
+  { type: 'CMakeModule', prefix: 'cmm:', category: 'Script', level: 'L2', description: 'CMake 模块（.cmake 文件或 CMakeLists.txt 本体）' },
+  { type: 'CMakeFunction', prefix: 'cmf:', category: 'CodeUnit', level: 'L1', description: 'CMake function / macro 块（含参数列表）' },
+  { type: 'CMakeOption', prefix: 'cmo:', category: 'Builtin', level: 'L1', description: 'CMake option(NAME "desc" DEFAULT) 声明' },
+  { type: 'ArchPackage', prefix: 'arch:', category: 'Script', level: 'L2', description: 'Arch Linux PKGBUILD（pkgname/depends/build/package 函数）' },
+  { type: 'ArchPackageFunction', prefix: 'archfn:', category: 'CodeUnit', level: 'L1', description: 'PKGBUILD 函数体（build/package/check/prepare；含起止行与函数体行数）' },
+  { type: 'NixFlake', prefix: 'nix:', category: 'Script', level: 'L2', description: 'Nix flake 或 *.nix 入口（inputs/outputs/packages）' },
+  { type: 'NixPackage', prefix: 'nixpkg:', category: 'CodeUnit', level: 'L1', description: 'Nix outputs.packages.<system>.<name> 条目（含 buildInputs）' },
+  { type: 'NixInput', prefix: 'nixin:', category: 'Environment', level: 'L2', description: 'Nix flake input（inputs.<name>.url / flake = false 的源依赖声明）' },
 ];
 
 export const LINK_TYPES = [
@@ -51,6 +68,17 @@ export const LINK_TYPES = [
   'usesGmApi', 'injectsInto', 'requestsTo', 'calls', 'calledBy', 'belongsTo',
   'usesTrait', 'usedByTrait',
   'mapsToTable', 'mappedFromCode',
+  // ---- v0.38.0: Shell / CMake / PKGBUILD / Nix 边 ----
+  // Shell 脚本边(Bash + PowerShell 共享语义)
+  'callsFunction', 'usesBuiltin', 'invokesCmdlet', 'definesParam', 'readsCliParam',
+  'downloadsFrom', 'verifiesChecksum', 'writesTo', 'readsRegistry',
+  // CMake 边
+  'subdirIncludes', 'includesModule', 'declaresOption',
+  'addsDependency', 'targetsInclude', 'fetchesDep', 'findsPackage',
+  // PKGBUILD 边
+  'pkgDependsOn', 'pkgBuilds',
+  // Nix 边
+  'declaresInput', 'outputsPackage', 'callsPackage', 'fetchesFrom', 'buildsWith',
 ];
 
 export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addNote'];
@@ -61,7 +89,7 @@ export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addN
 export const BLUEPRINT_SCHEMA = {
   id: 'nice-aos-ontology',
   name: '代码本体蓝图',
-  description: 'React/Vue/Flutter/Go/Rust/Python/Kotlin/PHP/油猴脚本的多语言代码本体',
+  description: 'React/Vue/Flutter/Go/Rust/Python/Kotlin/PHP/油猴脚本/Bash+PowerShell/CMake/PKGBUILD/Nix 的多语言代码本体',
   version: '2.0', // 与 ONTOLOGY_META.version 对齐
   objectTypes: OBJECT_TYPES,
   linkTypes: LINK_TYPES,
@@ -640,7 +668,7 @@ export function createBlueprintV2(dataMap, opts = {}) {
   return createBlueprintEngine({
     id: 'nice-aos-ontology',
     name: '代码本体蓝图',
-    description: 'React/Vue/Flutter/Go/Rust/Python/Kotlin/PHP/油猴脚本的多语言代码本体',
+    description: 'React/Vue/Flutter/Go/Rust/Python/Kotlin/PHP/油猴脚本/Bash+PowerShell/CMake/PKGBUILD/Nix 的多语言代码本体',
     objectTypes,
     linkTypes,
     actionDefs,

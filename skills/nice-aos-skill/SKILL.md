@@ -341,7 +341,7 @@ storage rebuild --kind code          # snapshot.json → <snapshotDir>/aos.sqlit
 storage status                       # 镜像状态
 ```
 
-serve 端点：`/snapshot.json`（完整快照）/ `/blueprint.html` / `/api/status` / `/api/stats` / `/api/schema`（本体元模型，agent 自我发现能力）/ `/api/objects/:type?where=k=v,k2~v2&limit=200`（对象级查询，SQLite 优先回退 JSON）/ `/api/ask/context?q=问题`（与 ask 命令同一上下文构建器）。
+serve 端点：`/snapshot.json`（完整快照）/ `/blueprint.html` / `/docs`（output docs 文档在线浏览）+ `/docs/<path>`、`/context/<path>`（文档 md/json 静态资源）/ `/api/status` / `/api/stats` / `/api/schema`（本体元模型，agent 自我发现能力）/ `/api/objects/:type?where=k=v,k2~v2&limit=200`（对象级查询，SQLite 优先回退 JSON）/ `/api/ask/context?q=问题`（与 ask 命令同一上下文构建器）。
 
 上下文构建性能：SQLite 镜像存在时 ask/serve 走 4 次预过滤 SQL（12MB 快照实测热查询 0.2ms、冷启动 39ms）；无镜像回退 JSON 全量 parse（同快照约 500ms）。写入双写闭环：refreshRepo / markReviewed / addNote 落 JSON 同时镜像 SQLite，跨进程 WAL + 锁文件保护。
 
@@ -394,6 +394,11 @@ export --format html --output ".nice-aos/data/blueprint.html"
 # 视图模型 JSON（buildViewerModel 聚合结果：领域蓝图/业务数据图/逻辑流向/脚本蓝图），
 # 供 agent 直接消费（比原始 snapshot.json 小且已聚合，无需再拼装）
 export --format viewmodel --output ".nice-aos/data/viewmodel.json"
+
+# 分层上下文文档树（v0.38，context-builder skill 的 CLI 支撑）：三明治 L1/L2/L3 md → .nice-aos/context/
+# 详细阅读工作流见 nice-aos-context-builder skill；此处仅命令速查
+output docs                     # md 树 + tree.json + docs.html 浏览器；serve 后 /docs 在线浏览
+output docs --format md         # 纯 agent 模式（无 docs.html）
 ```
 
 **何时用 html / viewmodel**：用户要"给人看的蓝图/可视化/汇报材料"→ `html`；agent 自己要整体理解领域划分、数据枢纽、层间流向 → `viewmodel`（一次读取即得聚合视图，避免数十次 query/link 拼装）；用户要"看脚本的函数调用关系 / 注入链"→ `html`（脚本蓝图页有交互式 SVG 调用图）。

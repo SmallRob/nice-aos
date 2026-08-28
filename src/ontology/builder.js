@@ -13,6 +13,10 @@ import { analyzeGoFile, analyzeGoFileFromDisk } from '../analyzers/goAnalyzer.js
 import { analyzePythonFile, analyzePythonFileFromDisk, checkPythonSyntaxBulk } from '../analyzers/pythonAnalyzer.js';
 import { analyzeKotlinFile, analyzeKotlinFileFromDisk } from '../analyzers/kotlinAnalyzer.js';
 import { analyzePhpFile, analyzePhpFileFromDisk } from '../analyzers/phpAnalyzer.js';
+import { analyzeShellScriptFromDisk, isShellScriptCandidate } from '../analyzers/shellScriptAnalyzer.js';
+import { analyzeCMakeFromDisk, isCMakeCandidate } from '../analyzers/cmakeAnalyzer.js';
+import { analyzePkgbuildFromDisk, isPkgbuildCandidate } from '../analyzers/pkgbuildAnalyzer.js';
+import { analyzeNixFromDisk, isNixCandidate } from '../analyzers/nixAnalyzer.js';
 import { createPhpImportResolver, createKotlinImportResolver } from '../analyzers/phpKotlinImportResolver.js';
 import { analyzeConfigFileFromDisk, analyzeConfigFile } from '../analyzers/configAnalyzer.js';
 import {
@@ -633,6 +637,315 @@ function buildUserScriptObjects(relPath, facts, fileObj) {
   return { userScript, gmApiUsages, injectionPoints, networkEndpoints, scriptFunctions };
 }
 
+// ---------------------------------------------------------------------------
+// v0.38.0: Shell 脚本 / CMake / PKGBUILD / Nix 对象转换
+// 4 个 buildXxxObjects 共用模式：facts → (主对象 + 子对象集合 + 边集合)
+// 边以 SourceFile 容器下挂 (边字段为 IDs 数组),跨类型边独立收集
+// ---------------------------------------------------------------------------
+
+function buildShellScriptObjects(relPath, facts) {
+  const isPs = facts.shellLanguage === 'powershell';
+  const scriptId = isPs ? `ps:${relPath}` : `sh:${relPath}`;
+  const fnIdMap = new Map();
+  const fnIds = [];
+  const fnIdUsed = new Set();
+  for (const fn of facts.functions ?? []) {
+    const fnId = isPs
+      ? uniqueId(`psfn:${relPath}#${fn.name}`, fnIdUsed)
+      : uniqueId(`bashfn:${relPath}#${fn.name}`, fnIdUsed);
+    fnIdMap.set(fn.name, fnId);
+    fnIds.push(fnId);
+  }
+  const fnObjects = [];
+  for (const fn of facts.functions ?? []) {
+    fnObjects.push({
+      id: fnIdMap.get(fn.name),
+      name: fn.name,
+      kind: isPs ? 'PsFunction' : 'BashFunction',
+      startLine: fn.startLine,
+      endLine: fn.endLine,
+      role: fn.role ?? 'logic',
+      callTargets: fn.callTargets ?? [],
+      builtinCount: isPs ? (fn.cmdletCount ?? 0) : (fn.builtinCount ?? 0),
+      scriptId,
+      scriptName: facts.name ?? relPath,
+      filePath: relPath,
+      reviewed: false, notes: null,
+    });
+  }
+  // 边:from=fnId, to=fnId
+  const callsFunction = [];
+  for (const edge of facts.callEdges ?? []) {
+    const fromId = fnIdMap.get(edge.from);
+    if (!fromId) continue;
+    for (const t of edge.to) {
+      const toId = fnIdMap.get(t);
+      if (!toId || toId === fromId) continue;
+      callsFunction.push({ from: fromId, to: toId });
+    }
+  }
+
+  // BashBuiltin / Cmdlet 聚合(整个脚本一份,记 count)
+  const builtinObjects = [];
+  const builtinKind = isPs ? 'Cmdlet' : 'BashBuiltin';
+  const builtinPrefix = isPs ? 'cmd:' : 'bashb:';
+  const builtinIdUsed = new Set();
+  const builtinIds = [];
+  const builtinList = facts.builtinCalls ?? facts.cmdletCalls ?? [];
+  for (const b of builtinList) {
+    const id = uniqueId(`${builtinPrefix}${relPath}#${b.name}`, builtinIdUsed);
+    builtinIds.push(id);
+    builtinObjects.push({
+      id,
+      name: b.name,
+      kind: builtinKind,
+      callCount: b.count,
+      ...(b.category ? { category: b.category } : {}),
+      ...(b.isNet != null ? { isNetwork: b.isNet } : {}),
+      scriptId,
+      filePath: relPath,
+      reviewed: false, notes: null,
+    });
+  }
+  // 边:fn → builtin (usesBuiltin)。依据 analyzer 记录的每函数实际调用名单（builtinNames/cmdletNames）,
+  // 只连真实出现的命令;顶层调用（不属于任何函数）不建边,仅计入脚本级 builtin 聚合
+  const builtinIdByName = new Map(builtinList.map((b, i) => [b.name, builtinIds[i]]));
+  const usesBuiltin = [];
+  for (const fn of facts.functions ?? []) {
+    const fromId = fnIdMap.get(fn.name);
+    if (!fromId) continue;
+    for (const n of fn.builtinNames ?? fn.cmdletNames ?? []) {
+      const toId = builtinIdByName.get(n);
+      if (toId) usesBuiltin.push({ from: fromId, to: toId });
+    }
+  }
+
+  // CLI 参数对象
+  const cliParamObjects = [];
+  for (const p of facts.cliParams ?? []) {
+    const paramId = isPs
+      ? uniqueId(`psparam:${relPath}#${p.name}`, new Set())
+      : uniqueId(`bashparam:${relPath}#${p.name}`, new Set());
+    cliParamObjects.push({
+      id: paramId,
+      name: p.name,
+      kind: isPs ? 'PsParam' : 'BashParam',
+      type: p.type ?? null,
+      mandatory: p.mandatory ?? false,
+      position: p.position ?? null,
+      defaultValue: p.defaultValue ?? null,
+      hasValue: p.hasValue ?? false,
+      description: p.description ?? null,
+      scriptId,
+      filePath: relPath,
+      reviewed: false, notes: null,
+    });
+  }
+  // 边:fn → param (readsCliParam)。依据 analyzer 记录的每函数实际引用名单（cliParamNames，
+  // Bash 按 --name 文本关联 / PS 按 $Name 引用关联），顶层 param() 声明本身不建边
+  const paramIdByName = new Map(cliParamObjects.map((p) => [p.name, p.id]));
+  const readsCliParam = [];
+  for (const fn of facts.functions ?? []) {
+    const fromId = fnIdMap.get(fn.name);
+    if (!fromId) continue;
+    for (const n of fn.cliParamNames ?? []) {
+      const toId = paramIdByName.get(n);
+      if (toId) readsCliParam.push({ from: fromId, to: toId });
+    }
+  }
+
+  // 下载/校验事实(行内信息,挂在 script 上)
+  const downloadFacts = (facts.downloadUrls ?? []).map((u, i) => ({
+    id: isPs ? `psnet:${relPath}#${i}` : `shnet:${relPath}#${i}`,
+    name: u.url,
+    kind: 'url',
+    scriptId,
+    filePath: relPath,
+    reviewed: false, notes: null,
+  }));
+
+  // 主对象
+  const mainObj = {
+    id: scriptId,
+    name: facts.name ?? path.posix.basename(relPath),
+    filePath: relPath,
+    language: facts.shellLanguage,
+    shebang: facts.shebang ?? null,
+    description: facts.description ?? null,
+    notes: facts.notes ?? null,
+    examples: facts.examples ?? [],
+    hasCmdletBinding: facts.hasCmdletBinding ?? false,
+    hasMainEntry: facts.hasMainEntry ?? false,
+    hasTopLevelDispatch: facts.hasTopLevelDispatch ?? false,
+    fnCount: facts.fnCount ?? 0,
+    cliParamCount: facts.cliParamCount ?? 0,
+    builtinCount: facts.builtinCount ?? facts.cmdletCount ?? 0,
+    risks: facts.risks ?? [],
+    riskLevel: facts.riskLevel ?? 'none',
+    fnIds,
+    cliParamIds: cliParamObjects.map((p) => p.id),
+    builtinIds,
+    downloadFactIds: downloadFacts.map((d) => d.id),
+    callCount: callsFunction.length,
+    reviewed: false, notes: null,
+  };
+  return { mainObj, fnObjects, builtinObjects, cliParamObjects, downloadFacts, callsFunction, usesBuiltin, readsCliParam };
+}
+
+function buildCMakeObjects(relPath, facts) {
+  const isLists = facts.isCMakeLists;
+  const moduleId = `cmm:${relPath}`;
+  const moduleName = isLists ? 'CMakeLists' : path.posix.basename(relPath, '.cmake');
+  // 目标
+  const targetIdUsed = new Set();
+  const targetIds = [];
+  const targetObjects = [];
+  for (const t of facts.targets ?? []) {
+    const id = uniqueId(`cmt:${relPath}#${t.name}`, targetIdUsed);
+    targetIds.push(id);
+    targetObjects.push({ id, name: t.name, kind: t.kind, line: t.line, moduleId, filePath: relPath, reviewed: false, notes: null });
+  }
+  // 函数
+  const fnIdUsed = new Set();
+  const fnIds = [];
+  const fnObjects = [];
+  for (const f of facts.functions ?? []) {
+    const id = uniqueId(`cmf:${relPath}#${f.name}`, fnIdUsed);
+    fnIds.push(id);
+    fnObjects.push({ id, name: f.name, kind: f.kind, params: f.params ?? [], line: f.line, moduleId, filePath: relPath, reviewed: false, notes: null });
+  }
+  // option
+  const optionIdUsed = new Set();
+  const optionIds = [];
+  const optionObjects = [];
+  for (const o of facts.options ?? []) {
+    const id = uniqueId(`cmo:${relPath}#${o.name}`, optionIdUsed);
+    optionIds.push(id);
+    optionObjects.push({ id, name: o.name, description: o.description, default: o.default, line: o.line, moduleId, filePath: relPath, reviewed: false, notes: null });
+  }
+  // 边
+  const subdirIncludes = (facts.subdirectories ?? []).map((s) => ({ from: moduleId, target: s.dir, line: s.line }));
+  const declaresOption = optionIds.map((id) => ({ from: moduleId, to: id }));
+  const addsDependency = [];
+  for (const dep of facts.targetDependencies ?? []) {
+    for (const d of dep.deps) addsDependency.push({ from: dep.target, to: d, line: dep.line });
+  }
+  const targetsInclude = [];
+  for (const ti of facts.targetIncludes ?? []) {
+    for (const d of ti.dirs) targetsInclude.push({ from: ti.target, to: d, line: ti.line });
+  }
+  // 函数间调用边（facts.callEdges 的 from/to 是函数名，换算为 CMakeFunction 对象 ID）
+  const fnIdMap = new Map(fnObjects.map((f) => [f.name, f.id]));
+  const callsFunction = [];
+  for (const e of facts.callEdges ?? []) {
+    const fromId = fnIdMap.get(e.from);
+    if (!fromId) continue;
+    for (const t of e.to ?? []) {
+      const toId = fnIdMap.get(t);
+      if (!toId || toId === fromId) continue;
+      callsFunction.push({ from: fromId, to: toId });
+    }
+  }
+  // 主对象
+  const mainObj = {
+    id: moduleId,
+    name: moduleName,
+    filePath: relPath,
+    isCMakeLists: isLists,
+    targetCount: facts.targetCount ?? 0,
+    functionCount: facts.functionCount ?? 0,
+    optionCount: facts.optionCount ?? 0,
+    fetchContentCount: facts.fetchContentCount ?? 0,
+    packageCount: facts.packageCount ?? 0,
+    targetIds, fnIds, optionIds,
+    subdirectoryDirs: (facts.subdirectories ?? []).map((s) => s.dir),
+    fetchContent: facts.fetchContent ?? [],
+    packages: facts.packages ?? [],
+    includes: facts.includes ?? [],
+    risks: facts.risks ?? [],
+    riskLevel: facts.riskLevel ?? 'none',
+    reviewed: false, notes: null,
+  };
+  return { mainObj, targetObjects, fnObjects, optionObjects, subdirIncludes, declaresOption, addsDependency, targetsInclude, callsFunction };
+}
+
+function buildArchPackageObjects(relPath, facts) {
+  const pkgId = `arch:${relPath}`;
+  const mainObj = {
+    id: pkgId,
+    name: facts.pkgname ?? path.posix.basename(path.dirname(relPath)),
+    filePath: relPath,
+    pkgname: facts.pkgname,
+    pkgver: facts.pkgver,
+    pkgrel: facts.pkgrel,
+    pkgdesc: facts.pkgdesc,
+    url: facts.url,
+    license: facts.license,
+    arch: facts.arch,
+    depends: facts.depends,
+    makedepends: facts.makedepends,
+    checkdepends: facts.checkdepends,
+    optdepends: facts.optdepends,
+    source: facts.source,
+    sha256sums: facts.sha256sums,
+    sourceIsRemote: facts.sourceIsRemote,
+    sha256Skip: facts.sha256Skip,
+    functionCount: facts.functionCount ?? 0,
+    risks: facts.risks ?? [],
+    riskLevel: facts.riskLevel ?? 'none',
+    reviewed: false, notes: null,
+  };
+  const fnIdUsed = new Set();
+  const fnIds = [];
+  const fnObjects = [];
+  for (const f of facts.functions ?? []) {
+    const id = uniqueId(`archfn:${relPath}#${f.name}`, fnIdUsed);
+    fnIds.push(id);
+    fnObjects.push({ id, name: f.name, startLine: f.startLine, endLine: f.endLine, bodyLineCount: f.bodyLineCount, packageId: pkgId, filePath: relPath, reviewed: false, notes: null });
+  }
+  mainObj.fnIds = fnIds;
+  return { mainObj, fnObjects };
+}
+
+function buildNixObjects(relPath, facts) {
+  const isFlake = facts.isFlake;
+  const mainId = `nix:${relPath}`;
+  const inputIdUsed = new Set();
+  const inputIds = [];
+  const inputObjects = [];
+  for (const i of facts.inputs ?? []) {
+    const id = uniqueId(`nixin:${relPath}#${i.name}`, inputIdUsed);
+    inputIds.push(id);
+    inputObjects.push({ id, name: i.name, url: i.url, hasFlakeAttr: i.hasFlakeAttr, flakeId: mainId, filePath: relPath, reviewed: false, notes: null });
+  }
+  const pkgIdUsed = new Set();
+  const pkgIds = [];
+  const pkgObjects = [];
+  for (const p of facts.outputsPackages ?? []) {
+    const id = uniqueId(`nixpkg:${relPath}#${p.system}.${p.name}`, pkgIdUsed);
+    pkgIds.push(id);
+    pkgObjects.push({ id, name: p.name, system: p.system, line: p.line, flakeId: mainId, filePath: relPath, reviewed: false, notes: null });
+  }
+  const mainObj = {
+    id: mainId,
+    name: isFlake ? 'flake.nix' : path.posix.basename(relPath, '.nix'),
+    filePath: relPath,
+    isFlake,
+    description: facts.description,
+    inputCount: facts.inputCount ?? 0,
+    packageCount: facts.packageCount ?? 0,
+    derivationCount: facts.derivationCount ?? 0,
+    buildInputs: facts.buildInputs ?? {},
+    fetchers: facts.fetchers ?? [],
+    risks: facts.risks ?? [],
+    riskLevel: facts.riskLevel ?? 'none',
+    inputIds,
+    packageIds: pkgIds,
+    reviewed: false, notes: null,
+  };
+  return { mainObj, inputObjects, pkgObjects };
+}
+
 export async function buildOntologyData(projectRoot, options = {}) {
   const startedAt = Date.now();
   // 借鉴 asdm-aos 的 6 步进度机制：通过 onProgress(step, payload) 回调上报，action.js 消费
@@ -720,9 +1033,17 @@ export async function buildOntologyData(projectRoot, options = {}) {
                     ? analyzeVueFileFromDisk(diskPath, projectRoot)
                     : (scan.userScriptFiles?.has(diskPath)
                       ? analyzeUserScriptFromDisk(diskPath, projectRoot)
-                      : CONFIG_EXTS.has(ext)
-                        ? analyzeConfigFileFromDisk(diskPath, projectRoot, ext)
-                        : analyzeFileFromDisk(diskPath, projectRoot));
+                      : scan.shellScriptFiles?.has(diskPath)
+                        ? analyzeShellScriptFromDisk(diskPath, projectRoot)
+                        : scan.cmakeFiles?.has(diskPath)
+                          ? analyzeCMakeFromDisk(diskPath, projectRoot)
+                          : scan.pkgbuildFiles?.has(diskPath)
+                            ? analyzePkgbuildFromDisk(diskPath, projectRoot)
+                            : scan.nixFiles?.has(diskPath)
+                              ? analyzeNixFromDisk(diskPath, projectRoot)
+                              : CONFIG_EXTS.has(ext)
+                                ? analyzeConfigFileFromDisk(diskPath, projectRoot, ext)
+                                : analyzeFileFromDisk(diskPath, projectRoot));
       factsMap.set(relPath, facts);
       return facts;
     } catch (err) {
@@ -1606,6 +1927,86 @@ export async function buildOntologyData(projectRoot, options = {}) {
     injectionPoints.push(...set.injectionPoints);
     networkEndpoints.push(...set.networkEndpoints);
     scriptFunctions.push(...set.scriptFunctions);
+  }
+
+  // 5c. v0.38.0: Shell 脚本（ShellScript / PsScript / BashFunction / PsFunction / BashBuiltin / Cmdlet + 边）
+  const shellScripts = [];
+  const psScripts = [];
+  const bashFunctions = [];
+  const psFunctions = [];
+  const bashBuiltins = [];
+  const cmdlets = [];
+  const shellCliParams = [];
+  const shellDownloadFacts = [];
+  const callsFunction = [];
+  const usesBuiltin = [];
+  const readsCliParam = [];
+  for (const relPath of scan.files) {
+    const facts = factsMap.get(relPath);
+    if (!facts?.isShellScript) continue;
+    const set = buildShellScriptObjects(relPath, facts);
+    if (facts.shellLanguage === 'powershell') {
+      psScripts.push(set.mainObj);
+      psFunctions.push(...set.fnObjects);
+      cmdlets.push(...set.builtinObjects);
+    } else {
+      shellScripts.push(set.mainObj);
+      bashFunctions.push(...set.fnObjects);
+      bashBuiltins.push(...set.builtinObjects);
+    }
+    shellCliParams.push(...set.cliParamObjects);
+    shellDownloadFacts.push(...set.downloadFacts);
+    callsFunction.push(...set.callsFunction);
+    usesBuiltin.push(...set.usesBuiltin);
+    readsCliParam.push(...set.readsCliParam);
+  }
+
+  // 5d. v0.38.0: CMake 模块（CMakeModule / CMakeTarget / CMakeFunction / CMakeOption + 边）
+  const cmakeModules = [];
+  const cmakeTargets = [];
+  const cmakeFunctions = [];
+  const cmakeOptions = [];
+  const subdirIncludes = [];
+  const declaresOption = [];
+  const addsDependency = [];
+  const targetsInclude = [];
+  for (const relPath of scan.files) {
+    const facts = factsMap.get(relPath);
+    if (!facts?.isCMake) continue;
+    const set = buildCMakeObjects(relPath, facts);
+    cmakeModules.push(set.mainObj);
+    cmakeTargets.push(...set.targetObjects);
+    cmakeFunctions.push(...set.fnObjects);
+    cmakeOptions.push(...set.optionObjects);
+    subdirIncludes.push(...set.subdirIncludes);
+    declaresOption.push(...set.declaresOption);
+    addsDependency.push(...set.addsDependency);
+    targetsInclude.push(...set.targetsInclude);
+    callsFunction.push(...set.callsFunction);
+  }
+
+  // 5e. v0.38.0: Arch PKGBUILD
+  const archPackages = [];
+  const archPackageFunctions = [];
+  for (const relPath of scan.files) {
+    const facts = factsMap.get(relPath);
+    if (!facts?.isPkgbuild) continue;
+    const set = buildArchPackageObjects(relPath, facts);
+    archPackages.push(set.mainObj);
+    archPackageFunctions.push(...set.fnObjects);
+  }
+
+  // 5f. v0.38.0: Nix flake / *.nix
+  const nixFlakes = [];
+  const nixPackages = [];
+  const nixInputs = [];
+  for (const relPath of scan.files) {
+    const facts = factsMap.get(relPath);
+    if (!facts?.isNix) continue;
+    const set = buildNixObjects(relPath, facts);
+    nixFlakes.push(set.mainObj);
+    nixInputs.push(...set.inputObjects);
+    nixPackages.push(...set.pkgObjects);
   }
 
   // 6. renders 关系：文件主组件的 JSX/模板标签 → 导入来源文件的组件
@@ -2743,6 +3144,10 @@ export async function buildOntologyData(projectRoot, options = {}) {
       if ((scan.pyFileCount ?? 0) > 0) parts.push('Python');
       if ((scan.kotlinFileCount ?? 0) > 0) parts.push('Kotlin');
       if ((scan.phpFileCount ?? 0) > 0) parts.push('PHP');
+      if ((scan.shFileCount ?? 0) > 0) parts.push('Shell');
+      if ((scan.ps1FileCount ?? 0) > 0) parts.push('PowerShell');
+      if ((scan.cmakeExtFileCount ?? 0) > 0) parts.push('CMake');
+      if ((scan.nixExtFileCount ?? 0) > 0) parts.push('Nix');
       return parts.join(' + ') || 'JavaScript';
     })(),
     commitHash: scan.commitHash,
@@ -2758,6 +3163,14 @@ export async function buildOntologyData(projectRoot, options = {}) {
     pyFileCount: scan.pyFileCount ?? 0,
     kotlinFileCount: scan.kotlinFileCount ?? 0,
     phpFileCount: scan.phpFileCount ?? 0,
+    shFileCount: scan.shFileCount ?? 0,
+    ps1FileCount: scan.ps1FileCount ?? 0,
+    cmakeExtFileCount: scan.cmakeExtFileCount ?? 0,
+    nixExtFileCount: scan.nixExtFileCount ?? 0,
+    pkgbuildFileCount: scan.pkgbuildFileCount ?? 0,
+    shellScriptFileCount: scan.shellScriptFileCount ?? 0,
+    cmakeFileCount: scan.cmakeFileCount ?? 0,
+    nixFileCount: scan.nixFileCount ?? 0,
     goModule: scan.goModule ?? null,
     subProjects: scan.subProjects ?? [],
     siblingProjects: scan.siblingProjects ?? [],
@@ -2815,6 +3228,14 @@ export async function buildOntologyData(projectRoot, options = {}) {
         UserScript: userScripts.length, GmApiUsage: gmApiUsages.length,
         InjectionPoint: injectionPoints.length, NetworkEndpoint: networkEndpoints.length,
         ScriptFunction: scriptFunctions.length, Domain: domains.length,
+        // v0.38.0: Shell / CMake / PKGBUILD / Nix 维度
+        ShellScript: shellScripts.length, PsScript: psScripts.length,
+        BashFunction: bashFunctions.length, PsFunction: psFunctions.length,
+        BashBuiltin: bashBuiltins.length, Cmdlet: cmdlets.length,
+        CMakeModule: cmakeModules.length, CMakeTarget: cmakeTargets.length,
+        CMakeFunction: cmakeFunctions.length, CMakeOption: cmakeOptions.length,
+        ArchPackage: archPackages.length, ArchPackageFunction: archPackageFunctions.length,
+        NixFlake: nixFlakes.length, NixPackage: nixPackages.length, NixInput: nixInputs.length,
       },
     },
     Project: [project],
@@ -2836,8 +3257,26 @@ export async function buildOntologyData(projectRoot, options = {}) {
     InjectionPoint: injectionPoints,
     NetworkEndpoint: networkEndpoints,
     ScriptFunction: scriptFunctions,
+    // v0.38.0: Shell / CMake / PKGBUILD / Nix 维度
+    ShellScript: shellScripts,
+    PsScript: psScripts,
+    BashFunction: bashFunctions,
+    PsFunction: psFunctions,
+    BashBuiltin: bashBuiltins,
+    Cmdlet: cmdlets,
+    CMakeModule: cmakeModules,
+    CMakeTarget: cmakeTargets,
+    CMakeFunction: cmakeFunctions,
+    CMakeOption: cmakeOptions,
+    ArchPackage: archPackages,
+    ArchPackageFunction: archPackageFunctions,
+    NixFlake: nixFlakes,
+    NixPackage: nixPackages,
+    NixInput: nixInputs,
     Domain: domains,
   };
+  // v0.38.0: 边集合(简化为 SourceFile 容器下挂,挂在 _meta 上以免破坏既有 schema)
+  dataMap._meta.shellEdges = { callsFunction, usesBuiltin, readsCliParam, subdirIncludes, declaresOption, addsDependency, targetsInclude };
   report('build:done', {
     methodCount: methods.length,
     interfaceCount: interfaces.length,
@@ -2855,7 +3294,9 @@ export async function buildSingleFileOntology(absFilePath) {
   const dir = path.dirname(absFilePath);
 
   // 路由与全仓库扫描一致：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.py → pythonAnalyzer；
-  // .kt/.kts → kotlinAnalyzer；.php → phpAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；其余 → tsAnalyzer
+  // .kt/.kts → kotlinAnalyzer；.php → phpAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；
+  // .sh/.bash/.zsh/.ps1/.psm1 → shellScriptAnalyzer；.cmake/CMakeLists.txt → cmakeAnalyzer；
+  // PKGBUILD → pkgbuildAnalyzer；.nix → nixAnalyzer；其余 → tsAnalyzer
   let facts;
   if (fileName.endsWith('.rs')) {
     facts = analyzeRustFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
@@ -2873,6 +3314,14 @@ export async function buildSingleFileOntology(absFilePath) {
     facts = analyzeVueFileFromDisk(fileName, dir);
   } else if (isUserScriptCandidate(absFilePath)) {
     facts = analyzeUserScriptFromDisk(fileName, dir);
+  } else if (isShellScriptCandidate(absFilePath)) {
+    facts = analyzeShellScriptFromDisk(fileName, dir);
+  } else if (isCMakeCandidate(absFilePath)) {
+    facts = analyzeCMakeFromDisk(fileName, dir);
+  } else if (isPkgbuildCandidate(absFilePath)) {
+    facts = analyzePkgbuildFromDisk(fileName, dir);
+  } else if (isNixCandidate(absFilePath)) {
+    facts = analyzeNixFromDisk(fileName, dir);
   } else {
     facts = analyzeFileFromDisk(fileName, dir);
   }
@@ -2940,6 +3389,13 @@ export async function buildSingleFileOntology(absFilePath) {
     ? buildUserScriptObjects(fileName, facts, fileObj)
     : { userScript: null, gmApiUsages: [], injectionPoints: [], networkEndpoints: [], scriptFunctions: [] };
 
+  // v0.38.0: 单文件模式下的 Shell / CMake / PKGBUILD / Nix 分支
+  let shellSet = null, cmakeSet = null, archSet = null, nixSet = null;
+  if (facts.isShellScript) shellSet = buildShellScriptObjects(fileName, facts);
+  else if (facts.isCMake) cmakeSet = buildCMakeObjects(fileName, facts);
+  else if (facts.isPkgbuild) archSet = buildArchPackageObjects(fileName, facts);
+  else if (facts.isNix) nixSet = buildNixObjects(fileName, facts);
+
   const dataMap = {
     _meta: {
       generatedAt: new Date().toISOString(),
@@ -2957,6 +3413,22 @@ export async function buildSingleFileOntology(absFilePath) {
         InjectionPoint: us.injectionPoints.length,
         NetworkEndpoint: us.networkEndpoints.length,
         ScriptFunction: us.scriptFunctions.length,
+        // v0.38.0
+        ShellScript: shellSet && shellSet.mainObj && facts.shellLanguage !== 'powershell' ? 1 : 0,
+        PsScript: shellSet && shellSet.mainObj && facts.shellLanguage === 'powershell' ? 1 : 0,
+        BashFunction: shellSet ? shellSet.fnObjects.filter((f) => f.kind === 'BashFunction').length : 0,
+        PsFunction: shellSet ? shellSet.fnObjects.filter((f) => f.kind === 'PsFunction').length : 0,
+        BashBuiltin: shellSet ? shellSet.builtinObjects.filter((b) => b.kind === 'BashBuiltin').length : 0,
+        Cmdlet: shellSet ? shellSet.builtinObjects.filter((b) => b.kind === 'Cmdlet').length : 0,
+        CMakeModule: cmakeSet ? 1 : 0,
+        CMakeTarget: cmakeSet ? cmakeSet.targetObjects.length : 0,
+        CMakeFunction: cmakeSet ? cmakeSet.fnObjects.length : 0,
+        CMakeOption: cmakeSet ? cmakeSet.optionObjects.length : 0,
+        ArchPackage: archSet ? 1 : 0,
+        ArchPackageFunction: archSet ? archSet.fnObjects.length : 0,
+        NixFlake: nixSet ? 1 : 0,
+        NixPackage: nixSet ? nixSet.pkgObjects.length : 0,
+        NixInput: nixSet ? nixSet.inputObjects.length : 0,
       },
     },
     SourceFile: [fileObj],
@@ -2969,6 +3441,22 @@ export async function buildSingleFileOntology(absFilePath) {
     InjectionPoint: us.injectionPoints,
     NetworkEndpoint: us.networkEndpoints,
     ScriptFunction: us.scriptFunctions,
+    // v0.38.0
+    ShellScript: shellSet && shellSet.mainObj && facts.shellLanguage !== 'powershell' ? [shellSet.mainObj] : [],
+    PsScript: shellSet && shellSet.mainObj && facts.shellLanguage === 'powershell' ? [shellSet.mainObj] : [],
+    BashFunction: shellSet ? shellSet.fnObjects.filter((f) => f.kind === 'BashFunction') : [],
+    PsFunction: shellSet ? shellSet.fnObjects.filter((f) => f.kind === 'PsFunction') : [],
+    BashBuiltin: shellSet ? shellSet.builtinObjects.filter((b) => b.kind === 'BashBuiltin') : [],
+    Cmdlet: shellSet ? shellSet.builtinObjects.filter((b) => b.kind === 'Cmdlet') : [],
+    CMakeModule: cmakeSet ? [cmakeSet.mainObj] : [],
+    CMakeTarget: cmakeSet ? cmakeSet.targetObjects : [],
+    CMakeFunction: cmakeSet ? cmakeSet.fnObjects : [],
+    CMakeOption: cmakeSet ? cmakeSet.optionObjects : [],
+    ArchPackage: archSet ? [archSet.mainObj] : [],
+    ArchPackageFunction: archSet ? archSet.fnObjects : [],
+    NixFlake: nixSet ? [nixSet.mainObj] : [],
+    NixInput: nixSet ? nixSet.inputObjects : [],
+    NixPackage: nixSet ? nixSet.pkgObjects : [],
   };
   return dataMap;
 }

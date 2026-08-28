@@ -2,7 +2,55 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [0.38.0] - 2026-08-28
+
+### 新增 `output docs`：分层上下文文档树（context-builder skill 的 CLI 支撑）
+
+- `nice-aos output docs` 把本体快照渲染为「三明治结构」md 文档树到 `.nice-aos/context/`：L1 `index.md`（顶层索引，<2KB：定位/技术栈/架构分层占比/功能域 Top10）、汇总层 `architecture.md`（语义分层/健康度/循环依赖/依赖 Top）与 `modules.md`（模块地图按 archLayer 分组）、L2 `domains/<slug>.md`（领域索引，<1KB：画像 + 子模块 Top5 + 单元构成 + L3 链接）、L3 `domains/<slug>/{components,routes,state,services}.md`（<5KB/文件：组件/路由/Store+Hook/Service+接口+类清单，接口类按领域 fileIds 圈定）
+- 粒度预算由生成器保证：成员清单 TopN 截断 + "仅列出前 N，共 X"注明；仅非空内容生成；无 Domain 仓库/纯脚本仓库自动降级
+- 每个 md 带轻 frontmatter（title/layer/generated）；slug 保留 CJK（`slugify`：非字母数字折叠 `-`，同名领域追加序号去重）
+- `tree.json` 目录树索引（借鉴 display-web knowledge-graph 的"离线索引 + 按需 fetch"模式；path 统一相对 context 根，规避其前缀不一致 bug）
+- 选项：`--format all|md`（默认 all = md 树 + tree.json + docs.html；md 为纯 agent 模式）、`--output <dir>`（默认 `.nice-aos/context`）；注意 commander 限制——子命令与父命令（export）同名选项时传参落在父命令 opts，docs action 从两级 opts 取有效值
+- 写盘后 `notifyServe` 广播 `docs:changed`（与 export 主命令一致，serve 运行中才生效）
+- 生成逻辑为纯函数 `src/ontology/contextDocs.js`（`buildContextDocs`/`buildTree`/`slugify` 可直接单测；千文件级项目实测约 40ms）
+
+### 新增 serve `/docs` 在线文档浏览
+
+- `GET /docs` → 302 `/docs/`（自包含 docs.html 浏览器：左侧目录树侧边栏 + 搜索 + 正文 md 渲染 + frontmatter 徽章卡 + 右侧 TOC scroll-spy + 站内 .md 链接无刷新跳转 + `?doc=` 可分享链接 + 暗色主题 + 移动端抽屉侧栏；借鉴 display-web doc-viewer，md 解析器强化表格对齐/嵌套列表/任务列表/代码围栏）
+- `GET /docs/<path>` 与 `GET /context/<path>`：文档目录静态服务（.md → text/markdown、.json → application/json），逐段 decodeURIComponent + resolve 前缀校验双重路径穿越防护（段级 `..` 400、越界 403）
+- 新选项 `serve --docs-dir <path>`（默认 `<root>/.nice-aos/context`）；`/docs`、`/docs/`、`/context/` 前缀与 blueprint.html 同为公共静态端点（豁免 Bearer 鉴权）
+- `respond()` 支持透传自定义响应头（Location 等）；首页就绪表与 `/api/status`（`docs` 字段）同步；`serveOpenApi.ENDPOINTS` 登记 `/docs` 与 `/context/{path}`（/api/status 端点清单与 openapi.json 自动派生）
+- 生成器 `src/ontology/docsViewer.js`（`renderDocsHtml` 零依赖；内置 `window.__docsParser` 测试钩子供 Node 直测 md 解析器）
+
+### skill 与文档
+
+- `skills/nice-aos-context-builder/`：README.md 从 ASDM Toolset 设计稿重写为通用代码上下文生成 skill 文档（三明治架构/粒度黄金数字理念保留，落点改为 nice-aos 快照 + output docs 闭环）；新增 SKILL.md（npm files 已含 `skills/**/SKILL.md`，可随包分发；渐进式披露阅读顺序 + agent 行为规范）
+- 根 README 命令表（output/serve 行）与 export 示例区补 `output docs`；`nice-aos-skill/SKILL.md` 的 export 节与 serve 端点清单同步
+
+### 修复
+
+- `src/ontology/builder.js`：修复工作区未提交改动（Shell/CMake/PKGBUILD/Nix 分析器接入）三元链尾部多余括号导致的 SyntaxError（该错误使所有 CLI 命令无法启动）
+- `src/analyzers/projectScanner.js`：文件遍历白名单补 `CMakeLists.txt` / `PKGBUILD`（无扩展名约定文件，与各 analyzer 候选检测严格同名）——此前这两类文件根本进不了 `scan.files`，`cmakeFiles` / `pkgbuildFiles` 恒为空，CMake / Arch 维度在全量扫描中恒为 0（单文件 analyzeFile 不受影响，故单测未暴露）
+- `src/analyzers/nixAnalyzer.js`：flake `outputs.packages` 只认 `packages = { ... }` 嵌套形态，补齐更常见的属性路径形态 `packages.<system> = <expr>`（含 `let ... in { ... }`，取值域内最后一个顶层配平 attrset）与 `packages.<system>.<name> = expr`；`inputs` 同理补扁平写法 `inputs.<name>.url / inputs.<name>.flake = ...`（原只认 `inputs = { ... }` 嵌套块）；统一点路径与嵌块两分支的 `hasFlakeAttr` 语义（= 是否显式声明 flake 属性）并修 url/flake 键序导致的重复条目
+- 本体元模型补登记：`ArchPackageFunction`（`archfn:`，CodeUnit/L1）与 `NixInput`（`nixin:`，Environment/L2）此前已有对象产出但未入 `OBJECT_TYPES` / `ONTOLOGY_META` 层级范畴清单（破坏"快照对象必在元模型声明"不变量）；全量模式 dataMap 补挂此前已构建但遗漏的 `ArchPackageFunction` 数组；全量 `_meta.objectCounts` 补齐 15 个新类型计数、单文件 objectCounts 补 `ArchPackageFunction` / `NixInput`（两种模式口径对齐）
+
+### 审核：边界与数据质量清理
+
+- `serve` docs 静态服务补第三重防护：`fs.realpathSync` 解析 symlink 后再做 docs 目录前缀校验（词法 `..` 校验拦不住目录内 symlink 指向目录外的逃逸；docsDir 本身也 realpath 以吸收 /tmp→/private/tmp 类别名），测试补 leak.md symlink 逃逸 → 403 用例
+- `cmakeAnalyzer`：删除从未被调用的 `contentWithLineNoiseRemoved` 死代码；`findCallEdges` 从半成品（只建空 Set，builder 未消费）改为真实实现——按 `endfunction()/endmacro()` 行界圈定函数体范围、把范围内对同文件 function/macro 的调用归属为调用边（去重；顶层直接调用不产生边）；`detectRisks` 去掉未用的 targets/sets/filePath 参数
+- `builder.buildCMakeObjects`：CMakeFunction 调用边接入 `_meta.shellEdges.callsFunction`（与 Shell 共享 `callsFunction` 链接类型，from/to 为 CMakeFunction 对象 ID）
+- `builder.buildShellScriptObjects`：`usesBuiltin` / `readsCliParam` 边从"函数 × 脚本级全量 builtin/param"的笛卡尔积近似改为精确边——依据 `shellScriptAnalyzer` 新增的每函数 `builtinNames`/`cmdletNames`（函数体内实际出现的外部命令/cmdlet）与 `cliParamNames`（Bash 按 `--name` 文本关联、PS 按 `$Name` 引用关联）；顶层调用不建边。e2e 实测 3 函数 × 8 builtin 场景由 24 条降为 3 条真实调用
+- `pkgbuildAnalyzer`：合并两处重叠的 `pkgdir-root` 检查（`$pkgdir`/`${pkgdir}`/`pkgdir` 三种写法统一走一条规则，单函数至多记一条，消除重复风险条目）；清理 `findFunctions` 未用变量
+- `cmakeAnalyzer.findOptionsFromContent`：description 仅按引号形态识别，`option(X ON)` 的无引号布尔默认值不再被误作 description；`option(NAME)` 无 description 无默认值、省略 description 的写法均可解析
+- 清理无人使用的导出/参数：`shellScriptAnalyzer.isPowerShellCandidate`（导出但全库零引用）、`analyzeShellScript` 未用 `ext` 变量、`buildShellScriptObjects` 未用 `fileObj` 参数
+
+### 测试
+
+- 新增 `test/outputDocs.test.mjs`（5 用例：全链路文件与内容契约 + L1<2KB/L2<1KB/L3<5KB 预算断言、--format md 降级、--output/export 别名、纯函数空 dataMap/slug 去重/CJK、buildTree 排序与 size）
+- 新增 `test/serveDocs.test.mjs`（4 用例：/docs 302 + 静态资源 Content-Type 契约 + 嵌套/中文路径、路径穿越防护（node:http 原始路径直发——fetch/WHATWG URL 会客户端规范化 `..`）、docs 缺失 404 降级 + --docs-dir、/api/status 与首页同步）
+- 新增 `test/nixAnalyzer.test.mjs` 扁平 inputs 用例（`inputs.<name>.url` 写法与嵌套等价 + hasFlakeAttr 声明语义）
+- 同步既有断言：`test/serve.test.mjs` endpoints 清单、`test/serveAuth.test.mjs` auth.public 清单补 `/docs`、`/docs/`；`test/blueprintEngine.test.mjs` 与 `test/toolRegistry.test.mjs` 元模型契约数字 20→35 类型 / 26→49 链接 / 6→7 范畴（v0.37.0 +Shell/CMake/PKGBUILD/Nix 维度）
+- 全量 841 用例全部通过（含多语言 e2e 冒烟：.sh/.ps1/CMakeLists.txt/PKGBUILD/flake.nix 混合仓库 refreshRepo → output docs → serve /docs 全链路；本轮新增 cmake 调用边/option 形态、pkgbuild 去重、serve symlink 逃逸用例）
 
 ## [0.37.0] - 2026-08-28
 

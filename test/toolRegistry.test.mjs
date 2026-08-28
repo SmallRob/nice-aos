@@ -83,27 +83,27 @@ test('get_stats 返回项目元信息 + counts + cycles + orphan', async () => {
   assert.equal(r.orphanCandidates.length, 1);
 });
 
-test('get_schema 返回 20 种对象类型 + 26 链接类型 + 4 个 action + 抽象层级', async () => {
+test('get_schema 返回 35 种对象类型 + 49 链接类型 + 4 个 action + 抽象层级', async () => {
   const reg = createToolRegistry({ snap: FIXTURE });
   const r = await reg.call('get_schema', {});
   assert.equal(r.ok, true);
   assert.ok(Array.isArray(r.objectTypes));
-  assert.equal(r.objectTypes.length, 20, 'OBJECT_TYPES 共 20 个（v0.36.0 +Trait）');
+  assert.equal(r.objectTypes.length, 35, 'OBJECT_TYPES 共 35 个（v0.38.0 +Shell/CMake/PKGBUILD/Nix 维度）');
   assert.ok(Array.isArray(r.linkTypes));
-  assert.equal(r.linkTypes.length, 26, 'LINK_TYPES 共 26 个（v0.36.0 +usesTrait/usedByTrait）');
+  assert.equal(r.linkTypes.length, 49, 'LINK_TYPES 共 49 个（v0.38.0 +Shell/CMake/PKGBUILD/Nix 边）');
   assert.equal(r.actionNames.length, 4);
   assert.equal(r.meta.abstractionLevels.length, 4, '4 个抽象层级 L0-L3');
-  assert.equal(r.meta.categories.length, 6, '6 个概念范畴');
+  assert.equal(r.meta.categories.length, 7, '7 个概念范畴（v0.38.0 +Builtin）');
   // prefixMap 验证
   assert.equal(r.prefixMap['comp:'], 'Component');
   assert.equal(r.prefixMap['method:'], 'Method');
 });
 
-test('list_types 返回 20 种对象类型的精简形态', async () => {
+test('list_types 返回 35 种对象类型的精简形态', async () => {
   const reg = createToolRegistry({ snap: FIXTURE });
   const r = await reg.call('list_types', {});
   assert.equal(r.ok, true);
-  assert.equal(r.types.length, 20);
+  assert.equal(r.types.length, 35);
   for (const t of r.types) {
     assert.ok(t.type && t.prefix && t.category && t.level, '每个 type 字段必须齐全');
   }

@@ -110,9 +110,9 @@ test('启用 --token：Bearer 头带正确 token → 200', async (t) => {
   const r = await get(port, '/api/status', { Authorization: `Bearer ${TOKEN}` });
   assert.equal(r.status, 200);
   assert.equal(r.json.auth.enabled, true);
-  // v0.34.0：保护范围新增 /internal/broadcast；public 列表新增 /openapi.json
+  // v0.34.0：保护范围新增 /internal/broadcast；public 列表新增 /openapi.json；v0.38 新增 /docs（/context/ 前缀豁免不入列表）
   assert.deepEqual(r.json.auth.protected, ['/api/*', '/internal/broadcast', '/ws/snapshot']);
-  assert.deepEqual(r.json.auth.public, ['/', '/snapshot.json', '/blueprint.html', '/openapi.json']);
+  assert.deepEqual(r.json.auth.public, ['/', '/snapshot.json', '/blueprint.html', '/openapi.json', '/docs', '/docs/']);
 });
 
 test('启用 --token：?token= query 也能通过', async (t) => {

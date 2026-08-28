@@ -80,7 +80,8 @@ function resolveDirs(opts) {
 
 function respond(res, status, body, headers = {}) {
   const isHtml = typeof body === 'string' && headers['Content-Type']?.includes('html');
-  res.writeHead(status, { ...corsHeaders(), 'Content-Type': headers['Content-Type'] || (isHtml ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8'), 'Cache-Control': 'no-store' });
+  const contentType = headers['Content-Type'] ?? (isHtml ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8');
+  res.writeHead(status, { ...corsHeaders(), 'Content-Type': contentType, 'Cache-Control': 'no-store', ...headers });
   res.end(body);
 }
 
@@ -98,7 +99,7 @@ function probeSnapshot(snapPath) {
   return { state: 'ok', snap };
 }
 
-function buildIndexHtml({ root, dataDir, snapReady, bpReady }) {
+function buildIndexHtml({ root, dataDir, docsDir, snapReady, bpReady, docsReady }) {
   const row = (label, ok, extra) =>
     `<tr><td style="padding:6px 12px;border-bottom:1px solid #eee">${label}</td><td style="padding:6px 12px;border-bottom:1px solid #eee;color:${ok ? '#15803d' : '#b91c1c'}">${ok ? '就绪' : '缺失'}</td><td style="padding:6px 12px;border-bottom:1px solid #eee;color:#64748b;font-size:12px">${extra || ''}</td></tr>`;
   return `<!doctype html>
@@ -113,12 +114,14 @@ ${row('项目根目录', true, root)}
 ${row('快照目录', snapReady !== 'none', dataDir)}
 ${row('快照 snapshot.json', snapReady === 'ok', `<a href="/snapshot.json">/snapshot.json</a>`)}
 ${row('蓝图 blueprint.html', bpReady, bpReady ? '<a href="/blueprint.html">/blueprint.html</a>' : '' )}
+${row('项目文档（output docs）', docsReady, docsReady ? '<a href="/docs">/docs</a> · <a href="/context/index.md">/context/index.md</a>' : `<code>nice-aos output docs</code> 生成（${docsDir}）`)}
 ${row('本体元模型', true, `<a href="/api/schema">/api/schema</a> — ${OBJECT_TYPES.length} 对象 / ${LINK_TYPES.length} 链接`)}
 </table>
 <h3 style="margin-top:28px">可用端点</h3>
 <ul style="line-height:2">
 <li><code>GET /snapshot.json</code> — 本体快照 JSON（供 AI agent 拉取）</li>
 <li><code>GET /blueprint.html</code> — ${bpReady ? '蓝图页面' : '（未生成）'}</li>
+<li><code>GET /docs</code> — ${docsReady ? '项目文档浏览页' : '（未生成，先 output docs）'}；<code>GET /context/&lt;path&gt;</code> — 文档 md/json 静态资源</li>
 <li><code>GET /api/status</code> — 服务状态与端点清单</li>
 <li><code>GET /api/stats</code> — 快照对象统计摘要</li>
 <li><code>GET /api/schema</code> — 本体元模型（对象/链接/动作 schema,借鉴 asdm-aos）</li>
@@ -126,7 +129,7 @@ ${row('本体元模型', true, `<a href="/api/schema">/api/schema</a> — ${OBJE
 <li><code>GET /api/ask/context</code> — ask 上下文（?q=问题；4 次 SQL 预过滤，回退 JSON）</li>
 <li><code>GET /</code> — 本页</li>
 </ul>
-<p style="color:#64748b;font-size:12px;margin-top:24px">提示：若快照缺失请先执行 <code>nice-aos action refreshRepo</code>；蓝图为 <code>nice-aos export --format html</code>。</p>
+<p style="color:#64748b;font-size:12px;margin-top:24px">提示：若快照缺失请先执行 <code>nice-aos action refreshRepo</code>；蓝图为 <code>nice-aos export --format html</code>；文档为 <code>nice-aos output docs</code>。</p>
 </body></html>`;
 }
 
@@ -134,6 +137,7 @@ export const serveCommand = new Command('serve')
   .description('在本地启动数据源 HTTP 服务：暴露本体快照 snapshot.json 与 blueprint.html，便于 AI agent 等跨源拉取')
   .option('--root <dir>', '项目根目录（默认当前目录，用于定位 blueprint.html 与 .nice-aos/data）', process.cwd())
   .option('--dir <path>', '数据源目录（含 snapshot.json；默认 <root>/.nice-aos/data；等价于全局 --snapshot-dir，亦可用 NICE_AOS_SNAPSHOT_DIR 覆盖）')
+  .option('--docs-dir <path>', '文档目录（output docs 产物所在目录；默认 <root>/.nice-aos/context）')
   .option('--host <host>', '监听地址（默认 127.0.0.1，仅本机可访问）', '127.0.0.1')
   .option('--port <n>', '监听端口（默认 8420；传 0 自动分配可用端口）', '8420')
   .option('--token <secrets...>', '启用 Bearer 鉴权，可多值实现角色分级：--token admin-secret 等价 admin；--token ro-secret:read --token rw-secret:write（read<write<admin）。静态端点豁免。env: NICE_AOS_SERVE_TOKENS="s1,s2:read"（优先）或 NICE_AOS_SERVE_TOKEN（单值 admin）')
@@ -144,6 +148,9 @@ export const serveCommand = new Command('serve')
     const { root, dataDir } = resolveDirs(opts);
     const snapPath = path.join(dataDir, 'snapshot.json');
     const bpPath = path.join(root, 'blueprint.html');
+    // v0.38：docs 文档目录（output docs 产物）；/docs 浏览器入口 + /context/* 静态资源
+    const docsDir = path.resolve(opts.docsDir || path.join(root, '.nice-aos', 'context'));
+    const docsViewerPath = path.join(docsDir, 'docs.html');
     const port = Number(opts.port);
     const host = opts.host;
     if (!Number.isInteger(port) || port < 0 || port > 65535) fail(`无效端口: ${opts.port}`);
@@ -181,8 +188,10 @@ export const serveCommand = new Command('serve')
       }
 
       // 鉴权 + 端点分级（srv-6）：静态端点豁免；其余按 minRoleFor(method,url) 校验角色
-      const PUBLIC_PATHS = new Set(['/', '/snapshot.json', '/blueprint.html', '/openapi.json']);
-      if (authTokens.length > 0 && !PUBLIC_PATHS.has(url)) {
+      // v0.38：/docs/ 与 /context/ 为 output docs 产物（md/json/浏览器），与 blueprint.html 同为公共静态端点
+      const PUBLIC_PATHS = new Set(['/', '/snapshot.json', '/blueprint.html', '/openapi.json', '/docs', '/docs/']);
+      const isPublicStatic = PUBLIC_PATHS.has(url) || url.startsWith('/docs/') || url.startsWith('/context/');
+      if (authTokens.length > 0 && !isPublicStatic) {
         const verdict = authorizeRole(req, authTokens, minRoleFor(req.method, url));
         if (!verdict.ok) {
           const insufficient = verdict.reason.includes('权限不足');
@@ -192,12 +201,13 @@ export const serveCommand = new Command('serve')
         }
       }
 
-      // 就绪状态实时探测（服务运行期间 refreshRepo / export 生成的文件可被立即读取）
+      // 就绪状态实时探测（服务运行期间 refreshRepo / export / output docs 生成的文件可被立即读取）
       const { state: snapState, snap } = probeSnapshot(snapPath);
       const bpReady = fs.existsSync(bpPath);
+      const docsReady = fs.existsSync(docsViewerPath);
 
       if (url === '/') {
-        respond(res, 200, buildIndexHtml({ root, dataDir, snapReady: snapState, bpReady }), { 'Content-Type': 'text/html; charset=utf-8' });
+        respond(res, 200, buildIndexHtml({ root, dataDir, docsDir, snapReady: snapState, bpReady, docsReady }), { 'Content-Type': 'text/html; charset=utf-8' });
         return;
       }
       if (url === '/snapshot.json') {
@@ -209,6 +219,56 @@ export const serveCommand = new Command('serve')
       if (url === '/blueprint.html') {
         if (!bpReady) return respond(res, 404, JSON.stringify({ ok: false, error: '未找到 blueprint.html，请先执行 nice-aos export --format html', root }));
         respond(res, 200, fs.readFileSync(bpPath), { 'Content-Type': 'text/html; charset=utf-8' });
+        return;
+      }
+      // v0.38：/docs/ —— output docs 生成的自包含文档浏览器（运行时按需 fetch ./tree.json 与 ./<path>.md）。
+      // /docs（无尾斜杠）302 → /docs/：浏览器页内相对路径 ./tree.json、./<path>.md 以 /docs/ 为基解析，
+      // 故文档静态资源统一挂 /docs/<path>（/context/<path> 作为 agent 直取原始资源的等价别名保留）。
+      if (url === '/docs') {
+        return respond(res, 302, '', { Location: '/docs/' });
+      }
+      if (url === '/docs/') {
+        if (!docsReady) return respond(res, 404, JSON.stringify({ ok: false, error: '未找到 docs.html，请先执行 nice-aos output docs', docsDir }));
+        respond(res, 200, fs.readFileSync(docsViewerPath), { 'Content-Type': 'text/html; charset=utf-8' });
+        return;
+      }
+      // /docs/<path> 与 /context/<path> —— 文档目录静态服务（md / tree.json 等）；
+      // 路径穿越三重防护：逐段解码拒 .. + resolve 词法前缀校验 + realpath 解析后前缀校验（防目录内 symlink 指向 docs 目录之外）
+      const staticMatch = url.match(/^\/(?:docs|context)\/(.+)$/);
+      if (staticMatch) {
+        let segments;
+        try {
+          segments = staticMatch[1].split('/').map((s) => decodeURIComponent(s));
+        } catch {
+          return respond(res, 400, JSON.stringify({ ok: false, error: '路径编码非法（decodeURIComponent 失败）' }));
+        }
+        if (segments.some((s) => s === '' || s === '.' || s === '..' || s.includes('\0'))) {
+          return respond(res, 400, JSON.stringify({ ok: false, error: '非法路径段（拒绝空段/. /..）' }));
+        }
+        const target = path.resolve(docsDir, ...segments);
+        if (target !== docsDir && !target.startsWith(docsDir + path.sep)) {
+          return respond(res, 403, JSON.stringify({ ok: false, error: '路径越界（docs 目录之外）' }));
+        }
+        let stat = null;
+        try { stat = fs.statSync(target); } catch { /* 落到 404 */ }
+        if (!stat || !stat.isFile()) {
+          return respond(res, 404, JSON.stringify({ ok: false, error: '文档不存在', path: target, hint: 'nice-aos output docs 重新生成' }));
+        }
+        // realpath 解析 symlink 后再校验一次前缀（docsDir 本身也 realpath，吸收 /tmp→/private/tmp 类别名）
+        try {
+          const realTarget = fs.realpathSync(target);
+          const realDocs = fs.realpathSync(docsDir);
+          if (realTarget !== realDocs && !realTarget.startsWith(realDocs + path.sep)) {
+            return respond(res, 403, JSON.stringify({ ok: false, error: '路径越界（symlink 解析后位于 docs 目录之外）' }));
+          }
+        } catch { /* docsDir/target realpath 失败极罕见；词法校验已过，放行 */ }
+        const ext = path.extname(target).toLowerCase();
+        const type = ext === '.md' ? 'text/markdown; charset=utf-8'
+          : ext === '.json' ? 'application/json; charset=utf-8'
+            : ext === '.html' ? 'text/html; charset=utf-8'
+              : ext === '.txt' ? 'text/plain; charset=utf-8'
+                : 'application/octet-stream';
+        respond(res, 200, fs.readFileSync(target), { 'Content-Type': type });
         return;
       }
       // srv-3：OpenAPI 端点描述（与 /api/status 的端点清单同源于 ENDPOINTS）
@@ -227,6 +287,7 @@ export const serveCommand = new Command('serve')
           root, snapshotDir: dataDir,
           snapshot: { ready: snapState === 'ok', path: snapPath, state: snapState },
           blueprint: { ready: bpReady, path: bpPath },
+          docs: { ready: docsReady, dir: docsDir, viewer: '/docs', context: '/context/<path>' },
           endpoints: [...ENDPOINTS.map((e) => e.path), '/ws/snapshot'].filter((v, i, a) => a.indexOf(v) === i),
           cors: '*',
           auth: {

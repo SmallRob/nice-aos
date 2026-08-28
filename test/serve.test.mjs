@@ -64,8 +64,8 @@ test('serve 端点契约：默认目录解析 + CORS + 各端点响应', async (
   assert.equal(st.json.snapshot.ready, true);
   assert.equal(st.json.snapshot.state, 'ok');
   assert.equal(st.json.blueprint.ready, true);
-  // v0.34.0：endpoints 清单改由 serveOpenApi.ENDPOINTS 派生（含新增端点）；v0.35.0 增加 POST /action（E-3）
-  assert.deepEqual(st.json.endpoints, ['/', '/snapshot.json', '/blueprint.html', '/openapi.json', '/api/status', '/api/stats', '/api/schema', '/api/objects/{type}', '/api/ask/context', '/api/rate-limit', '/api/ask', '/action', '/ws/snapshot']);
+  // v0.34.0：endpoints 清单改由 serveOpenApi.ENDPOINTS 派生（含新增端点）；v0.35.0 增加 POST /action（E-3）；v0.38 增加 /docs 与 /context/{path}（output docs 文档浏览）
+  assert.deepEqual(st.json.endpoints, ['/', '/snapshot.json', '/blueprint.html', '/docs', '/context/{path}', '/openapi.json', '/api/status', '/api/stats', '/api/schema', '/api/objects/{type}', '/api/ask/context', '/api/rate-limit', '/api/ask', '/action', '/ws/snapshot']);
   assert.equal(st.json.root, dir);
 
   // /snapshot.json：完整快照可解析

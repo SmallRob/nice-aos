@@ -317,21 +317,21 @@ test('schema: linkTypes 字符串数组与对象数组混合输入都规范化',
 // 5. nice-aos 既有 OBJECT_TYPES / LINK_TYPES / ACTION_NAMES / ONTOLOGY_META 不变
 // =============================================================================
 
-test('nice-aos 既有元数据：OBJECT_TYPES 20 个 / LINK_TYPES 26 个 / ACTION_NAMES 4 个', () => {
-  assert.equal(OBJECT_TYPES.length, 20);
-  assert.equal(LINK_TYPES.length, 26);
+test('nice-aos 既有元数据：OBJECT_TYPES 35 个 / LINK_TYPES 49 个 / ACTION_NAMES 4 个', () => {
+  assert.equal(OBJECT_TYPES.length, 35);
+  assert.equal(LINK_TYPES.length, 49);
   assert.equal(ACTION_NAMES.length, 4);
 });
 
-test('nice-aos 既有 ONTOLOGY_META: abstractionLevels 4 个 / categories 6 个', () => {
+test('nice-aos 既有 ONTOLOGY_META: abstractionLevels 4 个 / categories 7 个', () => {
   assert.equal(ONTOLOGY_META.abstractionLevels.length, 4);
-  assert.equal(ONTOLOGY_META.categories.length, 6);
+  assert.equal(ONTOLOGY_META.categories.length, 7);
 });
 
 test('nice-aos 既有 BLUEPRINT_SCHEMA 聚合了所有静态元数据', () => {
   assert.equal(BLUEPRINT_SCHEMA.id, 'nice-aos-ontology');
-  assert.equal(BLUEPRINT_SCHEMA.objectTypes.length, 20);
-  assert.equal(BLUEPRINT_SCHEMA.linkTypes.length, 26);
+  assert.equal(BLUEPRINT_SCHEMA.objectTypes.length, 35);
+  assert.equal(BLUEPRINT_SCHEMA.linkTypes.length, 49);
   assert.equal(BLUEPRINT_SCHEMA.actionNames.length, 4);
   assert.equal(BLUEPRINT_SCHEMA.meta, ONTOLOGY_META);
 });
@@ -428,7 +428,7 @@ test('createBlueprintV2: 未知动作返回守卫失败', () => {
   assert.match(r.message, /未知动作/);
 });
 
-test('createBlueprintV2: schema 暴露 20 类型 / 26 链接 / 4 动作', () => {
+test('createBlueprintV2: schema 暴露 35 类型 / 49 链接 / 4 动作', () => {
   const dataMap = {
     _meta: {},
     Project: [{ id: 'proj:t' }],
@@ -436,8 +436,8 @@ test('createBlueprintV2: schema 暴露 20 类型 / 26 链接 / 4 动作', () => 
   };
   const engine = createBlueprintV2(dataMap);
   const s = engine.schema();
-  assert.equal(s.objectTypes.length, 20);
-  assert.equal(s.linkTypes.length, 26);
+  assert.equal(s.objectTypes.length, 35);
+  assert.equal(s.linkTypes.length, 49);
   assert.equal(s.actionDefs.length, 4);
   assert.equal(s.objectCounts.SourceFile, 2);
 });

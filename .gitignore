@@ -8,3 +8,4 @@ node_modules
 *-service-blueprint.html
 *-planning-overview.html
 .codebuddy/plans/
+.zcode/
