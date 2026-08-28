@@ -1,16 +1,16 @@
 ---
 name: nice-aos
 description: |
-  Nice AOS（Nice Anterior Ontology Service）是通用的 React/Vue/Flutter/油猴脚本前端项目的代码本体分析组件（核心查询 Skill）。
-  它将 React/TypeScript、Vue 3（SFC/vue-router/Pinia）、Flutter（Dart Widget + GoRouter + Riverpod）源码与
+  Nice AOS（Nice Anterior Ontology Service）是通用的 React/Vue/Flutter/油猴脚本前端项目与 PHP/Kotlin 后端项目的代码本体分析组件（核心查询 Skill）。
+  它将 React/TypeScript、Vue 2+3（Options API/SFC/vue-router/Pinia）、Flutter（Dart Widget + GoRouter + Riverpod）、Go、Python、PHP（zentaopms 类）、Kotlin（Android/JVM）源码与
   油猴脚本（Tampermonkey UserScript）预先分析为结构化本体快照，把"代码文件"转化为 AI agent 可直接查询的
   "关系图谱"——包含模块、组件、Hook/Composable、Zustand/Pinia/Riverpod Store、Service、
-  接口/类/方法（Interface/Class/Method，含跨文件 implements/extends/overrides 关系与 Dart 方法逻辑调用链）、
-  路由（Overlay / vue-router / GoRoute）、npm/pub 依赖、
+  接口/类/Trait/方法（Interface/Class/Trait/Method，含跨文件 implements/extends/overrides 关系与 Dart 方法逻辑调用链）、
+  路由（Overlay / vue-router / GoRoute / Gin / zentaopms control.php）、npm/pub 依赖、
   油猴脚本（UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction），以及 import 依赖、
-  JSX/template 渲染、页面跳转（navigatesTo）、Store/Hook 使用、接口实现/类继承/方法覆盖、
-  GM API 使用/DOM 注入/网络端点/脚本函数调用图等 21 种关系。
-  语义本体引擎：18 种对象按概念范畴与抽象层级（L3 架构/L2 结构/L1 单元/L0 事实）组织，
+  JSX/template 渲染、页面跳转（navigatesTo）、Store/Hook 使用、接口实现/类继承/方法覆盖/Trait 复用、
+  GM API 使用/DOM 注入/网络端点/脚本函数调用图等 26 种关系。
+  语义本体引擎：20 种对象按概念范畴与抽象层级（L3 架构/L2 结构/L1 单元/L0 事实）组织，
   架构分层（archLayer）按内容信号推断而非目录名直译，功能域（Domain）聚合横向业务切片，
   Project/Domain/Module 自动生成职责画像与自然语言总结（summary/architecture/health）。
   单文件分析（action analyzeFile）：不落盘直接输出单文件本体 JSON（类型实体 + 油猴五类对象 + 死代码候选；支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart）。
@@ -157,7 +157,7 @@ React/Vue 项目与油猴脚本混合时同样自动识别（以宿主框架为�
 
 ### 概念分类体系
 
-18 种对象类型按「概念范畴」（Container/CodeUnit/EntryPoint/Script/Environment/AuditFact）与「抽象层级」（L3 架构层：Project/Domain；L2 结构层：Module/SourceFile/Route/UserScript/Dependency；L1 单元层：Component/Hook/Store/Service/Interface/Class/Method/ScriptFunction；L0 事实层：GmApiUsage/InjectionPoint/NetworkEndpoint）双维组织。聚合节点（Project/Domain/Module）自动生成职责画像与自然语言总结（summary/architecture/health）。
+20 种对象类型按「概念范畴」（Container/CodeUnit/EntryPoint/Script/Environment/AuditFact）与「抽象层级」（L3 架构层：Project/Domain；L2 结构层：Module/SourceFile/Route/UserScript/Dependency；L1 单元层：Component/Hook/Store/Service/Interface/Class/Trait/Method/ScriptFunction；L0 事实层：GmApiUsage/InjectionPoint/NetworkEndpoint）双维组织。聚合节点（Project/Domain/Module）自动生成职责画像与自然语言总结（summary/architecture/health）。
 
 **语义架构层（archLayer）**：每个文件/模块推断一个语义层——entry/presentation/state/service/integration/shared/types/config/script/test/mixed，以内容信号为准（单元构成、路由归属、引用结构），目录名仅作弱信号回退；构成分散（主导层 < 60%）时如实标记 mixed。**功能域（Domain）**与架构层正交：架构层是纵向技术切片，功能域是横向业务切片（路由域段 + 业务命名目录聚合）。
 
@@ -362,8 +362,8 @@ mcp --root /abs/path/to/your/project
 | Tool | 用途 | 关键参数 |
 |------|------|---------|
 | `get_stats` | 项目元信息 + counts + 循环依赖 + 孤儿候选 | — |
-| `get_schema` | 本体元模型（19 对象类型 / 24 链接 / 4 action / 4 抽象层 / 6 范畴） | — |
-| `list_types` | 19 种对象类型精简列表 | — |
+| `get_schema` | 本体元模型（20 对象类型 / 26 链接 / 4 action / 4 抽象层 / 6 范畴） | — |
+| `list_types` | 20 种对象类型精简列表 | — |
 | `query_objects` | 按类型 + 条件查询 | `type`（必填）/ `where`（如 `deadCandidate=true,name~Button`）/ `limit`（默认 200） |
 | `get_node` | 按 id 查单个对象（含自动推断的 `_type`） | `id`（必填，如 `comp:Button`） |
 | `traverse_links` | 链接遍历 | `linkType`（必填，`links` 看所有 / 具体名看一类）/ `srcId` / `depth`（默认 1） |

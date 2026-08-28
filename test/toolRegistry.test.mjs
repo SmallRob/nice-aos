@@ -83,14 +83,14 @@ test('get_stats 返回项目元信息 + counts + cycles + orphan', async () => {
   assert.equal(r.orphanCandidates.length, 1);
 });
 
-test('get_schema 返回 19 种对象类型 + 24+ 链接类型 + 4 个 action + 抽象层级', async () => {
+test('get_schema 返回 20 种对象类型 + 26 链接类型 + 4 个 action + 抽象层级', async () => {
   const reg = createToolRegistry({ snap: FIXTURE });
   const r = await reg.call('get_schema', {});
   assert.equal(r.ok, true);
   assert.ok(Array.isArray(r.objectTypes));
-  assert.ok(r.objectTypes.length >= 19, 'OBJECT_TYPES 至少 19 个');
+  assert.equal(r.objectTypes.length, 20, 'OBJECT_TYPES 共 20 个（v0.36.0 +Trait）');
   assert.ok(Array.isArray(r.linkTypes));
-  assert.ok(r.linkTypes.length >= 20, 'LINK_TYPES 至少 20+');
+  assert.equal(r.linkTypes.length, 26, 'LINK_TYPES 共 26 个（v0.36.0 +usesTrait/usedByTrait）');
   assert.equal(r.actionNames.length, 4);
   assert.equal(r.meta.abstractionLevels.length, 4, '4 个抽象层级 L0-L3');
   assert.equal(r.meta.categories.length, 6, '6 个概念范畴');
@@ -99,11 +99,11 @@ test('get_schema 返回 19 种对象类型 + 24+ 链接类型 + 4 个 action + �
   assert.equal(r.prefixMap['method:'], 'Method');
 });
 
-test('list_types 返回 19 种对象类型的精简形态', async () => {
+test('list_types 返回 20 种对象类型的精简形态', async () => {
   const reg = createToolRegistry({ snap: FIXTURE });
   const r = await reg.call('list_types', {});
   assert.equal(r.ok, true);
-  assert.ok(r.types.length >= 19);
+  assert.equal(r.types.length, 20);
   for (const t of r.types) {
     assert.ok(t.type && t.prefix && t.category && t.level, '每个 type 字段必须齐全');
   }

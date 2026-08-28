@@ -1,6 +1,6 @@
 # nice-aos — 让 AI 与开发者毫秒级读懂任意代码仓库
 
-> 把 **React / Vue 2+3 / Flutter(Dart) / Go / Python / 油猴脚本** 仓库，以及 **MySQL 迁移脚本、Docker+K8s+nginx 部署配置、Java 后端本体快照、产品规划 PRD 文档**，扫描为可查询的**结构化本体快照**——架构分层、功能域、组件/Store/路由、接口与调用链、四级死代码、健康度画像，一应俱全。一条命令建快照，之后每个结构问题都是一次毫秒级查询，替代逐文件 grep。
+> 把 **React / Vue 2+3 / Flutter(Dart) / Go / Python / PHP / Kotlin / 油猴脚本** 仓库，以及 **MySQL 迁移脚本、Docker+K8s+nginx 部署配置、Java 后端本体快照、产品规划 PRD 文档**，扫描为可查询的**结构化本体快照**——架构分层、功能域、组件/Store/路由、接口与调用链、四级死代码、健康度画像，一应俱全。一条命令建快照，之后每个结构问题都是一次毫秒级查询，替代逐文件 grep。
 >
 > 本体按概念范畴与抽象层级组织（L3 架构 → L0 审计事实），架构分层以内容信号推断而非目录名直译；聚合节点自动生成职责画像与自然语言总结。底层借鉴 [asdm-aos](https://www.npmjs.com/package/@leansoftx/asdm-aos)（Java 本体分析）并针对前端生态重新建模。
 
@@ -23,7 +23,7 @@ nice-aos export --format html --output blueprint.html         # 离线可开的�
 nice-aos ask "这个项目的架构分层和功能域划分？"                # AI 自动带着全仓上下文回答
 ```
 
-这只是 React 单页应用的冰山一角——Vue 2/3 中后台、Flutter App、Go CLI/Gin 后端与前后端融合仓库、油猴脚本安全审计、MySQL ER 图、部署拓扑各有专属章节，见 [解析能力](#解析能力)。
+这只是 React 单页应用的冰山一角——Vue 2/3 中后台、Flutter App、Go CLI/Gin 后端与前后端融合仓库、PHP（zentaopms 类）与 Kotlin（Android/JVM）后端、油猴脚本安全审计、MySQL ER 图、部署拓扑各有专属章节，见 [解析能力](#解析能力)。
 
 ## 四个入口：问 / 出 / 服务 / 协议
 
@@ -63,7 +63,7 @@ nice-aos 的 13 个子命令收敛为 **4 个面向"人与 AI agent"的入口 + 
 
 ## 核心能力速览
 
-- **多栈语义解析** —— React 19 / Vue 2 Options API（RuoYi 类中后台）/ Vue 3 SFC + Pinia / Flutter Widget + Riverpod / Go cobra+Gin 融合仓库 / Python FastAPI/Flask / 油猴脚本，提取组件、Store（Zustand/Pinia/Vuex/Riverpod）、接口/类/方法、路由与 props 传递链等 **19 种对象、24 种关系**
+- **多栈语义解析** —— React 19 / Vue 2 Options API（RuoYi 类中后台）/ Vue 3 SFC + Pinia / Flutter Widget + Riverpod / Go cobra+Gin 融合仓库 / Python FastAPI/Flask / PHP（zentaopms 类）/ Kotlin（Android/JVM）/ 油猴脚本，提取组件、Store（Zustand/Pinia/Vuex/Riverpod）、接口/类/Trait/方法、路由与 props 传递链等 **20 种对象、26 种关系**
 - **关系图谱查询** —— `link importedBy / renders / navigatesTo / implements / calls ...` 双向遍历：变更影响分析、导航图、方法"声明+实现"一次命中
 - **四级死代码 + 健康审计** —— 文件/导出/类型/函数级候选（保守判定宁漏报不误报）、Tarjan 循环依赖、未声明依赖治理，`deadcode` / `duplicates` / `io` 三个独立检测器开箱即用
 - **五套领域审计器** —— 油猴安全（GM 越权/XSS 面/@connect）、数据库（7 大审计 + ER 图）、部署（安全/高可用/一致性/依赖/健康）、Java 服务（复杂度/数据层/测试/质量/依赖）、产品规划（PRD 四维健康）
@@ -243,24 +243,24 @@ nice-aos service export --snapshot /path/to/snapshot.json --format html \
 
 ### 概念分类体系（taxonomy）
 
-18 种对象类型按「概念范畴」（is-a 族）与「抽象层级」（L0-L3）双维组织，而非平铺罗列：
+20 种对象类型按「概念范畴」（is-a 族）与「抽象层级」（L0-L3）双维组织，而非平铺罗列：
 
 | 抽象层级 | 名称 | 说明 | 类型 |
 |---|---|---|---|
 | L3 | 架构层 | 产品级聚合：整体架构画像与功能域划分 | Project, Domain |
 | L2 | 结构层 | 代码组织结构：模块、文件、路由、脚本与运行环境 | Module, SourceFile, Route, UserScript, Dependency |
-| L1 | 单元层 | 可独立理解的代码单元（CodeUnit 概念族） | Component, Hook, Store, Service, Interface, Class, Method, ScriptFunction, PropEdge |
+| L1 | 单元层 | 可独立理解的代码单元（CodeUnit 概念族） | Component, Hook, Store, Service, Interface, Class, Trait, Method, ScriptFunction, PropEdge |
 | L0 | 事实层 | 审计事实（AuditFact 概念族）：从代码提取的行为证据 | GmApiUsage, InjectionPoint, NetworkEndpoint |
 
-概念范畴：**Container**（Project/Domain/Module/SourceFile，按结构聚合）、**CodeUnit**（Component/Hook/Store/Service/Interface/Class/Method/ScriptFunction/PropEdge，可独立理解的逻辑单元与单元间关系边）、**EntryPoint**（Route，用户可触达的行为入口）、**Script**（UserScript，独立于宿主应用的脚本形态）、**Environment**（Dependency，外部环境要素）、**AuditFact**（GmApiUsage/InjectionPoint/NetworkEndpoint，安全审计原子事实）。
+概念范畴：**Container**（Project/Domain/Module/SourceFile，按结构聚合）、**CodeUnit**（Component/Hook/Store/Service/Interface/Class/Trait/Method/ScriptFunction/PropEdge，可独立理解的逻辑单元与单元间关系边）、**EntryPoint**（Route，用户可触达的行为入口）、**Script**（UserScript，独立于宿主应用的脚本形态）、**Environment**（Dependency，外部环境要素）、**AuditFact**（GmApiUsage/InjectionPoint/NetworkEndpoint，安全审计原子事实）。
 
 聚合节点（Project/Domain/Module）自动生成**职责画像与自然语言总结**（summary/architecture/health），避免"只罗列事实、没有抽象"。
 
-### 对象（19 种）
+### 对象（20 种）
 
 | 类型 | ID 前缀 | 层级/范畴 | 关键属性 |
 |---|---|---|---|
-| Project | `proj:` | L3 Container | framework（flutter/dart/expo/react-native/next/nuxt/vue/react/**go**/userscript）, frameworkVariants（tauri/electron/capacitor/vite/riverpod/go_router 等变体）, frameworkLabel（组合标签）, language（TypeScript / TypeScript + Rust 等）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, **goModule**（module 名/Go 版本/所在目录，含子目录与上级形态）, **subProjects**（一级子目录中的子项目清单：path + kind go/npm/dart）, **siblingProjects**（定位子项目或代码子目录时的兄弟项目清单）, fileCount, tsxFileCount, vueFileCount, **rustFileCount/dartFileCount/goFileCount**, **tauriDetected/electronDetected/flutterDetected**, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
+| Project | `proj:` | L3 Container | framework（flutter/dart/expo/react-native/next/nuxt/vue/react/**go**/userscript）, frameworkVariants（tauri/electron/capacitor/vite/riverpod/go_router 等变体）, frameworkLabel（组合标签）, language（TypeScript / TypeScript + Rust 等）, hostRoot/hostConfigs（宿主定位证据，扫描子目录场景）, **goModule**（module 名/Go 版本/所在目录，含子目录与上级形态）, **subProjects**（一级子目录中的子项目清单：path + kind go/npm/dart）, **siblingProjects**（定位子项目或代码子目录时的兄弟项目清单）, fileCount, tsxFileCount, vueFileCount, **rustFileCount/dartFileCount/goFileCount/pyFileCount/kotlinFileCount/phpFileCount**, **tauriDetected/electronDetected/flutterDetected**, userScriptFileCount, commitHash, branch, **summary**（框架定位 + 分层画像 + 功能域清单）, **architecture**（语义分层占比）, **health**（循环依赖/死代码四级/未声明依赖/高风险脚本/解析错误）, analysisErrors |
 | Domain | `dom:` | L3 Container | **name, sources**（route/module）, routeCount, componentCount, storeCount, scriptCount, fileCount, lineCount, **capability**（路由能力描述）, **summary**（职责画像） |
 | Module | `mod:` | L2 Container | path, **archLayer**（语义架构层）, **layerComposition**（子树层构成）, fileCount, **subtreeFileCount**, parentId, **unitCounts**, **routeCount**, **summary**（职责画像） |
 | SourceFile | `file:` | L2 Container | path, **archLayer**, lineCount, isTest, isEntry, importIds, exportNames, **unusedExports**（导出级死代码候选） |
@@ -268,11 +268,12 @@ nice-aos service export --snapshot /path/to/snapshot.json --format html \
 | Hook | `hook:` | L1 CodeUnit | name, filePath, lineCount, description（React Hook 与 Vue composable 统一归属）, **archLayer**, **domainIds** |
 | Store | `store:` | L1 CodeUnit | stateKeys, actionKeys, hasPersist, storageKey, **providerType**（zustand/pinia/vuex/riverpod 状态库类型）, location, **archLayer**, **domainIds** |
 | Service | `svc:` | L1 CodeUnit | pattern（singleton/class/functions）, exportsCount, **archLayer**, **domainIds** |
-| Interface | `iface:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/**go**）, methodIds, extendsIds/extendsNames（接口继承，跨文件解析；Rust trait 的 supertrait → extends）, **isDataModel/dataModelType**（借鉴 asdm-aos：DTO/Model/Entity/Schema/Request/Response/Params/Input/Output/Form/Payload 后缀启发式 + `@Entity/@ObjectType/@InputType` 装饰器识别 → `orm-decorated`）, **deadCandidate/deadReason** |
-| Class | `class:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/**go**）, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入；Rust struct/enum → kind 区分，含 fields/derives/variants；Dart Widget → **isWidget/widgetBase**，Dart Store → **isStore/withNames**；Vue 组件 → **`vclass:` kind=component**，props 为 fields、computed/methods 为 methods；**Go struct → kind=struct，字段含 json/yaml tag**）, **rendersIds**（组件组合）, **isDataModel/dataModelType**（同 Interface 的启发式 + 装饰器识别）, **deadCandidate/deadReason** |
-| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, **callIds/calledByIds/compCallIds**（Dart 方法逻辑调用链：方法间双向 + Widget 构造渲染链；**Go 包级/跨包/方法调用同构映射**）, exported（Rust impl fn 与模块级 fn 同构映射；**Go 首字母大写 = 导出**）, **deadCandidate/deadReason**（函数级死代码候选）, **health**（方法级健康度子对象：`complexity.cyclomatic/branches/maxNesting/throws/awaits/earlyReturns` + `lambdas.count/maxNesting/inJsx` + `testInfo.isTest/testType/testFramework/callsExpect/usesMock` + 派生 `risk` 评级 low/medium/high/critical —— 借鉴 asdm-aos 整合为统一画像）, **externalCalls**（识别函数体内 React Hooks / DOM API / 状态管理 API 的 `[{name, kind, framework, line}]`，不进 calls 链接）, **endpointInfo**（API 端点装饰器级识别 Next.js App Router / Pages Router / Nuxt 3：`{framework, method, path}`）, **sqlQueries**（从函数体提取的 SQL 表名 `[{kind, table, dynamic}]`，供 mapsToTable 链接） |
+| Interface | `iface:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/go/**php/kotlin**）, methodIds, extendsIds/extendsNames（接口继承，跨文件解析；Rust trait 的 supertrait → extends）, **isDataModel/dataModelType**（借鉴 asdm-aos：DTO/Model/Entity/Schema/Request/Response/Params/Input/Output/Form/Payload 后缀启发式 + `@Entity/@ObjectType/@InputType` 装饰器识别 → `orm-decorated`）, **deadCandidate/deadReason** |
+| Class | `class:` | L1 CodeUnit | exported, **language**（ts/vue/rust/dart/go/**php/kotlin**）, isSingleton, methodIds, implementsIds/implementsNames, extendsId/extendsName（跨文件解析，含 type-only 与别名导入；Rust struct/enum → kind 区分，含 fields/derives/variants；Dart Widget → **isWidget/widgetBase**，Dart Store → **isStore/withNames**；Vue 组件 → **`vclass:` kind=component**，props 为 fields、computed/methods 为 methods；**Go struct → kind=struct，字段含 json/yaml tag**；**Kotlin → kind=class/data_class/sealed_class/object/enum_class，object 单例 isSingleton；data class 主构造器参数 → fields，enum 常量 → variants；PHP → `extends model` → isDataModel、`extends control` → isController**）, **usesTraitIds/usesTraits**（PHP `use Trait1, Trait2;` → trait 双向链接）, **rendersIds**（组件组合）, **isDataModel/dataModelType**（同 Interface 的启发式 + 装饰器识别）, **deadCandidate/deadReason** |
+| Trait | `trait:` | L1 CodeUnit | exported, language（**php**）, methodIds（trait 内方法，ownerKind=trait）, **usedByIds**（`use` 了本 trait 的 Class 反向聚合；与 `link usedByTrait --src "trait:..."` 配合查询方法复用关系） |
+| Method | `method:` | L1 CodeUnit | ownerKind（class/interface/**trait**/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, **callIds/calledByIds/compCallIds**（Dart 方法逻辑调用链：方法间双向 + Widget 构造渲染链；**Go 包级/跨包/方法调用同构映射**）, exported（Rust impl fn 与模块级 fn 同构映射；**Go 首字母大写 = 导出**）, **deadCandidate/deadReason**（函数级死代码候选）, **health**（方法级健康度子对象：`complexity.cyclomatic/branches/maxNesting/throws/awaits/earlyReturns` + `lambdas.count/maxNesting/inJsx` + `testInfo.isTest/testType/testFramework/callsExpect/usesMock` + 派生 `risk` 评级 low/medium/high/critical —— 借鉴 asdm-aos 整合为统一画像）, **externalCalls**（识别函数体内 React Hooks / DOM API / 状态管理 API 的 `[{name, kind, framework, line}]`，不进 calls 链接）, **endpointInfo**（API 端点装饰器级识别 Next.js App Router / Pages Router / Nuxt 3：`{framework, method, path}`）, **sqlQueries**（从函数体提取的 SQL 表名 `[{kind, table, dynamic}]`，供 mapsToTable 链接） |
 | ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **deadCandidate/deadReason**（函数级死代码候选）, **archLayer=script** |
-| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter/**next/next-api/go/go-cli**）, domain, **domainIds**, componentFileId, navigatesToIds, **rawPath/layoutFileIds/specialFiles/isDynamic/isClient/apiMethods**（Next.js App Router 路由）, **hasPropsFactory/factoryProps**（overlay 路由 props 工厂注入键）, **middlewares/frontendCalls**（Go HTTP 路由中间件链 + 前端调用方溯源；go-cli 命令链与 flags 复用 specialFiles） |
+| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter/**next/next-api/go/go-cli/php**）, domain, **domainIds**, componentFileId, navigatesToIds, **rawPath/layoutFileIds/specialFiles/isDynamic/isClient/apiMethods**（Next.js App Router 路由）, **hasPropsFactory/factoryProps**（overlay 路由 props 工厂注入键）, **middlewares/frontendCalls**（Go HTTP 路由中间件链 + 前端调用方溯源；go-cli 命令链与 flags 复用 specialFiles；**php：`module/<x>/control.php` public 方法 → `/<module>-<method>`，zentaopms createLink URL 形态**） |
 | PropEdge | `prop:` | L1 CodeUnit | fromComponentId/toComponentId, fromFileId/toFileId, props（名称 + 来源分类 + valueText + storeHook）, renderCount（该组件对的渲染处数） |
 | UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **deadFunctionCount**, **archLayer=script**, **domainIds** |
 | Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared/pub/**go**）, importCount, **isTypeDefinition**（`@types/*` / `typescript` 类型定义包标记，借鉴 asdm-aos dependsOn 去噪；仅标记不隐藏） |
@@ -290,10 +291,10 @@ Method ID 约定：类/接口方法 `method:<file>#<Owner>#<name>`，模块函�
 
 功能域（Domain）与架构层**正交**：架构层是纵向技术切片，功能域是横向业务切片（由路由域段 + 业务命名目录聚合而成）。
 
-### 链接（22 种）
+### 链接（26 种）
 
 ```
-contains     Project → Domain/Module → SourceFile → Component/Hook/Store/Service/Interface/Class/Method/UserScript（类型实体也可从 iface:/class: 下钻其方法）
+contains     Project → Domain/Module → SourceFile → Component/Hook/Store/Service/Interface/Class/Trait/Method/UserScript（类型实体也可从 iface:/class:/trait: 下钻其方法）
 imports / importedBy    文件级依赖（含 dep: 外部包）— 变更影响分析主链路
 renders / renderedBy    组件 JSX/template 渲染关系
 passesProps  Component → Component / PropEdge → 两端组件（props 传递链：正向查某组件把 props 传给了谁；传 prop: 边 ID 返回两端组件）
@@ -303,11 +304,13 @@ usesStore / usesHook    Store/Hook 使用关系（src 传 store:/hook: 反查使
 implements / implementedBy    Class ↔ Interface 实现关系（双向：正向查类实现了哪些接口；反向查接口被哪些类实现 — 解决"实现关系记录在实现类里、从接口正向查不到"的断层）
 extends / extendedBy    Interface/Class 继承关系（双向）
 overrides / overriddenBy    Method 方法覆盖关系（双向：类方法 → 所实现的接口/父类方法；接口方法 → 全部实现）
+usesTrait / usedByTrait    Class ↔ Trait 方法复用关系（双向：PHP class 体内 `use Trait1, Trait2;`；正向查类注入了哪些 trait，反向查 trait 被哪些类复用）
 usesGmApi    UserScript ↔ GmApiUsage（src 传 gm: 反查所属脚本）
 injectsInto  UserScript ↔ InjectionPoint（DOM 注入点；src 传 inject: 反查所属脚本）
 requestsTo   UserScript ↔ NetworkEndpoint（网络端点；src 传 net: 反查所属脚本）
 calls / calledBy    ScriptFunction 调用图（脚本内函数间静态调用关系，双向）与 Dart Method 逻辑调用链（method: 前缀，含 Widget 构造渲染链）
 belongsTo    功能域归属（双向：src 传 dom: 列出域全部成员；src 传 mod:/comp:/store:/hook:/route: 反查所属功能域）
+mapsToTable / mappedFromCode    代码实体 ↔ 数据库表（显式映射 / sqlQueries SQL 表名 / 命名约定三通道匹配；正向查代码实体触达哪些表，反向查表被哪些 Interface/Class/Store/Service/Method 映射）
 ```
 
 ## CLI 参考
@@ -471,13 +474,13 @@ nice-aos mcp --dir path/to/data           # 显式指定快照目录
 nice-aos mcp --root /abs/path/to/repo     # 自定义项目根
 ```
 
-把 nice-aos 7 个能力暴露为 [Model Context Protocol](https://modelcontextprotocol.io) tools，供 Claude Code / Cursor / Continue / Cline 等 MCP 客户端**直接调用**。stdio 传输（默认，Claude Code 走这个）；HTTP 传输留到 v0.36.0。
+把 nice-aos 7 个能力暴露为 [Model Context Protocol](https://modelcontextprotocol.io) tools，供 Claude Code / Cursor / Continue / Cline 等 MCP 客户端**直接调用**。stdio 传输（默认，Claude Code 走这个）；HTTP 传输为后续版本候选。
 
 | Tool | 用途 | 关键参数 |
 |------|------|---------|
 | `get_stats` | 项目元信息 + counts + 循环依赖 + 孤儿候选 | — |
 | `get_schema` | 本体元模型（19 对象类型 / 24 链接 / 4 action / L0-L3 抽象层级 / 6 范畴） | — |
-| `list_types` | 19 种对象类型精简列表（name / prefix / category / level） | — |
+| `list_types` | 20 种对象类型精简列表（name / prefix / category / level） | — |
 | `query_objects` | 按类型 + 条件查询 | `type`（必填） / `where`（如 `deadCandidate=true,name~Button`） / `limit`（默认 200） |
 | `get_node` | 按 id 查单个对象（含自动推断的 `_type` 字段） | `id`（必填，如 `comp:Button` / `method:src/a.ts#foo`） |
 | `traverse_links` | 链接遍历：`links` 看所有相邻 / 具体 linkType 看一类 | `linkType` / `srcId` / `depth`（默认 1） |
@@ -718,7 +721,7 @@ nice-aos storage status                   # 查看镜像状态与版本
 
 ## 解析能力
 
-- **导入解析**：tsconfig `paths` 别名（`@/*` → `src/*`）、vue.config.js `configureWebpack.resolve.alias`、jsconfig.json paths、子路径别名、相对路径 + 扩展名探测（.ts/.tsx/.js/.jsx/.vue/.dart/index.*）、`.js` → `.ts` 回退；vue-cli 项目（vue.config.js + `src/`）自动兜底 `@/* → src/*`；Dart `package:/dart:` 导入（`package:自身包名/...` → 项目内 lib/ 路径，其余 → pub 依赖；`dart:` 内置库跳过；无 `./` 前缀的裸相对导入同样解析）；资产后缀（css/png/svg…）跳过；tsconfig.json 含 `//`/`/* */` 注释也能解析（自动剥离）
+- **导入解析**：tsconfig `paths` 别名（`@/*` → `src/*`）、vue.config.js `configureWebpack.resolve.alias`、jsconfig.json paths、子路径别名、相对路径 + 扩展名探测（.ts/.tsx/.js/.jsx/.vue/.dart/index.*）、`.js` → `.ts` 回退；vue-cli 项目（vue.config.js + `src/`）自动兜底 `@/* → src/*`；Dart `package:/dart:` 导入（`package:自身包名/...` → 项目内 lib/ 路径，其余 → pub 依赖；`dart:` 内置库跳过；无 `./` 前缀的裸相对导入同样解析）；**PHP / Kotlin 命名空间导入不走 TS resolver**（避免 `Foo\Bar` 误判为 npm 包），按命名空间首段归并为 external 依赖（`ecosystem: php/kotlin`）；资产后缀（css/png/svg…）跳过；tsconfig.json 含 `//`/`/* */` 注释也能解析（自动剥离）
 - **组件识别（React）**：`.tsx` 导出的 PascalCase 符号；支持 `export default function X`、`export const X: React.FC`、分离式 `export default X`、`memo()/forwardRef()` 包装；kind 按名称后缀推断（Page/Modal/Card/…），`pages/` 目录下被路由直接引用的组件自动升级为 page
 - **组件识别（Vue）**：`.vue` SFC 整文件即组件；`defineOptions({ name })` 与 `<script setup name="X">` 属性优先，否则文件名派生（`index.vue` → 目录名）；`defineProps` 数组/对象形式计数；template 标签（kebab/PascalCase 统一）供 renders 关系
 - **Hook/Composable 识别**：导出的 `useXxx` 符号（含 React Hook 与 Vue composable），含 JSDoc 描述提取
@@ -731,7 +734,7 @@ nice-aos storage status                   # 查看镜像状态与版本
 - **死代码候选（四级）**：文件级（零引用 + 非入口 + 非测试 + 非路由组件，`_meta.orphanCandidates`）+ 导出级（导出符号全仓库零导入且本文件零使用 → `SourceFile.unusedExports` / `_meta.deadExportCandidates`，入口/re-export/动态 import 豁免）+ 类型级/函数级（保守引用计数：非导出实体本文件零引用、导出实体全仓库零导入且本文件零引用 → `deadCandidate/deadReason`；接口方法为契约声明永不判死；排除声明处与自递归，宁可漏报不误报）；油猴 ScriptFunction 同样判函数级死代码（额外排除事件回调与 unsafeWindow 暴露）
 - **依赖治理**：package.json / pubspec.yaml 声明 vs 实际导入交叉比对，产出 `source=undeclared`（导入未声明）与 `used=false`（声明未使用）
 - **循环依赖**：Tarjan SCC 算法（`_meta.cycles`）
-- **框架检测**：package.json 依赖优先（expo / react-native / next / nuxt / vue / react，元框架优先于基座框架）；`pubspec.yaml` + `lib/` → Flutter（依赖含 `flutter` sdk 时为 `framework=flutter`，纯 Dart 包为 `framework=dart`）；`go.mod` 存在且有 `.go` 源码 → `framework=go`（混合仓库前端文件仍各自解析）；扫描子目录（如 `src/`）时自动向上定位宿主项目根（上限 4 层、不越过用户 home），用宿主依赖识别框架并回退项目名，宿主配置文件（capacitor.config / app.json(expo 键) / vite.config / electron 等）作旁证；跨端/构建变体（Capacitor/Electron/Vite/Webpack/Riverpod/GoRouter 等）组合为 `frameworkLabel`（如 "Flutter 应用 + Riverpod 状态管理（GoRouter 路由）"）；无任何清单时按代码信号兜底（.vue → vue，tsx/jsx → react）；存在油猴脚本且无前端框架 → `framework=userscript`
+- **框架检测**：package.json 依赖优先（expo / react-native / next / nuxt / vue / react，元框架优先于基座框架）；`pubspec.yaml` + `lib/` → Flutter（依赖含 `flutter` sdk 时为 `framework=flutter`，纯 Dart 包为 `framework=dart`）；`go.mod` 存在且有 `.go` 源码 → `framework=go`（混合仓库前端文件仍各自解析）；`composer.json` 存在且有 `.php` 源码 → `framework=php`；`build.gradle.kts` 或 `settings.gradle.kts` 存在且有 `.kt/.kts` 源码 → `framework=kotlin`；扫描子目录（如 `src/`）时自动向上定位宿主项目根（上限 4 层、不越过用户 home），用宿主依赖识别框架并回退项目名，宿主配置文件（capacitor.config / app.json(expo 键) / vite.config / electron 等）作旁证；跨端/构建变体（Capacitor/Electron/Vite/Webpack/Riverpod/GoRouter 等）组合为 `frameworkLabel`（如 "Flutter 应用 + Riverpod 状态管理（GoRouter 路由）"）；无任何清单时按代码信号兜底（.vue → vue，tsx/jsx → react）；存在油猴脚本且无前端框架 → `framework=userscript`
 
 ### overlay 路由（可选，自动探测）
 
@@ -833,6 +836,28 @@ nice-aos storage status                   # 查看镜像状态与版本
 - **架构层**：`main.go`/`cmd/` → entry，`router/controller/middleware/handler/api` → presentation，`model/dal/dao/repository/relay/service/biz/domain` → service，其余 → shared
 - **路由地图增强**：Go HTTP 路由（方法徽章 + 中间件链 + 前端调用数）与 Go CLI 命令（路径层级树按命令段嵌套，flags 见详情）统一进既有路由地图视图；域取首个业务段（跳过 `api/v1` 网关前缀）
 
+### PHP 适配（zentaopms 类后端，自动探测）
+
+独立的 `phpAnalyzer` 轻量语法级解析器（深度状态机 + 等长噪声剥离，不依赖 php-parser），适合 zentaopms / Laravel / Symfony 类 PHP 后端，与前端仓库共存时前端文件仍各自解析：
+
+- **项目识别**：`composer.json` 存在且有 `.php` 源码 → framework=`php`；`.blade.php` 模板文件跳过
+- **实体映射**：`class` → Class（`extends model` → **isDataModel**、`extends control` → **isController**，abstract/final/readonly 修饰保留）、`interface`（含 extends 多继承）→ Interface、**`trait` → Trait（新对象类型，方法复用单元）**、方法/顶层函数 → Method（`__construct` → isConstructor，`__call/__get/__set/__toString` 等 → isMagic）、`public $name` / `public string $name` / 类型化属性 → fields
+- **Trait 复用链**：class 体内 `use Trait1, Trait2;` → `usesTraits` → builder 全仓库名字匹配回填 `usesTraitIds` / `Trait.usedByIds` 双向链接（`link usesTrait --src "class:..."` / `link usedByTrait --src "trait:..."`）
+- **zentaopms 路由**：`module/<x>/control.php` 内 public 非抽象非构造方法 → Route（`routeType=php`，`path: /<module>-<method>`，与 `createLink('module','method')` 的 URL 形态一致），handler 关联到 control 类同名 Method
+- **命名空间**：`namespace Foo\Bar` → moduleName（反斜杠归一点号）；`use X\Y as Z` 别名与 `use Baz\{ Qux, Quux as Q }` 群组导入解析
+- **架构层**：`control.php` / `view|ui|lang/` / `controllers|routes|api/` → presentation；`model|config.php` / `dao|dal|repositories|services|models/` → service；`framework/` → shared
+
+### Kotlin 适配（Android / JVM / KMP，自动探测）
+
+独立的 `kotlinAnalyzer` 轻量语法级解析器（深度状态机 + 等长噪声剥离，不依赖 kotlinc/tree-sitter），适合 Android / JVM / KMP 项目：
+
+- **项目识别**：`build.gradle.kts` 或 `settings.gradle.kts` 存在且有 `.kt/.kts` 源码 → framework=`kotlin`
+- **实体映射**：`class` → Class（**5 种变体 kind**：class / `data class` → data_class / `sealed class` → sealed_class / `object` → 单例 / `enum class` → enum_class（枚举常量 → variants）；`data class` 主构造器 `val/var` 参数 → fields）；`interface`（含 `fun interface` SAM）→ Interface；`companion object` → 嵌套 companion_object Class（成员并入宿主类）；顶层 `fun` → Method（ownerKind=module）
+- **方法与属性**：`suspend fun` → isAsync；inline/operator/infix/open/override 等修饰保留；接收者语法 `fun Foo.bar()` 解析 receiverType；`val/var` 属性提取类型与可变性
+- **supertype 与 import**：`: Bar, Baz.K, Qux(...)` 超类型列表（含点号嵌套 `Call.Factory`、泛型、构造参数）；`import foo.Bar` / `import foo.Bar as Baz` / `import foo.*` / `import foo.{ A, B }` 群组解析
+- **噪声剥离**：三引号原始字符串（含 `${}` 插值）、普通字符串、字符字面量、行/块/KDoc 注释等长替换，字符串内的类定义不产生幽灵实体
+- **架构层**：`*(Activity|Fragment|Screen|Page).kt` / `ui|compose|screens/` / `*ViewModel.kt` → presentation；`*(Repository|UseCase|Interactor|Service).kt` / `di|data|datasource|db|network|api/` → service；其余 → shared
+
 ### 油猴脚本（Tampermonkey UserScript，自动探测）
 
 独立的 `userScriptAnalyzer` 解析器，与 React/Vue 解析器平级共存、逻辑互不干扰：油猴文件不产出 Component/Store/Route，而是产出 UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction 五类对象（React/Vue 项目内混入的油猴脚本同样被识别，framework 仍以宿主框架为准）。
@@ -853,6 +878,8 @@ nice-aos storage status                   # 查看镜像状态与版本
 - Rust 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 rustc）：泛型约束 / 关联类型 / macro 生成代码不解析；`mod` 声明文件树按目录约定映射（`mod models;` → `models.rs` 或 `models/mod.rs`）；`.rs` 文件仅在 Tauri 组件语境下扫描，独立 Rust 工程（纯后端 crate）不纳入
 - Dart 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 analyzer）：泛型方法/闭包体内声明、动态拼接路由 path、`Navigator.push(MaterialPageRoute(...))` 导航不解析；构造器不实体化为 Method；调用链为静态提取（变量间接调用/回调透传不解析）
 - Go 解析为轻量语法级（深度状态机 + 双通道噪声剥离，不依赖 gopls）：泛型（type parameters）不解析（两参考项目均为 Go 1.17/1.18 前风格）；调用链为静态提取（变量间接调用/回调透传/goroutine 内闭包捕获不解析）；cobra `Run` 内联闭包不实体化为 Method；前端 httpCalls 限定 `API.x/axios.x/fetch` 标识符 + 字符串字面量首参（变量拼接 URL 取静态前缀，完整外链 URL 进未匹配清单）；Java/Python 后端不在扫描范围
+- PHP 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 php-parser）：heredoc/nowdoc 体内的声明、反射/macro 生成的实体不解析；trait use 仅按名字全仓库匹配（同名 trait 跨命名空间不区分）；`$this->model->...` DAO 链抽取为 Phase-2（`sqlQueries` v1 留空契约）；PSR-4 内部 import 不解析（composer.json autoload 区分内/外为后续候选），命名空间导入统一按首段归并 external
+- Kotlin 解析为轻量语法级（深度状态机 + 等长噪声剥离，不依赖 kotlinc）：泛型约束（`where T : Comparable<T>`）、委托（`by Delegates`）、类型别名（typealias）右侧不展开；调用链/调用图未实现（receiver-constrained 调用图为后续候选）；内部 import 不解析（sourceSets 区分内/外为后续候选），命名空间导入统一按首段归并 external
 - 跨文件 implements/extends 按具名导入静态解析；命名空间导入、`export *` 再导出与动态 `import()` 的目标文件整体豁免死代码判定（无法按名追踪，保守不误报）；仅被测试文件使用的导出符号会被判为死代码候选（测试文件不入扫描范围，删除前请人工确认）
 - `renders` 归属文件主组件（default export 优先），同文件多组件不细分
 - 函数透传式导航（`onOpenOverlay: app.setActiveOverlay`）不产生跳转边

@@ -18,7 +18,7 @@
 // 工具集（阶段 1 v0.33.0；v0.35.0 增 epistemic 信封 + 模糊元数据）：
 //   1. get_stats         — 快照统计摘要
 //   2. get_schema        — 本体元模型（对象/链接/动作 schema）
-//   3. list_types        — 列出 19 种对象类型
+//   3. list_types        — 列出 20 种对象类型
 //   4. query_objects     — 按类型 + where 条件查询（歧义名 → 候选列表）
 //   5. get_node          — 按 id 查单个对象（不存在 → 相似候选）
 //   6. traverse_links    — 链接遍历（_meta.epistemic + withMeta 模糊元数据 + byDepth 分层）
@@ -118,7 +118,7 @@ export function createToolRegistry({ snap }) {
 
     {
       name: 'get_schema',
-      description: '获取本体元模型：19 种对象类型（带 prefix/category/level 描述）、24+ 链接类型、4 个 action 名称、抽象层级（L0-L3）、6 个概念范畴。供 agent 自动发现能力',
+      description: '获取本体元模型：20 种对象类型（带 prefix/category/level 描述）、26 链接类型、4 个 action 名称、抽象层级（L0-L3）、6 个概念范畴。供 agent 自动发现能力',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => ({
         ok: true,
@@ -136,7 +136,7 @@ export function createToolRegistry({ snap }) {
 
     {
       name: 'list_types',
-      description: '列出 19 种对象类型（仅 name + prefix + category + level + description 摘要，比 get_schema 更轻量）',
+      description: '列出 20 种对象类型（仅 name + prefix + category + level + description 摘要，比 get_schema 更轻量）',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => ({
         ok: true,
@@ -152,7 +152,7 @@ export function createToolRegistry({ snap }) {
 
     {
       name: 'query_objects',
-      description: '按类型与条件查询对象。type 必填（必为 19 种对象类型之一）；where 形如 "k=v,k2~v2"（= 全等、~ 包含）；limit 默认 200。返回 {ok, type, source, count, total, truncated, objects: [...]}',
+      description: '按类型与条件查询对象。type 必填（必为 20 种对象类型之一）；where 形如 "k=v,k2~v2"（= 全等、~ 包含）；limit 默认 200。返回 {ok, type, source, count, total, truncated, objects: [...]}',
       inputSchema: {
         type: 'object',
         properties: {

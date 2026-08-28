@@ -70,8 +70,18 @@
 - `test/kotlinAnalyzer.test.mjs` —— 12 tests（class 变体/supertype/fun+suspend/import/三引号字符串/死代码/enum/object 单例等）
 - `test/kotlinPhpIntegration.test.mjs` —— 1 e2e test（fixture 项目 → buildOntologyData 全链路，含 trait 双向链接 / 路由 / 架构层 / objectCounts 验证）
 - `test/blueprintEngine.test.mjs` —— 同步更新到 20 OBJECT_TYPES / 26 LINK_TYPES
+- `test/toolRegistry.test.mjs` —— 计数断言收紧为精确 20/26（原 `>= 19`/`>= 20` 下界）
+
+#### 文档与元数据同步
+
+- README：语言清单与 intro、核心能力速览（20 对象 / 26 链接）、taxonomy L1 补 Trait、对象表新增 Trait 行（Class/Method/Route/Project 行补 PHP/Kotlin 字段枚举）、链接表补 usesTrait/usedByTrait 与 mapsToTable/mappedFromCode、新增「PHP 适配」「Kotlin 适配」章节、框架检测/导入解析补 composer.json 与 build.gradle.kts 判定、已知限制补 PHP/Kotlin 条目、MCP `list_types` 描述 19→20
+- `toolRegistry.js`：get_schema / list_types / query_objects 工具描述计数 19→20、24+→26（MCP 客户端可见的运行时文案）
+- `skills/nice-aos-skill/SKILL.md`：intro 语言清单、对象/关系计数（18→20、21→26）、taxonomy L1 补 Trait、MCP 工具表计数
+- `package.json`：description 补 PHP/Kotlin 能力句，keywords 增 php / kotlin / zentaopms / android / trait
 
 #### 后续候选（v0.36+）
+
+0. `action analyzeFile` 单文件模式接入 `.kt/.kts/.php` analyzer 分发（当前回落 tsAnalyzer）
 
 1. PHP/Kotlin PSR-4 内部 import 解析（读 composer.json autoload / build.gradle.kts sourceSets 区分内/外）
 2. `phpDetected` / `kotlinDetected` 暴露到 scan 结果（与 `goDetected` / `flutterDetected` 对齐）
