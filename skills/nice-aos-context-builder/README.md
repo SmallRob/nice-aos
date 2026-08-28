@@ -209,6 +209,6 @@ serve 端点：
 
 ## Copyright & License
 
-Copyright (c) 2026 LeansoftX.com & iSoftStone. All rights reserved.
+Copyright (c) 2026 Nice Today Team. All rights reserved.
 
 Licensed under the PROPRIETARY SOFTWARE LICENSE. See [LICENSE](LICENSE) in the project root for license information.
