@@ -1010,6 +1010,8 @@ export function scanProject(projectRoot, options = {}) {
     goModule: goModule ? { name: goModule.name, goVersion: goModule.goVersion, dir: goModule.dir } : null,
     goModuleDirs: goModuleDirs,
     pyFileCount: counts.py,
+    pyLaunchFileCount: files.filter((f) => f.endsWith('.launch.py')).length,
+    pyDetected: counts.py > 0,
     kotlinFileCount: counts.kt + counts.kts,
     phpFileCount: counts.php,
     phpDetected,

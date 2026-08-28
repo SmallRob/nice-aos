@@ -574,3 +574,242 @@ test('端到端：FastAPI 路由 + SQLAlchemy 表 + 关系字段 → dataMap.Rou
   assert.ok(getRoute);
   assert.equal(getRoute.isDynamic, true);
 });
+
+// ============================================================
+// v0.39.0 Python 解析增强：缩进感知 / ROS 2 / launch / main 入口
+// ============================================================
+
+test('pythonAnalyzer v0.39.0：parseClassFields 缩进感知（方法体局部变量不再误报为类字段）', () => {
+  // bug 复现：旧版会把 cli/topic/colmon/req 等方法体里 self.x = ... 误判为类字段
+  // 真实情况（dock_trigger.py 缩位）：70 个方法、0 个真正的类级字段
+  const src = [
+    'class Big:',
+    '    def __init__(self):',
+    '        colmon = str(self.get_parameter("x").value)',
+    '        topic = self.goal_pose_pub.topic_name',
+    '        cli = self._gate_cli',
+    '        req = SetBool.Request()',
+    '        future = cli.call_async(req)',
+    '        for i in range(10):',
+    '            t0 = time.time()',
+    '            if t0 > 0:',
+    '                deadline = 1.0',
+    '                resp = future.result()',
+    '',
+    '    def cb(self, msg):',
+    '        out = msg.header',
+    '        n = len(msg.ranges)',
+    '        ranges = list(msg.ranges)',
+    '        return out',
+  ].join('\n');
+  const facts = analyzePythonFile('ros.py', src);
+  const cls = facts.classes[0];
+  assert.equal(cls.name, 'Big');
+  // 关键断言：方法体里的局部变量不应被识别为类字段
+  assert.equal(cls.fields.length, 0, `方法体局部变量不应误报为类字段，实际 ${cls.fields.length}`);
+});
+
+test('pythonAnalyzer v0.39.0：ROS 2 Node 类检测（Node / LifecycleNode / ComposableNode 基类）', () => {
+  const src = [
+    'import rclpy',
+    'from rclpy.node import Node',
+    'from rclpy.lifecycle.node import LifecycleNode',
+    '',
+    'class MyNode(Node):',
+    '    def __init__(self):',
+    '        super().__init__("my_node")',
+    '',
+    'class MyLife(LifecycleNode):',
+    '    pass',
+    '',
+    'class MyComp(ComposableNode):',
+    '    pass',
+    '',
+    'class NotARosClass:',
+    '    pass',
+  ].join('\n');
+  const facts = analyzePythonFile('ros.py', src);
+  assert.equal(facts.ros2NodeClasses.length, 3, `应识别 3 个 ROS 2 节点类，实际 ${facts.ros2NodeClasses.length}`);
+  const byName = Object.fromEntries(facts.ros2NodeClasses.map((n) => [n.name, n]));
+  assert.equal(byName.MyNode.rosHint, 'ros2-node');
+  assert.equal(byName.MyLife.rosHint, 'ros2-lifecycle-node');
+  assert.equal(byName.MyComp.rosHint, 'ros2-composable-node');
+  // ormHints 同步
+  const clsByName = Object.fromEntries(facts.classes.map((c) => [c.name, c]));
+  assert.ok(clsByName.MyNode.ormHints.includes('ros2-node'));
+  assert.ok(clsByName.MyNode.ormHints.includes('ros2-node-name:my_node'));
+  // NotARosClass 不应在 ros2NodeClasses
+  assert.equal(facts.ros2NodeClasses.find((n) => n.name === 'NotARosClass'), undefined);
+});
+
+test('pythonAnalyzer v0.39.0：ROS 2 通信通道抽取（pub/sub/service/timer/parameter）', () => {
+  const src = [
+    'import rclpy',
+    'from rclpy.node import Node',
+    'from sensor_msgs.msg import LaserScan',
+    'from std_srvs.srv import SetBool',
+    '',
+    'class Filter(Node):',
+    '    def __init__(self):',
+    '        super().__init__("filter")',
+    '        self.declare_parameter("scan_in", "/scan")',
+    '        self.declare_parameter("close_max", 0.40)',
+    '        self.pub = self.create_publisher(LaserScan, "scan_out", 10)',
+    '        self.sub = self.create_subscription(LaserScan, "scan_in", self.cb, 10)',
+    '        self.cli = self.create_client(SetBool, "set_enabled")',
+    '        self.srv = self.create_service(SetBool, "do_thing", self._handler)',
+    '        self.timer = self.create_timer(0.1, self._tick)',
+    '',
+    '    def _handler(self, req, resp):',
+    '        return resp',
+    '',
+    '    def _tick(self):',
+    '        pass',
+    '',
+    '    def cb(self, m):',
+    '        self.pub.publish(m)',
+  ].join('\n');
+  const facts = analyzePythonFile('filter.py', src);
+  const nc = facts.ros2NodeClasses[0];
+  assert.equal(nc.rosHint, 'ros2-node');
+  const ch = nc.channels;
+  // publishers
+  assert.equal(ch.publishers.length, 1);
+  assert.equal(ch.publishers[0].msgType, 'LaserScan');
+  assert.equal(ch.publishers[0].topic, 'scan_out');
+  // subscribers
+  assert.equal(ch.subscribers.length, 1);
+  assert.equal(ch.subscribers[0].msgType, 'LaserScan');
+  assert.equal(ch.subscribers[0].topic, 'scan_in');
+  assert.equal(ch.subscribers[0].callback, 'self.cb');
+  // services
+  assert.equal(ch.services.length, 1);
+  assert.equal(ch.services[0].srvType, 'SetBool');
+  // clients
+  assert.equal(ch.clients.length, 1);
+  assert.equal(ch.clients[0].srvType, 'SetBool');
+  // timers
+  assert.equal(ch.timers.length, 1);
+  assert.equal(ch.timers[0].period, '0.1');
+  assert.equal(ch.timers[0].callback, 'self._tick');
+  // parameters
+  assert.equal(ch.parameters.length, 2);
+  const byName = Object.fromEntries(ch.parameters.map((p) => [p.name, p]));
+  assert.equal(byName.scan_in.default, '/scan');
+  assert.equal(byName.close_max.default, '0.40');
+});
+
+test('pythonAnalyzer v0.39.0：ROS 2 launch 文件检测（Node/Argument/Include/Process）', () => {
+  const src = [
+    'from launch import LaunchDescription',
+    'from launch.actions import DeclareLaunchArgument, ExecuteProcess',
+    'from launch.substitutions import LaunchConfiguration',
+    'from launch_ros.actions import Node',
+    '',
+    'def generate_launch_description():',
+    '    use_rviz = LaunchConfiguration("use_rviz")',
+    '    ld = LaunchDescription([',
+    '        DeclareLaunchArgument(',
+    '            "use_rviz", default_value="true",',
+    '            description="Start RViz"),',
+    '        ExecuteProcess(cmd=["ros2", "bag", "play", "data"]),',
+    '        Node(',
+    '            package="rviz2", executable="rviz2", name="rviz2",',
+    '            output="screen"),',
+    '        Node(',
+    '            package="rplidar_ros", executable="rplidar_composition",',
+    '            name="rplidar"),',
+    '    ])',
+    '    return ld',
+  ].join('\n');
+  const facts = analyzePythonFile('rviz.launch.py', src);
+  assert.ok(facts.pythonLaunch);
+  assert.equal(facts.pythonLaunch.isLaunch, true);
+  assert.equal(facts.pythonLaunch.entry, 'generate_launch_description');
+  assert.equal(facts.pythonLaunch.nodes.length, 2);
+  const rplidar = facts.pythonLaunch.nodes.find((n) => n.name === 'rplidar');
+  assert.ok(rplidar);
+  assert.equal(rplidar.package, 'rplidar_ros');
+  assert.equal(rplidar.executable, 'rplidar_composition');
+  assert.equal(facts.pythonLaunch.args.length, 1);
+  assert.equal(facts.pythonLaunch.args[0].name, 'use_rviz');
+  assert.equal(facts.pythonLaunch.executeProcess.length, 1);
+  // entry 注入入口点
+  assert.ok(facts.pythonEntryPoints.some((e) => e.kind === 'launch'));
+});
+
+test('pythonAnalyzer v0.39.0：launch 文件带 IncludeLaunchDescription 嵌套', () => {
+  const src = [
+    'import os',
+    'from launch import LaunchDescription',
+    'from launch.actions import IncludeLaunchDescription',
+    'from launch.launch_description_sources import PythonLaunchDescriptionSource',
+    '',
+    'def generate_launch_description():',
+    '    return LaunchDescription([',
+    '        IncludeLaunchDescription(',
+    '            PythonLaunchDescriptionSource(os.path.join("pkg", "launch", "nav_launch.py"))',
+    '        ),',
+    '    ])',
+  ].join('\n');
+  const facts = analyzePythonFile('bringup.launch.py', src);
+  assert.equal(facts.pythonLaunch.includeLaunch.length, 1);
+  assert.ok(facts.pythonLaunch.includeLaunch[0].path.includes('nav_launch.py'));
+});
+
+test('pythonAnalyzer v0.39.0：非 launch 文件 pythonLaunch 为 null', () => {
+  const src = 'class Foo:\n    pass\n';
+  const facts = analyzePythonFile('foo.py', src);
+  assert.equal(facts.pythonLaunch, null);
+});
+
+test('pythonAnalyzer v0.39.0：def main() 入口点检测（无 __main__ 守卫也能识别）', () => {
+  const src = [
+    'def helper():',
+    '    return 1',
+    '',
+    'def main():',
+    '    node = helper()',
+    '    print(node)',
+  ].join('\n');
+  const facts = analyzePythonFile('main_only.py', src);
+  const mainEntry = facts.pythonEntryPoints.find((e) => e.kind === 'main');
+  assert.ok(mainEntry, '应识别 def main() 为入口点');
+  assert.equal(mainEntry.handler, 'main');
+  // __main__ 守卫缺失 → 没有 __main__ 入口
+  const mm = facts.pythonEntryPoints.find((e) => e.kind === '__main__');
+  assert.equal(mm, undefined);
+});
+
+test('pythonAnalyzer v0.39.0：def main() 与 if __name__ 守卫并存不重复', () => {
+  const src = [
+    'def main():',
+    '    pass',
+    '',
+    'if __name__ == "__main__":',
+    '    main()',
+  ].join('\n');
+  const facts = analyzePythonFile('both.py', src);
+  const entries = facts.pythonEntryPoints.filter((e) => e.kind === 'main' || e.kind === '__main__');
+  // 期望：__main__（来自守卫）+ main（来自 def main()）= 2 个，但 main 不重复添加（已有 __main__ 时）
+  // 实际行为：main 仅在无 __main__ 守卫时添加 → 应当 1 个 __main__
+  // 这里验证 main 入口不重复
+  const mains = entries.filter((e) => e.kind === 'main');
+  assert.equal(mains.length, 0, '已存在 __main__ 守卫时不重复加 main 入口');
+  const mms = entries.filter((e) => e.kind === '__main__');
+  assert.equal(mms.length, 1);
+});
+
+test('pythonAnalyzer v0.39.0：带参数或装饰器的 main 不当作入口（避免误报）', () => {
+  const src = [
+    'def main(argv):',
+    '    print(argv)',
+    '',
+    '@click.command()',
+    'def main():',
+    '    pass',
+  ].join('\n');
+  const facts = analyzePythonFile('param_main.py', src);
+  const mainEntries = facts.pythonEntryPoints.filter((e) => e.kind === 'main');
+  assert.equal(mainEntries.length, 0, '带参数或有装饰器的 def main() 不应作 main 入口');
+});

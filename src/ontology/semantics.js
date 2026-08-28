@@ -107,6 +107,22 @@ export function inferFileArchLayer(input) {
     if (/\/(di|data|datasource|db|network|api|remote|local)(\/|$)/.test(relPath)) return 'service';
     return 'shared';
   }
+  // v0.39.0 ROS 2 / Python 项目分层：
+  //   *.launch.py（launch 描述）→ deployment（部署/编排）
+  //   rclpy Node 业务实现（*/scripts/, */<pkg>/<module>.py 包内）→ service
+  //   test/、tests/ 目录下的 Python → test
+  if (relPath.endsWith('.launch.py')) return 'deployment';
+  if (relPath.endsWith('.py')) {
+    if (isTest) return 'test';
+    // FastAPI / Flask / aiohttp 路由（与 TS FastAPI 同语义）
+    if (/\/(routers?|routes?|controllers?|api|views?|endpoints?)(\/|\.py)/.test(relPath)) return 'presentation';
+    if (/\/(services?|use_cases?|domain|biz)(\/|\.py)/.test(relPath)) return 'service';
+    if (/\/(models?|schemas?|entities|dto)(\/|\.py)/.test(relPath)) return 'service';
+    if (/\/(repositories?|dal|dao|infra|adapters?|gateways?)(\/|\.py)/.test(relPath)) return 'integration';
+    // ROS 2 节点（scripts/ 或同包内 *_node.py）→ service
+    if (/\/scripts\//.test(relPath) || /_node\.py$/.test(relPath)) return 'service';
+    return 'shared';
+  }
   if (isEntry) return 'entry';
   const serviceish = SERVICE_NAME_RE.test(stemOf(relPath)) || /\/services\//.test(relPath);
   const integrationish = /\/(api|apis|clients?|http|network|gateways?|adapters?|repositories)\//.test(relPath);

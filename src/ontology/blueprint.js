@@ -8,14 +8,14 @@ export const ONTOLOGY_META = {
   version: '2.0',
   abstractionLevels: [
     { level: 'L3', name: '架构层', description: '产品级聚合：整体架构画像与功能域划分', types: ['Project', 'Domain'] },
-    { level: 'L2', name: '结构层', description: '代码组织结构：模块、文件、路由、脚本与运行环境', types: ['Module', 'SourceFile', 'Route', 'UserScript', 'ShellScript', 'PsScript', 'CMakeTarget', 'CMakeModule', 'ArchPackage', 'NixFlake', 'Dependency', 'NixInput'] },
-    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction', 'BashFunction', 'PsFunction', 'CMakeFunction', 'NixPackage', 'ArchPackageFunction', 'BashBuiltin', 'Cmdlet', 'CMakeOption'] },
+    { level: 'L2', name: '结构层', description: '代码组织结构：模块、文件、路由、脚本与运行环境', types: ['Module', 'SourceFile', 'Route', 'UserScript', 'ShellScript', 'PsScript', 'CMakeTarget', 'CMakeModule', 'ArchPackage', 'NixFlake', 'Dependency', 'NixInput', 'RosLaunch'] },
+    { level: 'L1', name: '单元层', description: '可独立理解的代码单元（CodeUnit 概念族）', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction', 'BashFunction', 'PsFunction', 'CMakeFunction', 'NixPackage', 'ArchPackageFunction', 'BashBuiltin', 'Cmdlet', 'CMakeOption', 'RosNode', 'RosChannel'] },
     { level: 'L0', name: '事实层', description: '审计事实（AuditFact 概念族）：从代码提取的行为证据', types: ['GmApiUsage', 'InjectionPoint', 'NetworkEndpoint'] },
   ],
   categories: [
     { category: 'Container', label: '容器', description: '按结构聚合代码单元的节点', types: ['Project', 'Domain', 'Module', 'SourceFile'] },
-    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction', 'BashFunction', 'PsFunction', 'CMakeFunction', 'NixPackage', 'ArchPackageFunction'] },
-    { category: 'EntryPoint', label: '行为入口', description: '用户可触达的行为入口', types: ['Route'] },
+    { category: 'CodeUnit', label: '代码单元', description: '可独立理解的逻辑单元', types: ['Component', 'Hook', 'Store', 'Service', 'Interface', 'Class', 'Trait', 'Method', 'PropEdge', 'ScriptFunction', 'BashFunction', 'PsFunction', 'CMakeFunction', 'NixPackage', 'ArchPackageFunction', 'RosNode', 'RosChannel'] },
+    { category: 'EntryPoint', label: '行为入口', description: '用户可触达的行为入口', types: ['Route', 'RosLaunch'] },
     { category: 'Script', label: '脚本/包描述符', description: '独立于宿主应用的脚本形态与系统级包描述符（自带子对象体系）', types: ['UserScript', 'ShellScript', 'PsScript', 'CMakeTarget', 'CMakeModule', 'ArchPackage', 'NixFlake'] },
     { category: 'Builtin', label: '内建/扩展点', description: '外部命令/cmdlet/CMake 选项/内置函数一类的小粒度可调用单元', types: ['BashBuiltin', 'Cmdlet', 'CMakeOption'] },
     { category: 'Environment', label: '运行环境', description: '外部环境要素', types: ['Dependency', 'NixInput'] },
@@ -60,6 +60,10 @@ export const OBJECT_TYPES = [
   { type: 'NixFlake', prefix: 'nix:', category: 'Script', level: 'L2', description: 'Nix flake 或 *.nix 入口（inputs/outputs/packages）' },
   { type: 'NixPackage', prefix: 'nixpkg:', category: 'CodeUnit', level: 'L1', description: 'Nix outputs.packages.<system>.<name> 条目（含 buildInputs）' },
   { type: 'NixInput', prefix: 'nixin:', category: 'Environment', level: 'L2', description: 'Nix flake input（inputs.<name>.url / flake = false 的源依赖声明）' },
+  // ---- v0.39.0: ROS 2 维度 ----
+  { type: 'RosNode', prefix: 'rosnode:', category: 'CodeUnit', level: 'L1', description: 'ROS 2 rclpy 节点（class X(rclpy.node.Node / LifecycleNode / ComposableNode)）；含 channels 通信通道清单（publisher/subscriber/service/client/timer/action/parameter）' },
+  { type: 'RosLaunch', prefix: 'roslaunch:', category: 'EntryPoint', level: 'L2', description: 'ROS 2 launch 文件（*.launch.py 的 generate_launch_description() 入口）；含 nodes 节点清单、args 启动参数、includeLaunch 嵌套启动、executeProcess 外部进程' },
+  { type: 'RosChannel', prefix: 'roschan:', category: 'CodeUnit', level: 'L1', description: 'ROS 2 通信通道（publisher/subscriber/service/client/timer/action-server/action-client/parameter）；topic/name、msgType/srvType/actionType 抽象化' },
 ];
 
 export const LINK_TYPES = [
@@ -79,6 +83,12 @@ export const LINK_TYPES = [
   'pkgDependsOn', 'pkgBuilds',
   // Nix 边
   'declaresInput', 'outputsPackage', 'callsPackage', 'fetchesFrom', 'buildsWith',
+  // ---- v0.39.0: ROS 2 边 ----
+  'declaresChannel',    // RosNode → RosChannel（节点声明的通信通道）
+  'launchesNode',       // RosLaunch → RosNode（launch 文件启动的节点）
+  'launchesLaunch',     // RosLaunch → RosLaunch（IncludeLaunchDescription 嵌套）
+  'declaresLaunchArg',  // RosLaunch → 共享参数声明（目前通过 args 数组承载）
+  'executesProcess',    // RosLaunch → ExecuteProcess（外部进程）
 ];
 
 export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addNote'];

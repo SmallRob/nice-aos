@@ -2,6 +2,121 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.39.0] - 2026-08-29
+
+### Python 解析增强：ROS 2 维度 + 字段误报修复 + 入口点扩充
+
+openamr-platform-sw（65 个 .py + 14 个 .launch.py，ROS 2 rclpy + launch 真实生产项目）扫描驱动。详见 `docs/adr/0007-ros2-python-enhancement.md`。
+
+#### 修复 parseClassFields 缩进感知（数据质量 bug）
+
+- 旧版 `parseClassFields` 用跨行续行 + 字符串扫描两步法，但**不感知方法体 / 复合语句边界**，把方法体内的局部变量误判为类字段
+- 真实复现：openamr `dock_trigger.py`（70 个方法、0 个真类级字段）旧版一度报 **341 个伪字段**（`cli` / `colmon` / `topic` / `req` / `future` / `t0` / `out` / `ranges` / ...）
+- 修复：引入轻量 `blockStack`（`def / class / compound / pending`）—— 遇 `def / async def / class` 与 `if/elif/else/try/except/finally/with/for/while/match/case` 入栈，按缩进比较弹栈；**仅当 blockStack 为空时**才认为该语句在类直接体（class-body level）才走字段匹配
+- 修复后：dock_trigger.py 字段从 341 → 0（真实），旧 17 个 pythonAnalyzer 单测零修改全部通过
+
+#### 新增 ROS 2 节点类检测（rclpy Node / LifecycleNode / ComposableNode）
+
+- `class X(Node)` / `class X(LifecycleNode)` / `class X(ComposableNode)` → 末段基类查表 → `cls.ormHints` 追加 `ros2-node` / `ros2-lifecycle-node` / `ros2-composable-node`
+- 附加抽取 `super().__init__('node_name')` → `ormHints` 追加 `ros2-node-name:<name>`
+- 非侵入：保留 `cls.bases` / `cls.extendsName` 形态，仅追加 `cls.rosHint` 字段与 `cls.ormHints` 元素
+- 新增 `facts.ros2NodeClasses` 顶层索引（`[{ name, line, baseClass, bases, rosHint, channels, pos }]`）
+
+#### 新增 ROS 2 通信通道抽取（publisher/subscriber/service/client/timer/action/parameter）
+
+- 在 class body 整体（已剥离字符串的 cleanBody 通道）扫描 7 类模式：
+
+  | pat.kind        | 来源模式                                              | 抽取参数                          |
+  | --------------- | ----------------------------------------------------- | --------------------------------- |
+  | `publisher`     | `self.create_publisher(Msg, topic, qos)`              | msgType / topic / qos             |
+  | `subscription`  | `self.create_subscription(Msg, topic, cb, qos)`       | msgType / topic / callback / qos  |
+  | `service`       | `self.create_service(Srv, name, cb)`                  | srvType / name / callback         |
+  | `client`        | `self.create_client(Srv, name)`                       | srvType / name                    |
+  | `timer`         | `self.create_timer(period, cb)`                       | period / callback                 |
+  | `action-server` | `self.create_action_server(...)`                      | actionType / name / callback      |
+  | `action-client` | `ActionClient(node, Action, name)`                    | actionType / name                 |
+  | `parameter`     | `self.declare_parameter(name, default)`               | name / default                    |
+
+- 括号深度匹配（`findMatchingParen`）兼容嵌套泛型 / 缺省 lambda；callback 保留原文本（不静态解析符号引用）
+- topic / parameter default 不做值回填（保留符号化文本如 `topic: scan_in`）—— v0.40+ 候选
+
+#### 新增 ROS 2 launch 文件检测（*.launch.py）
+
+- 入口函数识别：`def generate_launch_description():`（兼容 `generate_launch_file`）
+- 顶层抽取 5 类 launch 动作：
+  - `Node(package=..., executable=..., name=..., namespace=...)` → 节点清单
+  - `ExecuteProcess(cmd=...)` → 外部进程清单
+  - `DeclareLaunchArgument(name=..., default_value=..., description=...)` → 启动参数清单
+  - `IncludeLaunchDescription(PythonLaunchDescriptionSource(...))` → 嵌套 launch 清单
+  - `GroupAction / OpaqueFunction / SetEnvironmentVariable / TimerAction / ComposableNodeContainer / ...` → 其它 actions
+- 入口函数加入 `facts.pythonEntryPoints` 作为 `kind: 'launch'`
+- launch 文件无通道抽取（launch 是组合描述，不直接持有 Node 状态）
+
+#### 新增 def main() 入口点
+
+- 顶层 `def main():`（无参数、无装饰器）→ entry point `kind: 'main'`
+- 若已有 `if __name__ == "__main__": main()` 守卫 → 不重复添加
+- 适用场景：ROS 2 `def main(): rclpy.init(); rclpy.spin(node)` 这类无守卫入口
+
+#### 项目级维度扩充
+
+- `Project.pyLaunchFileCount`：后缀 `.launch.py` 文件数（O(N) 文件名过滤）
+- `Project.pyNodeClassCount`：实际解析得到的 ROS 2 节点类数（builder 阶段聚合）
+- `Project.pyDetected`：与 `kotlinDetected` / `phpDetected` 对齐的 boolean 标识
+- `Project.language` 在 ROS 2 launch 文件存在时追加 `+ROS2Launch` 标记
+
+#### Python 架构层语义扩充（`inferFileArchLayer`）
+
+- `*.launch.py` → `deployment`（部署编排）
+- `*/<pkg>/routers/...` / `routes/...` / `controllers/...` / `api/...` / `views/...` / `endpoints/...` → `presentation`
+- `*/<pkg>/services/...` / `use_cases/...` / `domain/...` / `biz/...` → `service`
+- `*/<pkg>/models/...` / `schemas/...` / `entities/...` / `dto/...` → `service`
+- `*/<pkg>/repositories/...` / `dal/...` / `dao/...` / `infra/...` / `adapters/...` / `gateways/...` → `integration`
+- ROS 2 节点惯例：`*/scripts/...` 或 `*_node.py` → `service`
+
+#### 本体类型扩展
+
+- `OBJECT_TYPES` 35 → 38：新增 `RosNode`（`rosnode:`，CodeUnit/L1）、`RosChannel`（`roschan:`，CodeUnit/L1）、`RosLaunch`（`roslaunch:`，EntryPoint/L2）
+- `LINK_TYPES` 49 → 54：新增 `declaresChannel`（RosNode → RosChannel）、`launchesNode`（RosLaunch → RosNode，含 unresolved 标记）、`launchesLaunch`（RosLaunch → RosLaunch，IncludeLaunch 嵌套）、`declaresLaunchArg` / `executesProcess`（预留）
+- `ONTOLOGY_META.abstractionLevels` / `categories` 同步登记
+- `_meta.rosEdges` 边集合导出
+
+#### 真实项目端到端验证（openamr-platform-sw）
+
+| 维度                | 数量 |
+| ------------------- | ---- |
+| Python 源文件       | 65   |
+| ROS 2 launch 文件   | 14   |
+| RosNode 节点类      | 16   |
+| RosChannel 通道     | 150  |
+| 　　publisher       | 14   |
+| 　　subscription    | 29   |
+| 　　service         | 1    |
+| 　　client          | 4    |
+| 　　timer           | 4    |
+| 　　action          | 2    |
+| 　　parameter       | 96   |
+| RosLaunch launch    | 14   |
+| declaresChannel 边  | 150  |
+| launchesNode 边     | 18（全 unresolved —— launch 启动的多为第三方包节点如 rplidar_ros，本仓库无对应类） |
+| launchesLaunch 边   | 5    |
+
+### 测试
+
+- `test/pythonAnalyzer.test.mjs` 新增 9 用例：
+  - parseClassFields 缩进感知（局部变量不再误报）
+  - ROS 2 Node 类基类识别（Node / LifecycleNode / ComposableNode）
+  - ROS 2 通信通道抽取（pub/sub/service/client/timer/parameter 七通道）
+  - launch 文件 Node/Argument/Process/Include 抽取
+  - IncludeLaunchDescription 嵌套
+  - 非 launch 文件 `pythonLaunch: null` 兜底
+  - def main() 入口点
+  - def main() 与 `__main__` 守卫并存去重
+  - 带参数 / 装饰器的 main 不误报
+- `test/blueprintEngine.test.mjs` 同步更新：`OBJECT_TYPES 35 → 38` / `LINK_TYPES 49 → 54`
+- `test/toolRegistry.test.mjs` 同步更新：get_schema / list_types 计数
+- 全套测试 828/828 通过（+9 新增；原 819 全保留零修改）
+
 ## [0.38.0] - 2026-08-28
 
 ### 新增 `output docs`：分层上下文文档树（context-builder skill 的 CLI 支撑）

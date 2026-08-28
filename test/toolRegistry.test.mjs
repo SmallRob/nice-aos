@@ -83,14 +83,14 @@ test('get_stats 返回项目元信息 + counts + cycles + orphan', async () => {
   assert.equal(r.orphanCandidates.length, 1);
 });
 
-test('get_schema 返回 35 种对象类型 + 49 链接类型 + 4 个 action + 抽象层级', async () => {
+test('get_schema 返回 38 种对象类型 + 54 链接类型 + 4 个 action + 抽象层级（v0.39.0 +3 ROS 2 类型 / +5 ROS 2 边）', async () => {
   const reg = createToolRegistry({ snap: FIXTURE });
   const r = await reg.call('get_schema', {});
   assert.equal(r.ok, true);
   assert.ok(Array.isArray(r.objectTypes));
-  assert.equal(r.objectTypes.length, 35, 'OBJECT_TYPES 共 35 个（v0.38.0 +Shell/CMake/PKGBUILD/Nix 维度）');
+  assert.equal(r.objectTypes.length, 38, 'OBJECT_TYPES 共 38 个（v0.39.0 +RosNode/RosChannel/RosLaunch）');
   assert.ok(Array.isArray(r.linkTypes));
-  assert.equal(r.linkTypes.length, 49, 'LINK_TYPES 共 49 个（v0.38.0 +Shell/CMake/PKGBUILD/Nix 边）');
+  assert.equal(r.linkTypes.length, 54, 'LINK_TYPES 共 54 个（v0.39.0 +declaresChannel/launchesNode/launchesLaunch/declaresLaunchArg/executesProcess）');
   assert.equal(r.actionNames.length, 4);
   assert.equal(r.meta.abstractionLevels.length, 4, '4 个抽象层级 L0-L3');
   assert.equal(r.meta.categories.length, 7, '7 个概念范畴（v0.38.0 +Builtin）');
@@ -99,11 +99,11 @@ test('get_schema 返回 35 种对象类型 + 49 链接类型 + 4 个 action + �
   assert.equal(r.prefixMap['method:'], 'Method');
 });
 
-test('list_types 返回 35 种对象类型的精简形态', async () => {
+test('list_types 返回 38 种对象类型的精简形态（v0.39.0 +3 ROS 2 类型）', async () => {
   const reg = createToolRegistry({ snap: FIXTURE });
   const r = await reg.call('list_types', {});
   assert.equal(r.ok, true);
-  assert.equal(r.types.length, 35);
+  assert.equal(r.types.length, 38);
   for (const t of r.types) {
     assert.ok(t.type && t.prefix && t.category && t.level, '每个 type 字段必须齐全');
   }

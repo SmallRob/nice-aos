@@ -1,4 +1,4 @@
-// Python 实体分析器（Python 3 脚本 / FastAPI 后端 / Flask / Django / Chaquopy / 油猴配套脚本）：
+// Python 实体分析器（Python 3 脚本 / FastAPI 后端 / Flask / Django / Chaquopy / 油猴配套脚本 / ROS 2 rclpy 节点 / ROS 2 launch 文件）：
 // 轻量语法级解析（基于缩进的块结构 + 等长噪声剥离），与 tsAnalyzer / vueAnalyzer / dartAnalyzer / goAnalyzer / rustAnalyzer 平级共存、逻辑完全独立。
 // 实体映射（对齐 TS/Rust/Dart 语义）：
 //   class X(Base, Mixin, metaclass=Meta): ... → Class（kind: class，bases 含末段类型名；metaclass= 抽到 metaclassName）；
@@ -9,9 +9,17 @@
 //   __init__ / __str__ / __repr__ / __enter__/__exit__ 等 dunder → methods[].isDunder=true + dunderCategory 语义标签；
 //   __all__ = [...] → pythonExports（模块公开符号清单）；
 //   if __name__ == "__main__": → pythonEntryPoints（脚本入口）；
+//   顶层 def main() → pythonEntryPoints（main 入口，无需 __main__ 守卫）；
 //   @app.command / @click.command / @typer.command 装饰器 → pythonEntryPoints（CLI 入口）；
 //   方法/函数体内调用 → callEdges（self.method() / cls.method() / Class.method() / pkg.func() / new Class()）；
 //   @app.get/post/put/delete/patch + @app.route / @router.get 系列 → pythonRoutes（method/path/handler/target）。
+// v0.39.0 ROS 2 维度：
+//   class X(rclpy.node.Node | LifecycleNode | ComposableNode) → ormHints += ros2-node|ros2-lifecycle-node|ros2-composable-node；
+//   class body 内 self.create_publisher / create_subscription / create_service / create_client / create_timer /
+//   create_action_server / ActionClient / declare_parameter → channels.{publishers|subscribers|services|clients|timers|actions|parameters}；
+//   *.launch.py 中 def generate_launch_description() → pythonLaunch.{isLaunch, entry, args, nodes, executeProcess, includeLaunch, actions}；
+//   顶层 Node(package=..., executable=..., name=...) / ExecuteProcess / DeclareLaunchArgument /
+//   IncludeLaunchDescription / GroupAction / SetEnvironmentVariable / TimerAction 等抽到 launch 实体。
 // 双通道设计：stripPythonNoise（全剥离：f-string 插值 + 三引号/单引号/字节串 + 注释）供块状态机与调用提取；
 // stripCommentsOnly（仅剥注释，保留字符串内容）供 import / 装饰器字符串 / 路由 path / __all__ 列表 / docstring 提取。
 // 死代码判定契约：nameReferences（全文标识符位置）+ 实体 pos/end（声明范围），由 collectTypeEntities 统一消费。
@@ -49,6 +57,49 @@ const DECORATOR_KIND = {
   abstractmethod: 'abstract', abstractclassmethod: 'abstract', abstractstaticmethod: 'abstract',
   final: 'final', override: 'override', dataclasses: 'dataclass',
 };
+
+// v0.39.0 ROS 2 框架基类（rclpy 主流 API；LifecycleNode / ComposableNode / ActionServer 等扩展）
+// 检测 class X(Base): 中任一基类为 ROS 2 节点基类时，标记为对应 rosHint
+const ROS2_NODE_BASES = new Set([
+  'Node', 'LifecycleNode', 'ComposableNode', 'Node as rclpy_Node',  // 兼容别名
+]);
+const ROS2_NODE_FQN_BASES = new Set([
+  'rclpy.node.Node', 'rclpy.lifecycle.node.LifecycleNode',
+]);
+const ROS2_BASE_HINT = {
+  Node: 'ros2-node',
+  'rclpy.node.Node': 'ros2-node',
+  LifecycleNode: 'ros2-lifecycle-node',
+  'rclpy.lifecycle.node.LifecycleNode': 'ros2-lifecycle-node',
+  ComposableNode: 'ros2-composable-node',
+};
+
+// v0.39.0 ROS 2 通信通道模式
+// create_publisher / create_subscription / create_service / create_client / create_timer /
+// create_action_server / create_action_client / declare_parameter / get_parameter / set_parameters
+// 在 stripped 通道上提取（已剥离字符串，避免误判）
+const ROS2_CHANNEL_PATTERNS = [
+  { kind: 'publisher',    re: /\bself\.create_publisher\s*\(/g,        args: ['msgType', 'topic', 'qos'] },
+  { kind: 'subscription', re: /\bself\.create_subscription\s*\(/g,   args: ['msgType', 'topic', 'callback', 'qos'] },
+  { kind: 'service',      re: /\bself\.create_service\s*\(/g,        args: ['srvType', 'name', 'callback'] },
+  { kind: 'client',       re: /\bself\.create_client\s*\(/g,         args: ['srvType', 'name'] },
+  { kind: 'timer',        re: /\bself\.create_timer\s*\(/g,          args: ['period', 'callback'] },
+  { kind: 'action-server',re: /\bself\.create_action_server\s*\(/g,  args: ['actionType', 'name', 'callback'] },
+  { kind: 'action-client',re: /\bActionClient\s*\(/g,                args: ['node', 'actionType', 'name'] },
+  { kind: 'parameter',    re: /\bself\.declare_parameter\s*\(/g,     args: ['name', 'default'] },
+];
+
+// v0.39.0 launch 文件入口
+//   .launch.py 文件中存在 def generate_launch_description(): 即为 ROS 2 launch 文件
+//   返回值是 LaunchDescription([...]) 列表里的元素会按以下类型分类
+const LAUNCH_ENTRY_FUNC = 'generate_launch_description';
+const LAUNCH_ACTIONS = new Set([
+  'Node', 'ExecuteProcess', 'DeclareLaunchArgument', 'IncludeLaunchDescription',
+  'GroupAction', 'OpaqueFunction', 'SetLaunchConfiguration', 'SetEnvironmentVariable',
+  'TimerAction', 'RegisterEventHandler', 'UnregisterEventHandler',
+  'ComposableNodeContainer', 'LoadComposableNodes', 'PushRosNamespace',
+  'RosTimer', 'Shutdown',
+]);
 
 // dunder 分类（语义标签）
 const DUNDER_CATEGORIES = {
@@ -547,45 +598,85 @@ function findHandlerAfter(stripped, fromPos, lineOf) {
   return null;
 }
 
-// ---------- 类字段解析（含 SQLAlchemy 2.0 Mapped[] + 跨行续行） ----------
+// ---------- 类字段解析（缩进感知 + SQLAlchemy 2.0 Mapped[] + 跨行续行） ----------
+// v0.39.0 修复：原实现把方法体里的局部变量也当成类字段（测试 dock_trigger.py 一度 341 个伪字段）。
+// 关键修正：维护一个 blockStack（def/class/复合语句 if/try/for/with），仅当语句不被任何块包裹时
+// 才认作"类直接体"（class-body level）字段。compound 块（if/try/for/with）因为不带 indent 上升
+// 也用最小 indent 比较来推进/弹出。
 function parseClassFields(cleanBody) {
   const fields = [];
-  // 跨行续行：把多行 wrapped 语句合并为单行
+  // 跨行续行：把多行 wrapped 语句合并为单行（带 indent 取首行）
   const lines = cleanBody.split('\n');
-  const logicalLines = [];
+  const logical = []; // { indent, text, line }
   let buf = '';
+  let bufIndent = -1;
   let depth = 0;
-  for (const line of lines) {
+  let bufLine = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!buf) {
+      bufIndent = lineIndent(line);
+      bufLine = i;
+    }
     buf += (buf ? '\n' : '') + line;
     for (const ch of line) {
       if (ch === '(' || ch === '[' || ch === '{') depth += 1;
       else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
     }
     if (depth <= 0) {
-      logicalLines.push(buf);
+      logical.push({ indent: bufIndent, text: buf.split('\n').map((s) => s.trim()).join(' ').trim(), line: bufLine });
       buf = '';
-      depth = 0;
+      bufIndent = -1;
     }
   }
-  if (buf) logicalLines.push(buf);
+  if (buf) logical.push({ indent: bufIndent, text: buf.split('\n').map((s) => s.trim()).join(' ').trim(), line: bufLine });
 
-  for (const ll of logicalLines) {
-    const t = ll.split('\n').map((s) => s.trim()).join(' ').trim();
-    if (!t) continue;
-    if (/^def\s/.test(t) || /^class\s/.test(t) || t.startsWith('@')) continue;
-    // 排除方法体赋值：self.x = ... / cls.x = ...
-    if (/^(?:self|cls)\./.test(t)) continue;
+  // blockStack 跟踪 def / class（也包括装饰器行所在的"待定 def/class"占位）
+  // indent 退到 <= 栈顶时弹栈，栈空时即类直接体语句。
+  const blockStack = []; // [{ indent, kind: 'def'|'class'|'pending-def'|'pending-class' }]
+  for (const { indent, text } of logical) {
+    if (!text) continue;
+    // 装饰器行：累积到"待定"栈帧，下一行必须是 def/class
+    if (text.startsWith('@')) {
+      if (indent >= 0) {
+        // 同 indent 才视为待定（避免错配）
+        blockStack.push({ indent, kind: /^@\s*(?:\w+\.)*(?:def|class)\b/.test(text) ? 'pending' : 'skip' });
+      }
+      continue;
+    }
+    // 弹栈：缩进 <= 栈顶 indent 时全部弹出
+    while (blockStack.length > 0 && indent >= 0 && indent <= blockStack[blockStack.length - 1].indent) {
+      blockStack.pop();
+    }
+    // 仍在某个块内部 → 不是类直接体
+    if (blockStack.length > 0) continue;
+    if (indent < 0) continue; // 空白行
+
+    // def / async def / class → 进入新块
+    if (/^(?:async\s+)?def\s/.test(text) || /^class\s/.test(text)) {
+      blockStack.push({ indent, kind: /^class\s/.test(text) ? 'class' : 'def' });
+      continue;
+    }
+    // 复合语句（if/elif/else/try/except/finally/with/for/while/match/case）以冒号结尾：
+    // 进入块 → 内部语句被吃掉。复合语句本身不参与字段检测。
+    if (text.endsWith(':') && /^(?:if|elif|else|try|except|finally|with|for|while|match|case)\b/.test(text)) {
+      blockStack.push({ indent, kind: 'compound' });
+      continue;
+    }
+    // 排除方法体赋值：self.x = ... / cls.x = ...（在类直接体中出现也属合法属性，但 SQLAlchemy/ORM
+    // 通常用 : 注解形式而非 self.x 形式；这里保留 self.x 的过滤逻辑，仅作显式类属性时进入实体）。
+    if (/^(?:self|cls)\./.test(text)) continue;
     // SQLAlchemy 2.0：name: Mapped[type] = mapped_column(...) / name: Mapped[type] = relationship(...)
     // 处理嵌套括号：typeText 用括号深度匹配而非 [^\]]+（避免 Mapped[list[X]] 提前终止）
     const mappedRe = /^([A-Za-z_][\w]*)\s*:\s*Mapped\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\s*=\s*(mapped_column|relationship)\b/;
-    const mappedM = mappedRe.exec(t);
+    const mappedM = mappedRe.exec(text);
     if (mappedM) {
       const name = mappedM[1];
       const typeText = mappedM[2].trim();
       const kind = mappedM[3] === 'relationship' ? 'relation' : 'column';
       let target = null;
       if (kind === 'relation') {
-        const targetM = /['"]([A-Za-z_][\w]*)['"]/.exec(t);
+        const targetM = /['"]([A-Za-z_][\w]*)['"]/.exec(text);
         if (targetM) target = targetM[1];
       }
       if (name.startsWith('_')) continue;
@@ -593,7 +684,7 @@ function parseClassFields(cleanBody) {
       continue;
     }
     // Pydantic / dataclass：name: type / name: type = default
-    const m1 = /^([A-Za-z_][\w]*)\s*:\s*([^=]+?)\s*(?:=.*)?$/.exec(t);
+    const m1 = /^([A-Za-z_][\w]*)\s*:\s*([^=]+?)\s*(?:=.*)?$/.exec(text);
     if (m1) {
       const name = m1[1];
       const type = m1[2].trim();
@@ -604,17 +695,234 @@ function parseClassFields(cleanBody) {
       continue;
     }
     // 裸赋值：name = value
-    const m2 = /^([A-Za-z_][\w]*)\s*=\s*(.+)$/.exec(t);
+    const m2 = /^([A-Za-z_][\w]*)\s*=\s*(.+)$/.exec(text);
     if (m2) {
       const name = m2[1];
       if (name.startsWith('_')) continue;
       if (['True', 'False', 'None', 'self', 'cls'].includes(name)) continue;
       if (CALL_EXCLUDE.has(name)) continue;
-      const kind = /relationship\(/.test(t) ? 'relation' : (/mapped_column\(/.test(t) ? 'column' : null);
+      const kind = /relationship\(/.test(text) ? 'relation' : (/mapped_column\(/.test(text) ? 'column' : null);
       fields.push({ name, type: null, kind });
     }
   }
   return fields;
+}
+
+// ---------- v0.39.0 ROS 2 通信通道抽取 ----------
+// 在 class body 整体上扫描 self.create_publisher / create_subscription / ... / declare_parameter。
+// 第一个参数通常是类引用（LaserScan / PoseStamped / SetBool 等），第二个是 topic/name 字面量。
+// callback 参数通常是 self.xxx / class.method 字面，无法静态解析，保留原文本。
+// 字符串内容已通过 stripped 通道剥离，不会误判 f-string 里的伪调用。
+function extractRos2Channels(cleanBody, lineStarts) {
+  const lineOf = (pos) => {
+    let lo = 0, hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+  const channels = { publishers: [], subscribers: [], services: [], clients: [], timers: [], actions: [], parameters: [] };
+  for (const pat of ROS2_CHANNEL_PATTERNS) {
+    pat.re.lastIndex = 0;
+    let m;
+    while ((m = pat.re.exec(cleanBody))) {
+      const callStart = m.index + m[0].length - 1; // 指向 '('
+      const callEnd = findMatchingParen(cleanBody, callStart);
+      if (callEnd < 0) continue;
+      const argsText = cleanBody.slice(callStart + 1, callEnd);
+      const args = splitCallArgs(argsText);
+      const channel = { kind: pat.kind, line: 0 };
+      for (let i = 0; i < pat.args.length && i < args.length; i += 1) {
+        const v = args[i].trim().replace(/^['"]|['"]$/g, '');
+        channel[pat.args[i]] = v;
+      }
+      channel.line = lineOf(m.index);
+      // bucket 命名修正：subscription→subscribers、action-server/action-client→actions、parameter→parameters、其余 kind+'s'
+      const bucket = pat.kind === 'action-server' || pat.kind === 'action-client' ? 'actions'
+        : pat.kind === 'parameter' ? 'parameters'
+        : pat.kind === 'subscription' ? 'subscribers'
+        : pat.kind + 's';
+      if (!channels[bucket]) {
+        // 兜底：未知 pat.kind 不应崩溃，落入 publishers 便于 agent 定位
+        channels.publishers.push({ ...channel, bucketFallback: true });
+        continue;
+      }
+      channels[bucket].push(channel);
+    }
+  }
+  return channels;
+}
+function findMatchingParen(text, openIdx) {
+  let depth = 0;
+  for (let i = openIdx; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+function splitCallArgs(text) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  let inStr = false;
+  let strCh = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inStr) {
+      if (ch === '\\' && i + 1 < text.length) { i += 1; continue; }
+      if (ch === strCh) inStr = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inStr = true; strCh = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    else if (ch === ',' && depth === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+// 注：channel.line 由主解析处的 lineOf(pos) 闭包填入（基于完整 lineStarts）
+// 这里不再需要 lineAtFromText 占位函数
+
+// ---------- v0.39.0 ROS 2 Node 类基类识别 ----------
+// bases 已经末段剥离（'rclpy.node.Node' → 'Node'），但我们额外兼容完整 FQN 的元组
+function detectRos2NodeHint(bases) {
+  for (const b of bases) {
+    if (ROS2_BASE_HINT[b]) return ROS2_BASE_HINT[b];
+  }
+  return null;
+}
+
+// ---------- v0.39.0 ROS 2 launch 文件抽取 ----------
+// 检测 .launch.py 文件中：
+//   1. def generate_launch_description() → entry 函数
+//   2. LaunchDescription([...]) 列表里的动作（Node / ExecuteProcess / DeclareLaunchArgument /
+//      IncludeLaunchDescription / GroupAction 等）
+//   3. 顶层 Node(package=..., executable=..., name=..., parameters=..., remappings=...) 实例
+//   4. 顶层 DeclareLaunchArgument(name=..., default_value=..., description=...)
+// 字符串内容走 stripped 通道（避免 f-string 里的伪构造）。
+function extractLaunch(cleanBody, lineStarts) {
+  const lineOf = (pos) => {
+    let lo = 0, hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+  const out = {
+    isLaunch: false,
+    entry: null,           // 入口函数名（通常 'generate_launch_description'）
+    args: [],              // DeclareLaunchArgument 列表
+    nodes: [],             // Node(...) 实例
+    executeProcess: [],    // ExecuteProcess(cmd=...)
+    includeLaunch: [],     // IncludeLaunchDescription(...)
+    actions: [],           // 其它动作（GroupAction / SetEnvironmentVariable / TimerAction ...）
+  };
+  // 入口函数
+  const entryM = /^[ \t]*def\s+(generate_launch_description|generate_launch_file)\s*\(/m.exec(cleanBody);
+  if (!entryM) return out;
+  out.isLaunch = true;
+  out.entry = entryM[1];
+
+  // 抽取 Node(package=..., executable=..., name=...)
+  const nodeRe = /\bNode\s*\(/g;
+  let m;
+  while ((m = nodeRe.exec(cleanBody))) {
+    const open = m.index + m[0].length - 1;
+    const close = findMatchingParen(cleanBody, open);
+    if (close < 0) continue;
+    const argsText = cleanBody.slice(open + 1, close);
+    const node = {
+      package: extractKwarg(argsText, 'package'),
+      executable: extractKwarg(argsText, 'executable'),
+      name: extractKwarg(argsText, 'name'),
+      namespace: extractKwarg(argsText, 'namespace'),
+      line: lineOf(m.index),
+      isComposable: /\bComposableNode\s*\(/.test(cleanBody.slice(Math.max(0, m.index - 32), m.index)),
+    };
+    if (node.package || node.executable || node.name) out.nodes.push(node);
+  }
+
+  // 抽取 ExecuteProcess(cmd=...)
+  const execRe = /\bExecuteProcess\s*\(/g;
+  while ((m = execRe.exec(cleanBody))) {
+    const open = m.index + m[0].length - 1;
+    const close = findMatchingParen(cleanBody, open);
+    if (close < 0) continue;
+    const argsText = cleanBody.slice(open + 1, close);
+    const cmd = extractListArg(argsText, 'cmd');
+    out.executeProcess.push({ cmd, line: lineOf(m.index) });
+  }
+
+  // 抽取 DeclareLaunchArgument(name=..., default_value=..., description=...)
+  const argRe = /\bDeclareLaunchArgument\s*\(/g;
+  while ((m = argRe.exec(cleanBody))) {
+    const open = m.index + m[0].length - 1;
+    const close = findMatchingParen(cleanBody, open);
+    if (close < 0) continue;
+    const argsText = cleanBody.slice(open + 1, close);
+    out.args.push({
+      name: extractKwarg(argsText, 'name') ?? extractBareStr(argsText, 0),
+      defaultValue: extractKwarg(argsText, 'default_value') ?? extractKwarg(argsText, 'default'),
+      description: extractKwarg(argsText, 'description'),
+      line: lineOf(m.index),
+    });
+  }
+
+  // 抽取 IncludeLaunchDescription(...)
+  const incRe = /\bIncludeLaunchDescription\s*\(/g;
+  while ((m = incRe.exec(cleanBody))) {
+    const open = m.index + m[0].length - 1;
+    const close = findMatchingParen(cleanBody, open);
+    if (close < 0) continue;
+    const argsText = cleanBody.slice(open + 1, close);
+    // PythonLaunchDescriptionSource(os.path.join(...)) 路径信息在内层表达式
+    const srcM = /PythonLaunchDescriptionSource\s*\(([^)]+)\)/.exec(argsText);
+    out.includeLaunch.push({
+      path: srcM ? srcM[1].trim() : null,
+      line: lineOf(m.index),
+    });
+  }
+
+  // 其它动作（GroupAction / SetEnvironmentVariable / TimerAction / ComposableNodeContainer ...）
+  const actionKindRe = /\b(GroupAction|OpaqueFunction|SetLaunchConfiguration|SetEnvironmentVariable|TimerAction|RegisterEventHandler|ComposableNodeContainer|LoadComposableNodes|PushRosNamespace|RosTimer|Shutdown)\s*\(/g;
+  while ((m = actionKindRe.exec(cleanBody))) {
+    out.actions.push({ kind: m[1], line: lineOf(m.index) });
+  }
+  return out;
+}
+
+// 从 Node(package='x', executable='y') 之类 kwargs 文本里抽 keyword=value
+// value 允许 'str' / "str" / True / False / None / 123 / 3.14 / 简单变量名（保留原文本）
+function extractKwarg(argsText, name) {
+  const re = new RegExp(`(?:^|,)\\s*${name}\\s*=\\s*([^,]+?)(?=,|\\)|$)`, 'm');
+  const m = re.exec(argsText);
+  if (!m) return null;
+  return normalizeArgValue(m[1].trim());
+}
+function extractListArg(argsText, name) {
+  // cmd=[...] 形式：抽整个 list 字面量（去除 [ ] 后保留原文本）
+  const re = new RegExp(`(?:^|,)\\s*${name}\\s*=\\s*\\[([^\\]]*)\\]`, 'm');
+  const m = re.exec(argsText);
+  if (!m) return null;
+  return m[1].trim();
+}
+function extractBareStr(argsText, idx) {
+  const parts = splitCallArgs(argsText);
+  if (idx >= parts.length) return null;
+  const v = parts[idx].trim();
+  return normalizeArgValue(v);
+}
+function normalizeArgValue(v) {
+  if (!v) return v;
+  if (/^['"][^'"]*['"]$/.test(v)) return v.replace(/^['"]|['"]$/g, '');
+  return v;
 }
 
 // ---------- 主解析：缩进感知的行级状态机 ----------
@@ -658,6 +966,9 @@ export function analyzePythonFile(relPath, content) {
     pythonDecorators: [],
     pythonRoutes: [],
     pythonModuleDocstring: null,
+    // v0.39.0 ROS 2 维度
+    pythonLaunch: null,           // 仅 .launch.py 且含 generate_launch_description() 时非 null
+    ros2NodeClasses: [],          // [{ name, line, baseClass, rosHint, channels, pos }] — 顶层 ROS 2 Node 子类索引
   };
 
   // nameReferences（全文标识符位置；stripped 通道排除字符串内容）
@@ -724,6 +1035,15 @@ export function analyzePythonFile(relPath, content) {
       for (const d of fn.decorators) facts.pythonDecorators.push({ ...d, on: frame.name, kind: 'module-function', line: fn.line });
       const isCliEntry = fn.decorators.some((d) => ENTRY_DECORATORS.has(d.qualified));
       if (isCliEntry) facts.pythonEntryPoints.push({ kind: 'cli', handler: frame.name, line: fn.line });
+      // v0.39.0 顶层 def main() → 标记为 main 入口（即便没有 if __name__ == '__main__' 守卫）
+      if (frame.name === 'main' && frame.decoratorLines.length === 0) {
+        const sig = (frame.head || '').trim();
+        if (/^def\s+main\s*\(\s*\)/.test(sig)) {
+          // 已存在 __main__ 入口时不重复（避免 __main__ 守卫 + def main 重复计数）
+          const hasMainGuard = facts.pythonEntryPoints.some((e) => e.kind === '__main__');
+          if (!hasMainGuard) facts.pythonEntryPoints.push({ kind: 'main', handler: frame.name, line: fn.line });
+        }
+      }
       // 调用链：body 区间 = frame.bodyStart → closePos
       const bodyText = stripped.slice(frame.bodyStart, closePos);
       const calls = extractCalls(bodyText, lineStarts);
@@ -783,7 +1103,18 @@ export function analyzePythonFile(relPath, content) {
       const ormHints = [];
       if (tableName) ormHints.push('sqlalchemy-table');
       if (tableArgs) ormHints.push('sqlalchemy-table-args');
+      // v0.39.0 ROS 2 节点检测
+      const rosHint = detectRos2NodeHint(frame.bases ?? []);
+      if (rosHint) {
+        ormHints.push(rosHint);
+        // 节点名：super().__init__('name') → 抽第一个字符串字面量
+        const initM = /super\s*\(\s*\)\s*\.\s*__init__\s*\(\s*['"]([^'"]+)['"]/.exec(cleanBody)
+          || /super\s*\(\s*\)\s*\.\s*__init__\s*\(\s*['"]([^'"]+)['"]/.exec(stripped.slice(frame.bodyStart, closePos));
+        if (initM) ormHints.push(`ros2-node-name:${initM[1]}`);
+      }
       const exported = !frame.name.startsWith('_');
+      // v0.39.0 ROS 2 通信通道抽取
+      const channels = rosHint ? extractRos2Channels(cleanBody, lineStarts) : null;
       const cls = {
         name: frame.name,
         line: lineOf(frame.headStart),
@@ -806,8 +1137,21 @@ export function analyzePythonFile(relPath, content) {
         // Python 专有扩展字段（builder 可消费）
         tableName,            // SQLAlchemy: __tablename__
         tableArgs,            // SQLAlchemy: __table_args__ 原始文本
-        ormHints,             // 框架基类检测（sqlalchemy-table / sqlalchemy-table-args）
+        ormHints,             // 框架基类检测（sqlalchemy-table / sqlalchemy-table-args / ros2-node / ros2-lifecycle-node / ros2-composable-node / ros2-node-name:X）
+        rosHint,              // v0.39.0 ROS 2 节点 hint（独立字段，builder 易于判定）
+        channels,             // v0.39.0 ROS 2 通信通道（publishers/subscribers/services/clients/timers/actions/parameters）
       };
+      if (rosHint) {
+        facts.ros2NodeClasses.push({
+          name: frame.name,
+          line: lineOf(frame.headStart),
+          baseClass: frame.bases?.[0] ?? null,
+          bases: frame.bases ?? [],
+          rosHint,
+          channels: channels ?? { publishers: [], subscribers: [], services: [], clients: [], timers: [], actions: [], parameters: [] },
+          pos: frame.headStart,
+        });
+      }
       if (isInterface) {
         interfaces.push({
           name: frame.name,
@@ -900,6 +1244,16 @@ export function analyzePythonFile(relPath, content) {
 
   // 文件结束：弹光所有栈
   popFrames(-1, stripped.length);
+
+  // v0.39.0 ROS 2 launch 文件检测（.launch.py）
+  if (relPath.endsWith('.launch.py')) {
+    const launch = extractLaunch(clean, lineStarts);
+    if (launch.isLaunch) {
+      facts.pythonLaunch = launch;
+      // 入口函数也加入 entryPoints（与 if __name__ 平级）
+      facts.pythonEntryPoints.push({ kind: 'launch', handler: launch.entry, line: 0 });
+    }
+  }
 
   facts.exportNames = facts.exportSymbols.map((s) => s.name);
   return facts;

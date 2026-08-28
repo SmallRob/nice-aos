@@ -2558,6 +2558,101 @@ export async function buildOntologyData(projectRoot, options = {}) {
     }
   }
 
+  // v0.39.0 ROS 2 实体聚合：pythonAnalyzer.ros2NodeClasses / .pythonLaunch / .channels
+  //   RosNode（rosnode:）：节点类 + 节点名（super().__init__('name')）+ channels 索引
+  //   RosChannel（roschan:）：publisher / subscriber / service / client / timer / action / parameter
+  //   RosLaunch（roslaunch:）：launch 文件 + 嵌套节点清单 + args + includeLaunch
+  // 节点名（topic / service name）以原始字面量保留（无内联解析；上游 yaml/config 解析留给 agent）
+  const rosNodes = [];
+  const rosChannels = [];
+  const rosLaunches = [];
+  const rosNodeKey = new Map(); // `${relPath}#${className}` → RosNode
+  const rosChanIds = new Set();
+  const rosLaunchIds = new Set();
+  for (const [relPath, facts] of factsMap) {
+    if (!relPath.endsWith('.py')) continue;
+    // 节点 → RosNode + RosChannel
+    for (const nc of facts.ros2NodeClasses ?? []) {
+      const nodeId = `rosnode:${relPath}#${nc.name}`;
+      const nodeNameHint = (nc.bases ?? []).find((b) => b === 'Node' || b === 'LifecycleNode' || b === 'ComposableNode') ?? null;
+      rosNodes.push({
+        id: nodeId,
+        name: nc.name,
+        relPath,
+        line: nc.line,
+        baseClass: nc.baseClass,
+        bases: nc.bases,
+        rosHint: nc.rosHint,
+        nodeNameHint,
+        channelCount: (nc.channels?.publishers?.length ?? 0)
+          + (nc.channels?.subscribers?.length ?? 0)
+          + (nc.channels?.services?.length ?? 0)
+          + (nc.channels?.clients?.length ?? 0)
+          + (nc.channels?.timers?.length ?? 0)
+          + (nc.channels?.actions?.length ?? 0)
+          + (nc.channels?.parameters?.length ?? 0),
+        language: 'python',
+      });
+      rosNodeKey.set(`${relPath}#${nc.name}`, { id: nodeId, channels: nc.channels ?? {} });
+      // 通道 → RosChannel
+      const pushChannels = (kindArr, chanKind) => {
+        if (!kindArr) return;
+        for (let i = 0; i < kindArr.length; i += 1) {
+          const ch = kindArr[i];
+          const id = uniqueId(`roschan:${relPath}#${nc.name}#${chanKind}#${i}`, rosChanIds);
+          const chName = ch.topic || ch.name || ch.srvType || ch.actionType || ch.period || ch.name || `${chanKind}#${i}`;
+          rosChannels.push({
+            id,
+            kind: chanKind,
+            nodeId,
+            relPath,
+            line: ch.line,
+            msgType: ch.msgType ?? null,
+            srvType: ch.srvType ?? null,
+            actionType: ch.actionType ?? null,
+            name: chName,
+            topic: ch.topic ?? null,
+            period: ch.period ?? null,
+            callback: ch.callback ?? null,
+            qos: ch.qos ?? null,
+            default: ch.default ?? null,
+            language: 'python',
+          });
+        }
+      };
+      pushChannels(nc.channels?.publishers, 'publisher');
+      pushChannels(nc.channels?.subscribers, 'subscription');
+      pushChannels(nc.channels?.services, 'service');
+      pushChannels(nc.channels?.clients, 'client');
+      pushChannels(nc.channels?.timers, 'timer');
+      pushChannels(nc.channels?.actions, 'action');
+      pushChannels(nc.channels?.parameters, 'parameter');
+    }
+    // launch 文件 → RosLaunch
+    if (facts.pythonLaunch?.isLaunch) {
+      const lf = facts.pythonLaunch;
+      const launchId = `roslaunch:${relPath}`;
+      rosLaunches.push({
+        id: launchId,
+        name: lf.entry ?? 'generate_launch_description',
+        relPath,
+        line: 1,
+        entry: lf.entry,
+        nodeCount: lf.nodes?.length ?? 0,
+        argCount: lf.args?.length ?? 0,
+        includeCount: lf.includeLaunch?.length ?? 0,
+        processCount: lf.executeProcess?.length ?? 0,
+        actionCount: lf.actions?.length ?? 0,
+        nodes: lf.nodes ?? [],
+        args: lf.args ?? [],
+        includeLaunch: lf.includeLaunch ?? [],
+        executeProcess: lf.executeProcess ?? [],
+        actions: lf.actions ?? [],
+        language: 'python',
+      });
+    }
+  }
+
   // PHP 路由（zentaopms 惯例）：module/<x>/control.php 内 public function xxx → Route(routeType='php')
   // path = /<module>-<method>（与 zentaopms createLink('module','method') 的 URL 形态一致）
   {
@@ -3142,6 +3237,7 @@ export async function buildOntologyData(projectRoot, options = {}) {
       if ((scan.dartFileCount ?? 0) > 0) parts.push('Dart');
       if ((scan.goFileCount ?? 0) > 0) parts.push('Go');
       if ((scan.pyFileCount ?? 0) > 0) parts.push('Python');
+      if ((scan.pyLaunchFileCount ?? 0) > 0) parts.push('+ROS2Launch');
       if ((scan.kotlinFileCount ?? 0) > 0) parts.push('Kotlin');
       if ((scan.phpFileCount ?? 0) > 0) parts.push('PHP');
       if ((scan.shFileCount ?? 0) > 0) parts.push('Shell');
@@ -3161,6 +3257,9 @@ export async function buildOntologyData(projectRoot, options = {}) {
     dartFileCount: scan.dartFileCount ?? 0,
     goFileCount: scan.goFileCount ?? 0,
     pyFileCount: scan.pyFileCount ?? 0,
+    pyLaunchFileCount: scan.pyLaunchFileCount ?? 0,
+    pyNodeClassCount: rosNodes.length,
+    pyDetected: scan.pyDetected ?? false,
     kotlinFileCount: scan.kotlinFileCount ?? 0,
     phpFileCount: scan.phpFileCount ?? 0,
     shFileCount: scan.shFileCount ?? 0,
@@ -3236,6 +3335,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
         CMakeFunction: cmakeFunctions.length, CMakeOption: cmakeOptions.length,
         ArchPackage: archPackages.length, ArchPackageFunction: archPackageFunctions.length,
         NixFlake: nixFlakes.length, NixPackage: nixPackages.length, NixInput: nixInputs.length,
+        // v0.39.0 ROS 2 维度
+        RosNode: rosNodes.length, RosChannel: rosChannels.length, RosLaunch: rosLaunches.length,
       },
     },
     Project: [project],
@@ -3274,9 +3375,57 @@ export async function buildOntologyData(projectRoot, options = {}) {
     NixPackage: nixPackages,
     NixInput: nixInputs,
     Domain: domains,
+    // v0.39.0 ROS 2 维度
+    RosNode: rosNodes,
+    RosChannel: rosChannels,
+    RosLaunch: rosLaunches,
   };
   // v0.38.0: 边集合(简化为 SourceFile 容器下挂,挂在 _meta 上以免破坏既有 schema)
   dataMap._meta.shellEdges = { callsFunction, usesBuiltin, readsCliParam, subdirIncludes, declaresOption, addsDependency, targetsInclude };
+  // v0.39.0: ROS 2 边
+  //   declaresChannel：RosNode → RosChannel（节点声明的 pub/sub/service/timer/param 等）
+  //   launchesNode：RosLaunch → RosNode（launch 启动的 ROS 节点，按 package + executable 匹配到已有 RosNode）
+  //   launchesLaunch：RosLaunch → RosLaunch（IncludeLaunchDescription 嵌套）
+  {
+    const rosEdges = { declaresChannel: [], launchesNode: [], launchesLaunch: [] };
+    // declaresChannel
+    for (const ch of rosChannels) {
+      rosEdges.declaresChannel.push({ from: ch.nodeId, to: ch.id, line: ch.line, relPath: ch.relPath });
+    }
+    // launchesNode / launchesLaunch
+    const rosNodeByName = new Map();
+    for (const n of rosNodes) {
+      const key = `${n.relPath}#${n.name}`;
+      rosNodeByName.set(key, n.id);
+    }
+    for (const lf of rosLaunches) {
+      for (const n of lf.nodes ?? []) {
+        if (!n.package || !n.executable) continue;
+        // 启发式匹配：同包内名字一致的 RosNode 视为 launch 启动对象
+        let matched = null;
+        for (const rn of rosNodes) {
+          if (rn.name === n.name) { matched = rn.id; break; }
+        }
+        if (matched) {
+          rosEdges.launchesNode.push({ from: lf.id, to: matched, line: n.line, relPath: lf.relPath, package: n.package, executable: n.executable });
+        } else {
+          // 未匹配到具体节点类：把 launch 节点记为待 agent 解析的占位
+          rosEdges.launchesNode.push({ from: lf.id, to: null, line: n.line, relPath: lf.relPath, package: n.package, executable: n.executable, name: n.name, unresolved: true });
+        }
+      }
+      for (const inc of lf.includeLaunch ?? []) {
+        if (!inc.path) continue;
+        // inc.path 形如 "os.path.join(pkg, 'launch', 'localization_launch.py')" —— 只取最后一个 .py 段
+        const segM = /([\w\-]+\.launch\.py)/.exec(inc.path);
+        if (segM) {
+          const targetName = segM[1];
+          const target = rosLaunches.find((l) => l.relPath.endsWith(targetName));
+          if (target) rosEdges.launchesLaunch.push({ from: lf.id, to: target.id, line: inc.line, relPath: lf.relPath });
+        }
+      }
+    }
+    dataMap._meta.rosEdges = rosEdges;
+  }
   report('build:done', {
     methodCount: methods.length,
     interfaceCount: interfaces.length,
