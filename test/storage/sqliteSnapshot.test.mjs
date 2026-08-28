@@ -107,34 +107,38 @@ function setupTempStorage() {
   return dir;
 }
 
-test('storage init: 8 张表 + 账本 v1 + 本体目录种子化', () => {
+test('storage init: 10 张表 + 账本 v2 + 本体目录种子化（含 type_properties）', () => {
   const dir = setupTempStorage();
   const db = openDb();
   assert.ok(db, 'openDb 应该返回实例');
   // 种子化是刻意延迟的（openDb 保持低层不依赖 ontology，由 ensureSeed 注入 blueprint 后执行）
   ensureSeed(db);
 
-  // 表数量
+  // 表数量（v0.37：账本+3 目录+5 冷层+1 镜像水位 = 10）
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'aos_%' ORDER BY name").all().map((r) => r.name);
-  assert.equal(tables.length, 8);
+  assert.equal(tables.length, 10, `应 10 张表，实际 ${tables.length}：${tables.join(', ')}`);
   assert.ok(tables.includes('aos_schema_history'));
   assert.ok(tables.includes('aos_types'));
+  assert.ok(tables.includes('aos_type_properties'));   // v0.37 新增
   assert.ok(tables.includes('aos_link_types'));
   assert.ok(tables.includes('aos_snapshots'));
   assert.ok(tables.includes('aos_objects'));
   assert.ok(tables.includes('aos_links'));
   assert.ok(tables.includes('aos_overlays'));
+  assert.ok(tables.includes('aos_import_jobs'));        // v0.37 新增
   assert.ok(tables.includes('aos_mirror_state'));
 
-  // 账本
-  const v = db.prepare('SELECT * FROM aos_schema_history').get();
-  assert.equal(v.version, 1);
+  // 账本（取 MAX 因为 v0.37+ 每次迁移写一行，schema_history 会有 v1 + v2 两行）
+  const v = db.prepare('SELECT MAX(version) AS v FROM aos_schema_history').get().v;
+  assert.equal(v, 2, `账本应为 v2，实际 v${v}`);
 
   // 本体目录种子化
   const typeCount = db.prepare('SELECT COUNT(*) AS n FROM aos_types').get().n;
   const linkCount = db.prepare('SELECT COUNT(*) AS n FROM aos_link_types').get().n;
+  const propCount = db.prepare('SELECT COUNT(*) AS n FROM aos_type_properties').get().n;
   assert.equal(typeCount, OBJECT_TYPES.length, `aos_types 应有 ${OBJECT_TYPES.length} 行，实际 ${typeCount}`);
   assert.equal(linkCount, LINK_TYPES.length, `aos_link_types 应有 ${LINK_TYPES.length} 行，实际 ${linkCount}`);
+  assert.ok(propCount > 0, `aos_type_properties 应 > 0 行，实际 ${propCount}`);
 
   closeDb();
   fs.rmSync(dir, { recursive: true, force: true });
@@ -348,8 +352,8 @@ test('getStatus: 报告 driver/schema/tables/fileSize', () => {
   const status = getStatus();
   assert.equal(status.available, true);
   assert.equal(status.driver, 'better-sqlite3');
-  assert.equal(status.schemaVersion, 1);
-  assert.ok(status.tables.length >= 7);
+  assert.equal(status.schemaVersion, 2, `应为 v2，实际 v${status.schemaVersion}`);
+  assert.ok(status.tables.length >= 10);
   assert.ok(status.fileSize > 0);
   closeDb();
   fs.rmSync(dir, { recursive: true, force: true });

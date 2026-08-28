@@ -25,6 +25,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { openDb, getSqlitePath } from './db.js';
 import { seedOntologyCatalog } from './seed.js';
+import { computeContentHash, computePkHash } from './migrate.js';
 
 // snapshot_kind → DataMap 顶层键名映射（除 _meta 外的所有键都按对象类型存）
 // 实际上各 kind 的对象类型集合是它自己的 OBJECT_TYPES 子集（由各模块自己决定哪些类型写到 snapshot）
@@ -183,10 +184,16 @@ export function saveSnapshot({ kind, snapshotDir, dataMap, metaOnly = false }) {
     let insertedCount = 0;
     if (!metaOnly) {
       // 插新 objects（按 dataMap 顶层每个数组键，_meta 跳过）
+      //   v0.37+：算 content_hash = sha256(props_json) 与 pk_hash = sha256(`default|default|type|id|content_hash`)
+      //   两 hash 用途：
+      //     - content_hash 跨快照对象去重（增量扫描：同 (type,id) 但 hash 不同 → 脏）
+      //     - pk_hash      代理主键（v0.38 拆 manifest 时切换为 PK）
       const insertObj = db.prepare(`
-        INSERT INTO aos_objects (snapshot_id, type, id, content_hash, props_json)
-        VALUES (?, ?, ?, NULL, ?)
+        INSERT INTO aos_objects (snapshot_id, type, id, content_hash, pk_hash, props_json)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(snapshot_id, type, id) DO UPDATE SET
+          content_hash = excluded.content_hash,
+          pk_hash = excluded.pk_hash,
           props_json = excluded.props_json
       `);
       for (const [type, list] of Object.entries(dataMap)) {
@@ -194,7 +201,10 @@ export function saveSnapshot({ kind, snapshotDir, dataMap, metaOnly = false }) {
         if (!Array.isArray(list)) continue;
         for (const obj of list) {
           if (!obj || typeof obj !== 'object' || !obj.id) continue; // 跳过无 id 的（防御）
-          insertObj.run(snapshotId, type, obj.id, JSON.stringify(obj));
+          const propsJson = JSON.stringify(obj);
+          const contentHash = computeContentHash(propsJson);
+          const pkHash = computePkHash(type, obj.id, contentHash);
+          insertObj.run(snapshotId, type, obj.id, contentHash, pkHash, propsJson);
           insertedCount += 1;
         }
       }

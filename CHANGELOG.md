@@ -4,6 +4,69 @@
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-08-28
+
+存储层 Schema 演进（Phase B）：从 8 张表 → 10 张表，借鉴 asdm-aos 16 表双层架构选择性引入 3-4 张关键表。详细方案与不借鉴项决策见 `docs/plan/storage-schema-v0.37.md`（待补 ADR，本节先合入变更）。
+
+### 新增 aos_type_properties 表（投影层 DDL 输入）
+
+- 借鉴 asdm-aos `aos_type_properties`：决定 viewmodel 字段裁剪 / HTTP API 字段过滤 / JSON schema 生成
+- 新表 4 字段：`type_name` / `key` / `label` / `wire_type`（`string|number|boolean|object|array|ref`）+ `storage_hint`（`promoted|jsonb`）+ `index_hint`（`none|btree|fulltext|vector`）
+- FK → aos_types(type_name) ON DELETE CASCADE
+- 种子化覆盖 20 个核心类型：Project / Module / SourceFile / Component / Hook / Store / Method / Interface / Class / Trait / Dependency / Domain / Route / Service / PropEdge / GmApiUsage / InjectionPoint / NetworkEndpoint / UserScript / ScriptFunction，共 61 条属性
+- 防御性过滤：只入 aos_types 已注册类型的属性（防幽灵属性 / FK 违规）
+
+### 新增 aos_import_jobs 表（步进游标落表）
+
+- 借鉴 asdm-aos `aos_import_jobs`：增量扫描的崩溃恢复基础
+- 字段：`job_id` / `job_kind`（`refreshRepo|analyzeFile|export`）/ `snapshot_id` / `steps` / `current_step` / `cursor`（JSON）/ `status`（`running|paused|completed|failed`）/ `error` / `started_at` / `updated_at`
+- FK → aos_snapshots CASCADE
+- `idx_aos_import_jobs_status` 索引（status + updated_at）
+- v0.37 占位表：schema 在位，应用层 incrementalParser 接入推迟到 v0.38
+
+### aos_objects 加 content_hash + pk_hash 双字段（跨快照对象去重基础设施）
+
+- `content_hash TEXT`：sha256(props_json) — 跨 snapshot 共享（同对象一致）
+- `pk_hash TEXT`：sha256(`default|default|${type}|${id}|${content_hash}`) — 借鉴 asdm-aos 决策 2b；不含 snapshot_id 以支持跨 snapshot 同对象去重
+- 2 索引：`idx_aos_objects_content_hash` + `idx_aos_objects_pk_hash`（**非 UNIQUE**：v0.37 表 PK 仍按 (snapshot_id,type,id)，UNIQUE 由 v0.38 PK 化时天然保证）
+- saveSnapshot 写入时计算两 hash；loadSnapshot / loadType / loadObject / queryWhere 读路径不变（hash 字段不泄漏到 DataMap）
+- v0.31 老库 backfill：SELECT NULL content_hash/pk_hash 行 → 应用层计算 → UPDATE（500 行/批 + 事务）
+
+### aos_link_types 扩 4 字段（公理声明）
+
+- 新增字段：`label` / `src_type` / `tgt_type` / `cardinality`（`1|0..1|*|1..*`）
+- 种子化所有 26 种 link_type 的公理（contains / imports / calls / extends / ... 端点类型约束 + 基数）
+- v0.37 暂不强制约束（按 Q4 决策：加字段存元数据，不接 linkMeta 校验）
+
+### 迁移与初始化路径
+
+- `db.js` 初始化流程重构：始终走 `applyPendingMigrations()` 路径（替代 v0.31 的"写 SCHEMA_VERSION 直接走"）
+- `db.js` 以静态 import 引入 `migrate.js`（require(esm) 需 Node ≥ 20.19，与 engines >= 18 冲突；migrate.js 无反向依赖，无循环引用）
+- `migrate.js` v2 块：ALTER TABLE aos_objects ADD COLUMN pk_hash + 4 索引 + 2 新表 + backfill
+- v2 的 cardinality ALTER 带 CHECK 约束，与 schema.sql 新库口径一致（SQLite ADD COLUMN 支持 CHECK；老库已有行由 DEFAULT '*' 填充满足约束）
+- `aos_link_types.src_type / tgt_type` 端点取值约定：类型名或 category 名（Container/CodeUnit/Script/AuditFact），已写入 schema.sql 与 seed.js 注释
+- 日志走 stderr 不污染 stdout JSON（避免 ask --json 等命令被破坏）
+- 全新安装：账本 v1 + v2 双行（v1 marker + v2 实际 schema 标记）
+- v0.31 库升级：账本 v1 → 追加 v2 + 自动 backfill content_hash / pk_hash
+
+### 文档
+
+- storage 子命令 status 输出新增 `typeProperties` 计数
+- storage init 显示 `本目录 X 个类型 / Y 个链接类型 / Z 个属性定义`
+- `aos_link_types` 公理约定（`docs/adr/0007-link-types-axioms.md`）——待补
+
+### 测试
+
+- 新增 `test/storage/schema.test.mjs` 11 个测试（全新库 / v0.31 升级 / backfill 跨 snapshot 一致 / type_properties 种子化 / link_types 公理 / import_jobs CRUD / saveSnapshot hash 落地 / 二次写 hash 复用 / hash 公式顺序敏感 / getStatus 报告 / loadSnapshot 不泄漏 hash 字段）
+- 现有 `test/storage/sqliteSnapshot.test.mjs` 调整：表数 8→10 + 账本 v1→v2 + 校验 10 张表名
+- 修 `test/ask.test.mjs` 超时降级用例的时序抖动：600ms 预算在全量并发下连 opencode 应答也超时，提到 2000ms（codebuddy 挂起 5s 仍稳定触发降级路径）
+- **811/811 全通过**（修复上述时序抖动后）
+
+### 风险与回退
+
+- v0.37 不破坏 v0.31 数据（只加列 + 索引 + 2 表；不回填会保留 NULL 字段；saveSnapshot 重写覆盖）
+- 暂无 rollback 命令（v0.38 加 storage rollback --to v37）
+
 ## [0.36.1] - 2026-08-28
 
 v0.36.0 后续候选高价值项闭环（候选 0 / 1 / 2 / 4）。

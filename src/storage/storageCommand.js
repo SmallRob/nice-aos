@@ -76,9 +76,9 @@ storageCommand
     const seeded = seedOntologyCatalog(db, { OBJECT_TYPES, LINK_TYPES });
     const mig = applyPendingMigrations(db);
     console.log('✓ SQLite 已初始化');
-    console.log(`  path        ${dbPath}`);
-    console.log(`  schema v${mig.current ?? 1}（${SNAPSHOT_KINDS.length} 种 snapshot_kind 已注册到 aos_snapshots 的预期）`);
-    console.log(`  本体目录    ${seeded.types} 个类型 / ${seeded.linkTypes} 个链接类型`);
+    console.log(`  path         ${dbPath}`);
+    console.log(`  schema       v${mig.current ?? 1}（${SNAPSHOT_KINDS.length} 种 snapshot_kind 已注册到 aos_snapshots 的预期）`);
+    console.log(`  本体目录     ${seeded.types} 个类型 / ${seeded.linkTypes} 个链接类型 / ${seeded.typeProperties} 个属性定义`);
     closeDb();
   });
 

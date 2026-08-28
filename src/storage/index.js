@@ -9,4 +9,4 @@ export * from './sqliteSnapshot.js';
 export { setStorageMode, getStorageMode, setSqlitePath, getSqlitePath, openDb, closeDb, isAvailable, getStatus, SCHEMA_VERSION } from './db.js';
 export { saveSnapshot, loadSnapshot, loadType, loadObject, queryWhere, applyOverlay, buildAskContextFromSql, listSnapshots, setBlueprint } from './sqliteSnapshot.js';
 export { seedOntologyCatalog, SNAPSHOT_KINDS } from './seed.js';
-export { applyPendingMigrations } from './migrate.js';
+export { applyPendingMigrations, computeContentHash, computePkHash } from './migrate.js';

@@ -24,9 +24,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { getSnapshotDir } from '../paths.js';
+import { applyPendingMigrations } from './migrate.js';
 
 const require = createRequire(import.meta.url);
 
@@ -43,9 +43,8 @@ const DEFAULT_DB_FILE = 'aos.sqlite';
 const ENV_PATH = 'NICE_AOS_SQLITE_PATH';
 const ENV_MODE = 'NICE_AOS_SQLITE_MODE';
 
-// Code-side 期望 schema 版本：每次 DDL 升级 +1
-export const SCHEMA_VERSION = 1;
-export const SCHEMA_DESCRIPTION = 'Phase A: 9 张表（账本+类型目录+链接类型目录+冷层4+1扩展位）';
+// Code-side 期望 schema 版本：每次 DDL 升级 +1（描述见 migrate.js MIGRATIONS 各块）
+export const SCHEMA_VERSION = 2;
 
 export function setStorageMode(mode) {
   if (!['auto', 'on', 'off'].includes(mode)) {
@@ -149,33 +148,40 @@ function releaseLock() {
   }
 }
 
-// 初始化：建表 + 种子化
+// 初始化：建表 + 种子化 + 增量迁移
+//   流程：
+//   1) 读 schema.sql 并执行（CREATE IF NOT EXISTS）—— 新表/新列自动建
+//   2) 统一走 applyPendingMigrations() 跑所有 pending 块的 up(db)
+//      - 首次安装：v1 + v2 都会跑（v2 含幂等 ALTER/INDEX，CREATE IF NOT EXISTS 跳过已建表）
+//      - 升级（如 v0.31 → v0.37）：v2 跑 ALTER + backfill
+//      - 库已 SCHEMA_VERSION：no-op
+//   3) 降级（库版本比 code 新）：只读模式
 function initialize(db) {
-  // 读 schema.sql 并执行
+  // 1) 读 schema.sql 并执行（CREATE IF NOT EXISTS，幂等）
   const schemaPath = new URL('./schema.sql', import.meta.url);
   const schema = fs.readFileSync(schemaPath, 'utf-8');
   db.exec(schema);
 
-  // 账本：写入/检查 version
+  // 2) 账本检查
   const applied = db.prepare('SELECT MAX(version) AS v FROM aos_schema_history').get();
-  if (!applied || !applied.v) {
-    const ts = new Date().toISOString();
-    const checksum = crypto.createHash('sha256').update(schema).digest('hex').slice(0, 16);
-    db.prepare('INSERT INTO aos_schema_history (version, applied_at, description, checksum) VALUES (?, ?, ?, ?)')
-      .run(SCHEMA_VERSION, ts, SCHEMA_DESCRIPTION, checksum);
-  } else if (applied.v > SCHEMA_VERSION) {
+  if (applied && applied.v > SCHEMA_VERSION) {
     // 库 schema 比 code 新（用户降级 nice-aos 版本）→ 降级警告 + 只读
     console.warn(`⚠️  SQLite schema version (${applied.v}) 高于当前 nice-aos 期望 (${SCHEMA_VERSION})，进入只读模式。`);
     storageModeOverride = 'off';
-  } else if (applied.v < SCHEMA_VERSION) {
-    // 老 schema → 跑增量迁移（v0.31 只有 v1，无迁移步骤；v0.32+ 加分支）
-    const ts = new Date().toISOString();
-    const schemaSql = fs.readFileSync(new URL('./schema.sql', import.meta.url), 'utf-8');
-    const checksum = crypto.createHash('sha256').update(schemaSql).digest('hex').slice(0, 16);
-    db.prepare('INSERT INTO aos_schema_history (version, applied_at, description, checksum) VALUES (?, ?, ?, ?)')
-      .run(SCHEMA_VERSION, ts, `upgrade from v${applied.v} to v${SCHEMA_VERSION}`, checksum);
+    return;
   }
-  // else: version 一致，无操作
+
+  // 3) 跑 pending migrations（首次安装 + 老库升级都走这里）
+  //    只在「真升级」时打印日志（避免污染 JSON stdout 路径——ask 等 CLI 命令的 JSON 输出）
+  //    首次安装时 v1 + v2 都会跑但 history 表之前无行，不打日志
+  //    日志走 stderr 不走 stdout：JSON 模式（ask --json 等）下 stdout 是合同输出，不能混入诊断
+  //    注：migrate.js 经顶部静态 import 引入（createRequire 的 require(esm) 需 Node ≥ 20.19，
+  //    与 engines >= 18 冲突；migrate.js 不依赖本模块，无循环引用）
+  const result = applyPendingMigrations(db);
+  if (result.applied > 0 && applied && applied.v > 0) {
+    // eslint-disable-next-line no-console
+    console.error(`✓ schema migration: applied ${result.applied} version(s), now at v${result.current}`);
+  }
 }
 
 // 打开 SQLite 连接（单例）

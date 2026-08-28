@@ -409,14 +409,16 @@ test('ask 端到端：codebuddy 超时降级到 opencode（未配置模型服务
   fs.chmodSync(path.join(bin, 'codebuddy'), 0o755);
   fs.chmodSync(path.join(bin, 'opencode'), 0o755);
 
-  const r = await runCli(['ask', 'Q', '--cwd', dir, '--timeout', '600', '--json'], {
+  // timeout 2000ms：codebuddy 挂起 5s 仍稳定超时降级；给 opencode 应答留出全量并发下的调度余量
+  // （600ms 时在全量套件并发负载下 opencode 也超时，造成时序抖动）
+  const r = await runCli(['ask', 'Q', '--cwd', dir, '--timeout', '2000', '--json'], {
     env: {
       PATH: minimalPath(bin),
       // 未配置模型服务（cleanEnv 已剥 NICE_AOS_API_KEY 等）
     },
   });
   assert.equal(r.code, 0, `stderr: ${r.err}`);
-  assert.match(r.err, /codebuddy 调用失败（codebuddy 调用超时（600ms）），降级到 opencode/);
+  assert.match(r.err, /codebuddy 调用失败（codebuddy 调用超时（2000ms）），降级到 opencode/);
   const j = JSON.parse(r.out);
   assert.equal(j.agent, 'opencode');
   assert.deepEqual(j.fallbackFrom, ['codebuddy']);
