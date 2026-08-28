@@ -830,6 +830,9 @@ function analyzePowerShell(filePath, content, stripped, lineCount) {
     for (const r of regOps) allRegOps.push({ fn: fn.name, ...r });
     for (const c of checksum) allChecksum.push({ fn: fn.name, ...c });
     const role = inferPowerShellFnRole(fn, params);
+    // v0.40.0 Verb-Noun 抽取：用于跨语言脚本匹配（Invoke-CreateVirtualDiskREDFISH → verb=Invoke, noun=CreateVirtualDiskREDFISH）
+    const verbNounM = /^([A-Z][a-z]+)-(.+)$/.exec(fn.name);
+    const verbNoun = verbNounM ? { verb: verbNounM[1], noun: verbNounM[2] } : null;
     fnFacts.push({
       name: fn.name,
       kind: 'PsFunction',
@@ -844,6 +847,9 @@ function analyzePowerShell(filePath, content, stripped, lineCount) {
         .map((p) => p.name),
       callTargets: [...(callEdges.get(fn.name) ?? [])],
       role,
+      // v0.40.0 跨语言脚本匹配键
+      verbNoun,
+      crossLangKey: verbNoun ? verbNoun.noun : fn.name,
     });
   }
   // 顶层 cmdlet(脚本体直接调用)
@@ -941,7 +947,26 @@ function aggregateRisk(risks) {
   return risks.reduce((max, r) => order[r.severity] > order[max] ? r.severity : max, 'low');
 }
 
+// v0.40.0 PowerShell UTF-16 BOM 自动探测：iDRAC-Redfish-Scripting 等真实 PS 仓库
+// 全部用 UTF-16 LE + BOM 编码（Windows PowerShell ISE 默认导出），原实现直接 utf-8
+// 读会得到乱码。规则：
+//   - 头 2 字节 0xFF 0xFE → UTF-16 LE（BOM）
+//   - 头 3 字节 0xEF 0xBB 0xBF → UTF-8 with BOM（去除 BOM）
+//   - 其余按 utf-8 读
+function readTextWithBom(absPath) {
+  const buf = fs.readFileSync(absPath);
+  if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) {
+    // UTF-16 LE BOM → 跳过 2 字节 BOM 后按 utf16le 解码
+    return buf.slice(2).toString('utf16le');
+  }
+  if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) {
+    // UTF-8 BOM → 跳过 3 字节 BOM
+    return buf.slice(3).toString('utf-8');
+  }
+  return buf.toString('utf-8');
+}
+
 export function analyzeShellScriptFromDisk(relPath, projectRoot) {
-  const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf-8');
+  const content = readTextWithBom(path.join(projectRoot, relPath));
   return analyzeShellScript(relPath, content);
 }

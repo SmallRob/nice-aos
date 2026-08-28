@@ -317,9 +317,9 @@ test('schema: linkTypes 字符串数组与对象数组混合输入都规范化',
 // 5. nice-aos 既有 OBJECT_TYPES / LINK_TYPES / ACTION_NAMES / ONTOLOGY_META 不变
 // =============================================================================
 
-test('nice-aos 既有元数据：OBJECT_TYPES 38 个 / LINK_TYPES 54 个 / ACTION_NAMES 4 个（v0.39.0 +3 ROS 2 类型 / +5 ROS 2 边）', () => {
+test('nice-aos 既有元数据：OBJECT_TYPES 38 个 / LINK_TYPES 55 个 / ACTION_NAMES 4 个（v0.40.0 +1 跨语言脚本同步边）', () => {
   assert.equal(OBJECT_TYPES.length, 38);
-  assert.equal(LINK_TYPES.length, 54);
+  assert.equal(LINK_TYPES.length, 55);
   assert.equal(ACTION_NAMES.length, 4);
 });
 
@@ -331,7 +331,7 @@ test('nice-aos 既有 ONTOLOGY_META: abstractionLevels 4 个 / categories 7 个'
 test('nice-aos 既有 BLUEPRINT_SCHEMA 聚合了所有静态元数据', () => {
   assert.equal(BLUEPRINT_SCHEMA.id, 'nice-aos-ontology');
   assert.equal(BLUEPRINT_SCHEMA.objectTypes.length, 38);
-  assert.equal(BLUEPRINT_SCHEMA.linkTypes.length, 54);
+  assert.equal(BLUEPRINT_SCHEMA.linkTypes.length, 55);
   assert.equal(BLUEPRINT_SCHEMA.actionNames.length, 4);
   assert.equal(BLUEPRINT_SCHEMA.meta, ONTOLOGY_META);
 });
@@ -428,7 +428,7 @@ test('createBlueprintV2: 未知动作返回守卫失败', () => {
   assert.match(r.message, /未知动作/);
 });
 
-test('createBlueprintV2: schema 暴露 38 类型 / 54 链接 / 4 动作（v0.39.0 +RosNode/RosChannel/RosLaunch + 5 ROS 2 边）', () => {
+test('createBlueprintV2: schema 暴露 38 类型 / 55 链接 / 4 动作（v0.40.0 +1 跨语言脚本同步边）', () => {
   const dataMap = {
     _meta: {},
     Project: [{ id: 'proj:t' }],
@@ -437,7 +437,7 @@ test('createBlueprintV2: schema 暴露 38 类型 / 54 链接 / 4 动作（v0.39.
   const engine = createBlueprintV2(dataMap);
   const s = engine.schema();
   assert.equal(s.objectTypes.length, 38);
-  assert.equal(s.linkTypes.length, 54);
+  assert.equal(s.linkTypes.length, 55);
   assert.equal(s.actionDefs.length, 4);
   assert.equal(s.objectCounts.SourceFile, 2);
 });

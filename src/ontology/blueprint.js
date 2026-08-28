@@ -89,6 +89,8 @@ export const LINK_TYPES = [
   'launchesLaunch',     // RosLaunch → RosLaunch（IncludeLaunchDescription 嵌套）
   'declaresLaunchArg',  // RosLaunch → 共享参数声明（目前通过 args 数组承载）
   'executesProcess',    // RosLaunch → ExecuteProcess（外部进程）
+  // ---- v0.40.0: 跨语言脚本同步 ----
+  'crossLangMatches',   // SourceFile(py) ↔ SourceFile(ps) / BashFunction：同名工作流的多语言实现（iDRAC CreateVirtualDiskREDFISH.py ↔ Invoke-CreateVirtualDiskREDFISH.psm1）
 ];
 
 export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addNote'];

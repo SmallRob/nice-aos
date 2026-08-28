@@ -670,6 +670,9 @@ function buildShellScriptObjects(relPath, facts) {
       scriptId,
       scriptName: facts.name ?? relPath,
       filePath: relPath,
+      // v0.40.0 跨语言脚本匹配键
+      verbNoun: fn.verbNoun ?? null,
+      crossLangKey: fn.crossLangKey ?? null,
       reviewed: false, notes: null,
     });
   }
@@ -3425,6 +3428,49 @@ export async function buildOntologyData(projectRoot, options = {}) {
       }
     }
     dataMap._meta.rosEdges = rosEdges;
+  }
+  // v0.40.0: 跨语言脚本匹配（同工作流在多语言下的并行实现）
+  //   匹配键：Python 文件基名（去 .py） vs PowerShell 函数 Noun 部分
+  //   例：CreateVirtualDiskREDFISH.py ↔ Invoke-CreateVirtualDiskREDFISH（verb=Invoke, noun=CreateVirtualDiskREDFISH）
+  // 匹配范围：1) Python 顶层文件（含 def main() 的脚本） vs 2) PowerShell 顶层 function 节点
+  {
+    const crossLangEdges = [];
+    // 收集 Python 端 crossLangKey 索引（用 fileObjects 的 path 反查 facts）
+    const pyKeyToFile = new Map();
+    for (const f of fileObjects) {
+      const fPath = f.path ?? f.relPath;
+      if (!fPath?.endsWith('.py')) continue;
+      const pyFacts = factsMap.get(fPath);
+      if (!pyFacts?.crossLangKey) continue;
+      pyKeyToFile.set(pyFacts.crossLangKey, { relPath: fPath, fileId: f.id, kind: 'py' });
+    }
+    // 收集 PS 端 crossLangKey 索引（verbNoun.noun 或函数名）
+    for (const pf of psFunctions) {
+      if (!pf.crossLangKey) continue;
+      const pyEntry = pyKeyToFile.get(pf.crossLangKey);
+      if (!pyEntry) continue;
+      crossLangEdges.push({
+        from: pyEntry.fileId,
+        to: pf.id,
+        key: pf.crossLangKey,
+        py: pyEntry.relPath,
+        ps: pf.filePath ?? pf.path ?? pf.relPath ?? null,
+      });
+    }
+    // 反向：Python 端有 key 但 PS 没有函数匹配 → 仍记为 unresolved，方便 agent 补全
+    for (const [key, pyEntry] of pyKeyToFile.entries()) {
+      const matched = crossLangEdges.find((e) => e.py === pyEntry.relPath);
+      if (matched) continue;
+      crossLangEdges.push({
+        from: pyEntry.fileId,
+        to: null,
+        key,
+        py: pyEntry.relPath,
+        ps: null,
+        unresolved: true,
+      });
+    }
+    dataMap._meta.crossLangEdges = crossLangEdges;
   }
   report('build:done', {
     methodCount: methods.length,

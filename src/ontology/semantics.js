@@ -121,6 +121,18 @@ export function inferFileArchLayer(input) {
     if (/\/(repositories?|dal|dao|infra|adapters?|gateways?)(\/|\.py)/.test(relPath)) return 'integration';
     // ROS 2 节点（scripts/ 或同包内 *_node.py）→ service
     if (/\/scripts\//.test(relPath) || /_node\.py$/.test(relPath)) return 'service';
+    // v0.40.0 Python 客户端 / SDK 工具脚本（与 PS/Bash 同目录的 API wrapper）→ integration
+    if (/\/(redfish|sdk|api|client)s?(\/|$)/i.test(relPath)) return 'integration';
+    return 'shared';
+  }
+  // v0.40.0 PowerShell 项目分层：
+  //   PS 客户端 / SDK 工具脚本（与 Python 同目录的同名 API wrapper）→ integration
+  //   PS 测试 → test（isTest 已优先命中，此处兜底）
+  if (relPath.endsWith('.ps1') || relPath.endsWith('.psm1')) {
+    if (isTest) return 'test';
+    if (/\/(redfish|sdk|api|client)s?(\/|$)/i.test(relPath)) return 'integration';
+    // PS Verb-Noun 前缀粗判
+    if (/^\s*Set-|^\s*New-|^\s*Add-/.test(relPath.replace(/.*\//, ''))) return 'write';
     return 'shared';
   }
   if (isEntry) return 'entry';

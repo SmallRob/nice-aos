@@ -2,6 +2,85 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.40.0] - 2026-08-29
+
+### 多语言脚本架构增强 —— argparse / HTTP 客户端 / UTF-16 PowerShell / 跨语言同步
+
+iDRAC-Redfish-Scripting（[github.com/dell/iDRAC-Redfish-Scripting](https://github.com/dell/iDRAC-Redfish-Scripting)，
+146 .py + 79 .ps + 1 .psm1 共 200k+ 行）扫描驱动。Dell 的 Redfish API 脚本仓库跨 Python+PowerShell 双实现，是
+混合脚本架构的典型场景。详见 `docs/adr/0008-idrac-multilang-scripts.md`。
+
+#### 修复 PowerShell UTF-16 BOM 探测（数据质量 bug）
+
+- iDRAC 79 个 PowerShell 文件全部 UTF-16 LE + BOM + CRLF，原 `fs.readFileSync(..., 'utf-8')` 直接读为乱码
+- 修：新增 `readTextWithBom()` —— 头 2 字节 `0xFF 0xFE` → UTF-16 LE；头 3 字节 `0xEF 0xBB 0xBF` → UTF-8 BOM；其余 utf-8
+- 修后 Invoke-CreateVirtualDiskREDFISH.psm1（55k 行 IdracRedfishSupport.psm1 同理）正确解析为 PowerShell，含 21 个 CLI 参数 + 1 个函数 + 真实 cmdlet 列表
+
+#### 新增 argparse CLI 参数抽取（与 Bash/PS 的 cliParams 同构）
+
+- 模式：`<var>.add_argument('-ip', help='...', required=False, dest='ip', type=int, default=0, action='store_true')`
+- 抽取每个参数的 `flag / short / long / name / positional / type / required / default / action / help / line`
+- flag 形式：`-ip` / `--ip` / `-ip, --ip-address` / `fqdd`（位置参数）
+- name 解析：`dest` 优先 → 长写去 `--` → 短写去 `-`，并把 `-` 归 `_`（kebab→snake）
+- 适用：iDRAC 单脚本平均 5-20 个 add_argument，整仓库累计数千 CLI 表面
+
+#### 新增 Python HTTP 客户端端点抽取（requests / urllib / httpx / aiohttp）
+
+- 4 个 lib 共 7+ 模式：`requests.get/post/patch/put/delete/head/options` + `urllib.request.urlopen/Request` + `httpx.*` + `aiohttp.{session,client}.*`
+- 抽取 `lib / method / url / hasAuth / hasJson / hasData / line`
+- 跨 if/else 自动去重（同一 lib+method+url 只记首次），避免 if/else 双分支模式产生双倍条目
+- 适用：iDRAC 单脚本 51 个 calls（旧版 0 抽取）→ 18 unique；未来可接 NetworkEndpoint 实体补 outbound 边
+
+#### 新增 PowerShell Verb-Noun 抽取
+
+- 已有 Verb → role 映射（Get→read / Set→write / Invoke→exec / ...）增强：在 `PsFunction` 上加 `verbNoun: { verb, noun }` 与 `crossLangKey` 字段
+- 适用：iDRAC `Get-IdracLifecycleLogsREDFISH` → verb=`Get` noun=`IdracLifecycleLogsREDFISH` crossLangKey=`IdracLifecycleLogsREDFISH`（120/120 函数全部识别）
+
+#### 新增跨语言脚本匹配 + 边
+
+- 匹配键归一化：Python `GetIdracLifecycleLogsREDFISH.py` ↔ PowerShell `Get-IdracLifecycleLogsREDFISH`
+  - Python 端：去除 `Get / Set / Invoke / New / Remove / Reset / Add / Update / Delete / Enable / Disable / Test / Start / Stop / Restart / Mount / Dismount / Push / Pop / Register / Unregister / Show / Hide / Open / Close / Format / Out / Copy / Move / Rename / Convert / Import / Export / Connect / Disconnect / Read / Write / Send / Receive / Wait / Resolve / Use / Save / Backup / Restore / Sync / Trace / Assert` 47 个 PS Verb 前缀
+  - PowerShell 端：用 Noun 部分（去 `Verb-` 前缀）
+- 匹配后建 `_meta.crossLangEdges: [{ from, to, key, py, ps, unresolved? }]`
+- iDRAC 实测：158 候选匹配中 36 命中 + 122 unresolved（unresolved 是 Python 单方实现或 PS 共享模块函数）
+
+#### 混合脚本架构层
+
+- `*.py` 下 `/redfish|sdk|api|client/...` 目录 → `integration`（API 客户端 / SDK 工具）
+- `*.ps1 / *.psm1` 同理 → `integration`
+- PS Verb 前缀粗判：`Set-* / New-* / Add-*` → `write` 层；其余 → `shared`
+
+#### 项目级
+
+- `Project.language` 现在拼接 `Python + PowerShell`（iDRAC 端到端验证）
+- `Project.pyFileCount` 已在 v0.36 暴露，iDRAC 端 146；`pyDetected` 同步
+
+#### 本体类型扩展
+
+- `LINK_TYPES` 54 → 55：新增 `crossLangMatches`（SourceFile(py) ↔ SourceFile(ps) / PsFunction：同名工作流的多语言实现）
+- `OBJECT_TYPES` 不变（38 个；复用 SourceFile / PsFunction）
+
+### 测试
+
+- `test/pythonAnalyzer.test.mjs` 新增 3 用例：
+  - argparse CLI 参数抽取（短/长/dest/required/action/位置参数）
+  - HTTP 客户端调用抽取（4 lib + dedupe + hasAuth/hasJson 标志）
+  - crossLangKey 从 relPath 派生（去 .py + 含深层路径）
+- `test/blueprintEngine.test.mjs` / `test/toolRegistry.test.mjs` 同步更新：`LINK_TYPES 54 → 55`
+- 全套测试 831/831 通过（+3 新增；原 828 全保留零修改）
+
+### 端到端验证（iDRAC-Redfish-Scripting）
+
+| 维度 | 数量 |
+| --- | --- |
+| 文件总数 | 225 |
+| Python 源文件 | 146 |
+| PowerShell 脚本 | 79（PsScript） |
+| PowerShell 函数 | 120（PsFunction，120/120 含 verbNoun） |
+| Cmdlet 调用 | 763 |
+| crossLangEdges | 158（36 命中 + 122 unresolved） |
+| language | `Python + PowerShell` |
+
 ## [0.39.0] - 2026-08-29
 
 ### Python 解析增强：ROS 2 维度 + 字段误报修复 + 入口点扩充

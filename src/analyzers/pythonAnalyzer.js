@@ -925,6 +925,125 @@ function normalizeArgValue(v) {
   return v;
 }
 
+// ---------- v0.40.0 argparse / Click / Typer CLI 参数抽取 ----------
+// 模式：parser = argparse.ArgumentParser(...) 后接 N 行 parser.add_argument(...)。
+// 同一 parser 变量上多次 add_argument 复用同一组；Click @click.command 已在 v0.35+ 的
+// pythonRoutes 路径处理（kind: cli）。
+// 抽取的每个参数：{ flag, name, dest, type, required, default, action, help, line }
+// 字符串内已通过 clean 通道剥离（不会误判 f-string 里的伪参数）。
+function extractCliParams(clean, lineStarts) {
+  const out = [];
+  const lineOf = (pos) => {
+    let lo = 0, hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+  // argparse：匹配 "<var>.add_argument(...)"
+  const re = /([A-Za-z_][\w]*)\.add_argument\s*\(/g;
+  let m;
+  while ((m = re.exec(clean))) {
+    const open = m.index + m[0].length - 1;
+    const close = findMatchingParen(clean, open);
+    if (close < 0) continue;
+    const argsText = clean.slice(open + 1, close);
+    const args = splitCallArgs(argsText);
+    if (args.length === 0) continue;
+    const flagRaw = args[0].trim().replace(/^['"]|['"]$/g, '');
+    if (!flagRaw) continue;
+    // flag 形式：'-ip' / '--ip' / 'ip'（位置参数） / '-ip, --ip-address'（长写+短写）
+    const flagParts = flagRaw.split(',').map((s) => s.trim()).filter(Boolean);
+    const short = flagParts.find((p) => p.startsWith('-') && !p.startsWith('--')) ?? null;
+    const long = flagParts.find((p) => p.startsWith('--')) ?? flagParts[flagParts.length - 1];
+    const positional = !flagRaw.startsWith('-');
+    // name 解析：优先 dest（kebab→snake 形式），否则取长写去前缀，否则取短写去前缀，否则位置参数名
+    const stripDash = (s) => s ? s.replace(/^-+/, '').replace(/-/g, '_') : null;
+    const name = positional ? flagRaw
+      : (long ? stripDash(long)
+      : (short ? stripDash(short) : null));
+    if (!name) continue;
+    // kwargs 抽取
+    const dest = extractKwarg(argsText, 'dest');
+    const typeRaw = extractKwarg(argsText, 'type');
+    const required = /^True$/i.test(extractKwarg(argsText, 'required') ?? 'False');
+    const defaultVal = extractKwarg(argsText, 'default');
+    const action = extractKwarg(argsText, 'action');
+    const help = extractKwarg(argsText, 'help');
+    out.push({
+      flag: flagRaw,
+      short: short ? short.replace(/^-+/, '') : null,
+      long: long ? long.replace(/^-+/, '') : null,
+      name: dest ?? name,
+      positional,
+      type: typeRaw,
+      required,
+      default: defaultVal,
+      action,
+      help,
+      line: lineOf(m.index),
+    });
+  }
+  // Click：@click.command 类已在 v0.35+ 的 pythonRoutes 路径（@app.command / @click.command）
+  // 这里不再重复抽取。
+  return out;
+}
+
+// ---------- v0.40.0 HTTP 客户端调用抽取（requests / urllib / httpx / aiohttp） ----------
+// 把 requests.get/post/patch/put/delete('URL', ...) 抽到 NetworkEndpoint 候选。
+// URL 形式支持：'https://example.com/x' / "..." / f-string 变量插值（占位符原样保留）
+// 跨行续行：用 findMatchingParen 拿整个调用。
+function extractHttpClientCalls(clean, lineStarts) {
+  const out = [];
+  const lineOf = (pos) => {
+    let lo = 0, hi = lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
+    }
+    return lo + 1;
+  };
+  const pats = [
+    { lib: 'requests', re: /\brequests\.(get|post|put|patch|delete|head|options|request)\s*\(/g },
+    { lib: 'urllib',  re: /\burllib\.request\.(urlopen|Request)\s*\(/g },
+    { lib: 'httpx',   re: /\bhttpx\.(get|post|put|patch|delete|head|options|request)\s*\(/g },
+    { lib: 'aiohttp', re: /\b(?:self\.)?(?:session|client|Session|ClientSession)\.(get|post|put|patch|delete|head|options|request)\s*\(/g },
+  ];
+  for (const pat of pats) {
+    pat.re.lastIndex = 0;
+    let m;
+    const seen = new Set(); // 去重：同一 (lib, method, url) 只记首次
+    while ((m = pat.re.exec(clean))) {
+      const methodRaw = m[1];
+      const method = methodRaw === 'request' || methodRaw === 'urlopen' || methodRaw === 'Request' ? 'MIXED' : methodRaw.toUpperCase();
+      const open = m.index + m[0].length - 1;
+      const close = findMatchingParen(clean, open);
+      if (close < 0) continue;
+      const argsText = clean.slice(open + 1, close);
+      const args = splitCallArgs(argsText);
+      if (args.length === 0) continue;
+      // url 可能是字面量或 f-string / 变量；保留原文本
+      const urlRaw = args[0].trim();
+      const url = urlRaw.replace(/^['"]|['"]$/g, '');
+      const key = `${pat.lib}|${method}|${url}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        lib: pat.lib,
+        method,
+        url,
+        urlRaw,
+        hasAuth: /\bauth\s*=/.test(argsText),
+        hasJson: /\bjson\s*=/.test(argsText),
+        hasData: /\bdata\s*=/.test(argsText),
+        line: lineOf(m.index),
+      });
+    }
+  }
+  return out;
+}
+
 // ---------- 主解析：缩进感知的行级状态机 ----------
 export function analyzePythonFile(relPath, content) {
   const lineStarts = computeLineStarts(content);
@@ -969,6 +1088,10 @@ export function analyzePythonFile(relPath, content) {
     // v0.39.0 ROS 2 维度
     pythonLaunch: null,           // 仅 .launch.py 且含 generate_launch_description() 时非 null
     ros2NodeClasses: [],          // [{ name, line, baseClass, rosHint, channels, pos }] — 顶层 ROS 2 Node 子类索引
+    // v0.40.0 通用 CLI 脚本能力
+    pythonCliParams: [],          // argparse / Click / Typer CLI 参数（file-level，与 Bash/PS 的 cliParams 同构）
+    httpClientCalls: [],          // requests.get/post/patch/put/delete + urllib / httpx / aiohttp 调用抽到 NetworkEndpoint
+    crossLangKey: null,           // 跨语言脚本匹配键：文件基名（无 .py 后缀，与 PowerShell 函数 Noun 对齐）
   };
 
   // nameReferences（全文标识符位置；stripped 通道排除字符串内容）
@@ -981,6 +1104,10 @@ export function analyzePythonFile(relPath, content) {
   facts.pythonExports = extractDunderAll(clean, lineStarts);
   facts.pythonEntryPoints = extractEntryPoints(clean, lineStarts);
   facts.pythonRoutes = extractRoutes(stripped, clean, lineStarts);
+  // v0.40.0 argparse / Click / Typer CLI 参数（与 Bash/PS 的 cliParams 同构）
+  facts.pythonCliParams = extractCliParams(clean, lineStarts);
+  // v0.40.0 HTTP 客户端调用（requests/urllib/httpx/aiohttp）→ NetworkEndpoint 候选
+  facts.httpClientCalls = extractHttpClientCalls(clean, lineStarts);
 
   // 模块 docstring（首条语句）
   facts.pythonModuleDocstring = extractDocstringFromClean(clean, 0);
@@ -1254,6 +1381,15 @@ export function analyzePythonFile(relPath, content) {
       facts.pythonEntryPoints.push({ kind: 'launch', handler: launch.entry, line: 0 });
     }
   }
+
+  // v0.40.0 跨语言脚本匹配键：取文件基名（去 .py 后缀） + 归一化 PS Verb 前缀
+  // iDRAC 命名规律：Python `GetIdracLifecycleLogsREDFISH.py` ↔ PowerShell `Get-IdracLifecycleLogsREDFISH`
+  // —— Python 文件名以 "Get" / "Set" / "Invoke" / "New" / "Remove" / "Reset" 等 PS Verb 开头
+  // 归一化时把前缀去掉，让其与 PowerShell Noun（`IdracLifecycleLogsREDFISH`）匹配
+  const PS_VERB_PREFIXES = /^(Get|Set|Invoke|New|Remove|Reset|Add|Update|Delete|Enable|Disable|Test|Start|Stop|Restart|Mount|Dismount|Push|Pop|Register|Unregister|Show|Hide|Open|Close|Format|Out|Copy|Move|Rename|Convert|Import|Export|Connect|Disconnect|Read|Write|Send|Receive|Wait|Resolve|Use|Save|Backup|Restore|Sync|Unregister|Trace|Assert)\b/;
+  const base = relPath.replace(/^.*\//, '').replace(/\.py$/, '');
+  const norm = base ? base.replace(PS_VERB_PREFIXES, '') : null;
+  facts.crossLangKey = norm || base || null;
 
   facts.exportNames = facts.exportSymbols.map((s) => s.name);
   return facts;

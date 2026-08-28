@@ -813,3 +813,75 @@ test('pythonAnalyzer v0.39.0：带参数或装饰器的 main 不当作入口（�
   const mainEntries = facts.pythonEntryPoints.filter((e) => e.kind === 'main');
   assert.equal(mainEntries.length, 0, '带参数或有装饰器的 def main() 不应作 main 入口');
 });
+
+// ============================================================
+// v0.40.0 Python 解析增强：argparse / HTTP 客户端 / 跨语言键
+// ============================================================
+
+test('pythonAnalyzer v0.40.0：argparse CLI 参数抽取（短写 / 长写 / dest / required / action）', () => {
+  const src = [
+    'import argparse',
+    'parser = argparse.ArgumentParser(description="...")',
+    'parser.add_argument("-ip", help="iDRAC IP", required=False)',
+    'parser.add_argument("--ssl", help="SSL verification", required=False)',
+    'parser.add_argument("--get-controllers", help="Get controllers", action="store_true", dest="get_controllers", required=False)',
+    'parser.add_argument("--raid-level", help="RAID level", type=int, default=0, required=False)',
+    'parser.add_argument("fqdd", help="FQDD positional arg")',
+  ].join('\n');
+  const f = analyzePythonFile('cli.py', src);
+  assert.equal(f.pythonCliParams.length, 5);
+  const ip = f.pythonCliParams.find((p) => p.flag === '-ip');
+  assert.ok(ip);
+  assert.equal(ip.name, 'ip', '短写去 - 前缀');
+  assert.equal(ip.help, 'iDRAC IP');
+  const ssl = f.pythonCliParams.find((p) => p.long === 'ssl');
+  assert.ok(ssl, '长写去 -- 前缀');
+  assert.equal(ssl.name, 'ssl');
+  const getCtl = f.pythonCliParams.find((p) => p.flag === '--get-controllers');
+  assert.ok(getCtl, '--get-controllers 抽取');
+  assert.equal(getCtl.action, 'store_true');
+  assert.equal(getCtl.name, 'get_controllers', 'dest 优先于 flag');
+  const raid = f.pythonCliParams.find((p) => p.flag === '--raid-level');
+  assert.ok(raid);
+  assert.equal(raid.type, 'int');
+  assert.equal(raid.default, '0');
+  const fqdd = f.pythonCliParams.find((p) => p.flag === 'fqdd');
+  assert.ok(fqdd, '位置参数');
+  assert.equal(fqdd.positional, true);
+});
+
+test('pythonAnalyzer v0.40.0：HTTP 客户端调用抽取（requests / urllib / httpx）', () => {
+  const src = [
+    'import requests',
+    'import httpx',
+    'import urllib.request',
+    '',
+    'def fetch():',
+    '    requests.get("https://api.example.com/v1/users")',
+    '    requests.post("https://api.example.com/v1/users", json={"name": "x"})',
+    '    httpx.get("https://api.example.com/v2/orders")',
+    '    urllib.request.urlopen("https://legacy.example.com/v0")',
+    '    # 重复调用应去重',
+    '    requests.get("https://api.example.com/v1/users")',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  assert.equal(f.httpClientCalls.length, 4, '同 (lib, method, url) 应去重');
+  const libMethods = f.httpClientCalls.map((c) => `${c.lib}.${c.method}`).sort();
+  assert.deepEqual(libMethods, ['httpx.GET', 'requests.GET', 'requests.POST', 'urllib.MIXED']);
+  const getCall = f.httpClientCalls.find((c) => c.lib === 'requests' && c.method === 'GET');
+  assert.equal(getCall.url, 'https://api.example.com/v1/users');
+  const postCall = f.httpClientCalls.find((c) => c.method === 'POST');
+  assert.equal(postCall.hasJson, true);
+  assert.equal(postCall.hasAuth, false);
+});
+
+test('pythonAnalyzer v0.40.0：crossLangKey 从 relPath 派生（去 .py）', () => {
+  const f = analyzePythonFile('Redfish Python/CreateVirtualDiskREDFISH.py', 'import os\n');
+  assert.equal(f.crossLangKey, 'CreateVirtualDiskREDFISH');
+  // 边界
+  const f2 = analyzePythonFile('weird.py', '');
+  assert.equal(f2.crossLangKey, 'weird');
+  // 深层路径只取基名
+  const f3 = analyzePythonFile('a/b/c/d.py', '');
+  assert.equal(f3.crossLangKey, 'd');
+});

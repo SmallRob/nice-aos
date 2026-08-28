@@ -83,14 +83,14 @@ test('get_stats 返回项目元信息 + counts + cycles + orphan', async () => {
   assert.equal(r.orphanCandidates.length, 1);
 });
 
-test('get_schema 返回 38 种对象类型 + 54 链接类型 + 4 个 action + 抽象层级（v0.39.0 +3 ROS 2 类型 / +5 ROS 2 边）', async () => {
+test('get_schema 返回 38 种对象类型 + 55 链接类型 + 4 个 action + 抽象层级（v0.40.0 +1 跨语言脚本同步边）', async () => {
   const reg = createToolRegistry({ snap: FIXTURE });
   const r = await reg.call('get_schema', {});
   assert.equal(r.ok, true);
   assert.ok(Array.isArray(r.objectTypes));
   assert.equal(r.objectTypes.length, 38, 'OBJECT_TYPES 共 38 个（v0.39.0 +RosNode/RosChannel/RosLaunch）');
   assert.ok(Array.isArray(r.linkTypes));
-  assert.equal(r.linkTypes.length, 54, 'LINK_TYPES 共 54 个（v0.39.0 +declaresChannel/launchesNode/launchesLaunch/declaresLaunchArg/executesProcess）');
+  assert.equal(r.linkTypes.length, 55, 'LINK_TYPES 共 55 个（v0.40.0 +crossLangMatches）');
   assert.equal(r.actionNames.length, 4);
   assert.equal(r.meta.abstractionLevels.length, 4, '4 个抽象层级 L0-L3');
   assert.equal(r.meta.categories.length, 7, '7 个概念范畴（v0.38.0 +Builtin）');
