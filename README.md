@@ -273,13 +273,13 @@ nice-aos service export --snapshot /path/to/snapshot.json --format html \
 | Trait | `trait:` | L1 CodeUnit | exported, language（**php**）, methodIds（trait 内方法，ownerKind=trait）, **usedByIds**（`use` 了本 trait 的 Class 反向聚合；与 `link usedByTrait --src "trait:..."` 配合查询方法复用关系） |
 | Method | `method:` | L1 CodeUnit | ownerKind（class/interface/**trait**/module）, ownerName, isStatic/isAsync, signature（仅展示）, overridesId/overriddenByIds（接口/父类方法 ↔ 实现类方法双向）, **callIds/calledByIds/compCallIds**（Dart 方法逻辑调用链：方法间双向 + Widget 构造渲染链；**Go 包级/跨包/方法调用同构映射**）, exported（Rust impl fn 与模块级 fn 同构映射；**Go 首字母大写 = 导出**）, **deadCandidate/deadReason**（函数级死代码候选）, **health**（方法级健康度子对象：`complexity.cyclomatic/branches/maxNesting/throws/awaits/earlyReturns` + `lambdas.count/maxNesting/inJsx` + `testInfo.isTest/testType/testFramework/callsExpect/usesMock` + 派生 `risk` 评级 low/medium/high/critical —— 借鉴 asdm-aos 整合为统一画像）, **externalCalls**（识别函数体内 React Hooks / DOM API / 状态管理 API 的 `[{name, kind, framework, line}]`，不进 calls 链接）, **endpointInfo**（API 端点装饰器级识别 Next.js App Router / Pages Router / Nuxt 3：`{framework, method, path}`）, **sqlQueries**（从函数体提取的 SQL 表名 `[{kind, table, dynamic}]`，供 mapsToTable 链接） |
 | ScriptFunction | `fn:` | L1 CodeUnit | kind（function/arrow/class/object/method）, lineCount, callCount, calledByCount, gmApiCalls, callIds/calledByIds, **deadCandidate/deadReason**（函数级死代码候选）, **archLayer=script** |
-| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter/**next/next-api/go/go-cli/php**）, domain, **domainIds**, componentFileId, navigatesToIds, **rawPath/layoutFileIds/specialFiles/isDynamic/isClient/apiMethods**（Next.js App Router 路由）, **hasPropsFactory/factoryProps**（overlay 路由 props 工厂注入键）, **middlewares/frontendCalls**（Go HTTP 路由中间件链 + 前端调用方溯源；go-cli 命令链与 flags 复用 specialFiles；**php：`module/<x>/control.php` public 方法 → `/<module>-<method>`，zentaopms createLink URL 形态**） |
+| Route | `route:` | L2 EntryPoint | overlayId, routePath, routeType（overlay/react/vue/flutter/**next/next-api/go/go-cli/php**）, domain, **domainIds**, componentFileId, navigatesToIds, **rawPath/layoutFileIds/specialFiles/isDynamic/isClient/apiMethods**（Next.js App Router 路由）, **hasPropsFactory/factoryProps**（overlay 路由 props 工厂注入键）, **middlewares/frontendCalls**（Go HTTP 路由中间件链 + 前端调用方溯源；go-cli 命令链与 flags 复用 specialFiles；**php：`module/<x>/control.php` public 方法 → `/<module>-<method>`，zentaopms createLink URL 形态**）, **clientEndpointIds（v0.42.0 调用该 API 路由的客户端 outbound 端点）** |
 | PropEdge | `prop:` | L1 CodeUnit | fromComponentId/toComponentId, fromFileId/toFileId, props（名称 + 来源分类 + valueText + storeHook）, renderCount（该组件对的渲染处数） |
 | UserScript | `us:` | L2 Script | name, version, matches, grants, connects, hostFramework（vue/react/unknown）, riskLevel, isIife, usesStrict, unsafeWindowReads/Writes, **deadFunctionCount**, **archLayer=script**, **domainIds** |
 | Dependency | `dep:` | L2 Environment | version, scope, source（npm/workspace/undeclared/pub/**go**）, importCount, **isTypeDefinition**（`@types/*` / `typescript` 类型定义包标记，借鉴 asdm-aos dependsOn 去噪；仅标记不隐藏） |
 | GmApiUsage | `gm:` | L0 AuditFact | name, category（network/storage/style/…）, callCount, declared（与 @grant 比对） |
 | InjectionPoint | `inject:` | L0 AuditFact | kind（mount/inner-html/insert-adjacent/document-write/style-gm/style-element/shadow-dom）, target, interpolated（动态插值 XSS 面） |
-| NetworkEndpoint | `net:` | L0 AuditFact | kind（gm-xhr/fetch/xhr/websocket/beacon）, domain, urls, methods, allowedByConnect（与 @connect 比对） |
+| NetworkEndpoint | `net:` | L0 AuditFact | **v0.41.0 统一**：direction（outbound，inbound 待 v0.42）, lang（javascript/python）, lib（requests/urllib/httpx/aiohttp；油猴为 null）, kind（gm-xhr/fetch/xhr/websocket/beacon/**http-client**）, domain, **url**, urls, methods, **files/fileIds（跨文件调用方）**, **lines（调用点证据）**, **hasAuth/hasJson/hasData**, **libs**, allowedByConnect（与 @connect 比对；Python 侧 null）, fns/fnIds, **v0.42.0 RPC 链：serverRouteId/serverRoutePath（命中的服务端路由）+ apiMatch（methodMatches/routeMethods/endpointMethod）** |
 
 Method ID 约定：类/接口方法 `method:<file>#<Owner>#<name>`，模块函数 `method:<file>#<fnName>`；`query Method --where "name~xxx"` 一次命中接口签名、类实现与模块函数。
 
@@ -307,7 +307,8 @@ overrides / overriddenBy    Method 方法覆盖关系（双向：类方法 → �
 usesTrait / usedByTrait    Class ↔ Trait 方法复用关系（双向：PHP class 体内 `use Trait1, Trait2;`；正向查类注入了哪些 trait，反向查 trait 被哪些类复用）
 usesGmApi    UserScript ↔ GmApiUsage（src 传 gm: 反查所属脚本）
 injectsInto  UserScript ↔ InjectionPoint（DOM 注入点；src 传 inject: 反查所属脚本）
-requestsTo   UserScript ↔ NetworkEndpoint（网络端点；src 传 net: 反查所属脚本）
+requestsTo   UserScript ↔ NetworkEndpoint（网络端点；src 传 net: 反查所属脚本；v0.41.0 起 NetworkEndpoint 亦含 Python outbound 端点，此类端点的关联方为 SourceFile 而非 UserScript）
+callsApi     NetworkEndpoint ↔ Route（**v0.42.0 RPC 双向链**：客户端 outbound 端点请求到服务端 API 路由；src 传 net: 查命中的 route，src 传 route: 查调用该路由的全部端点。匹配目标为 go/python 两类服务端路由，method 软校验——路径命中即建链，method 差异记在 apiMatch.methodMatches）
 calls / calledBy    ScriptFunction 调用图（脚本内函数间静态调用关系，双向）与 Dart Method 逻辑调用链（method: 前缀，含 Widget 构造渲染链）
 belongsTo    功能域归属（双向：src 传 dom: 列出域全部成员；src 传 mod:/comp:/store:/hook:/route: 反查所属功能域）
 mapsToTable / mappedFromCode    代码实体 ↔ 数据库表（显式映射 / sqlQueries SQL 表名 / 命名约定三通道匹配；正向查代码实体触达哪些表，反向查表被哪些 Interface/Class/Store/Service/Method 映射）
@@ -383,7 +384,7 @@ action markReviewed --params '{"objectId":"comp:TalentResultPage"}'
 action addNote --params '{"objectId":"comp:TalentResultPage","note":"核心页面"}'
 ```
 
-`analyzeFile` 支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart/.py/.kt/.kts/.php 与油猴脚本（相对 cwd 或绝对路径，v0.36.1 起扩展名路由到各自语言的 analyzer）；油猴文件输出 UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction 五类，其余文件输出 Interface/Class/Trait/Method（PHP/Kotlin 文件含各自语言实体与字段）；单文件模式下仅"本文件内零引用"的非导出实体判死（导出实体无法判定跨文件使用，一律不判死）。
+`analyzeFile` 支持 .ts/.tsx/.js/.jsx/.mjs/.vue/.rs/.dart/.py/.kt/.kts/.php 与油猴脚本（相对 cwd 或绝对路径，v0.36.1 起扩展名路由到各自语言的 analyzer）；油猴文件输出 UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction 五类；**.py 文件自 v0.41.0 起额外输出 NetworkEndpoint（requests/urllib/httpx/aiohttp 的 outbound 端点）**；其余文件输出 Interface/Class/Trait/Method（PHP/Kotlin 文件含各自语言实体与字段）；单文件模式下仅"本文件内零引用"的非导出实体判死（导出实体无法判定跨文件使用，一律不判死）。
 
 ### export — 导出
 

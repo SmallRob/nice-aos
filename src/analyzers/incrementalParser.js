@@ -347,7 +347,7 @@ export function mergeSnapshotByFiles(oldSnapshot, changedFiles, newFileAnalyses,
  * @param {string} filePath
  * @returns {string[]} 该文件可能涉及的对象类型
  */
-function defaultTypesForFile(filePath) {
+export function defaultTypesForFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   const base = filePath.split('/').pop() || '';
   const out = ['SourceFile']; // 所有文件都有 SourceFile
@@ -359,6 +359,10 @@ function defaultTypesForFile(filePath) {
   // 油猴脚本
   if (base.endsWith('.user.js')) {
     out.push('UserScript', 'ScriptFunction', 'GmApiUsage', 'InjectionPoint', 'NetworkEndpoint');
+  }
+  // v0.41.0: Python 的 outbound HTTP 端点（requests / urllib / httpx / aiohttp → NetworkEndpoint）
+  if (ext === '.py') {
+    out.push('NetworkEndpoint');
   }
   // 路由
   if (filePath.includes('/routes/') || filePath.includes('/pages/') || filePath.includes('router') || filePath.includes('Route.')) {

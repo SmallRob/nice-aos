@@ -142,8 +142,21 @@ const TYPE_PROPERTIES = {
   InjectionPoint: [
     { key: 'id',   label: '注入点 ID', wire_type: 'string', storage_hint: 'jsonb', index_hint: 'none' },
   ],
+  // v0.41.0: NetworkEndpoint 从"油猴专用"升为统一网络端点，补齐投影属性
+  // （此前仅 id 一项，SQL 侧无法按方向/语言/域名/URL 检索端点）
   NetworkEndpoint: [
-    { key: 'id',   label: '网络端点 ID', wire_type: 'string', storage_hint: 'jsonb', index_hint: 'none' },
+    { key: 'id',        label: '网络端点 ID', wire_type: 'string',  storage_hint: 'jsonb', index_hint: 'none' },
+    { key: 'direction', label: '方向',       wire_type: 'string',  storage_hint: 'jsonb', index_hint: 'none' },
+    { key: 'lang',      label: '语言',       wire_type: 'string',  storage_hint: 'jsonb', index_hint: 'none' },
+    { key: 'lib',       label: '客户端库',   wire_type: 'string',  storage_hint: 'jsonb', index_hint: 'none' },
+    { key: 'kind',      label: '端点类型',   wire_type: 'string',  storage_hint: 'jsonb', index_hint: 'none' },
+    { key: 'domain',    label: '域名',       wire_type: 'string',  storage_hint: 'jsonb', index_hint: 'btree' },
+    { key: 'url',       label: 'URL',        wire_type: 'string',  storage_hint: 'jsonb', index_hint: 'btree' },
+    { key: 'callCount', label: '调用次数',   wire_type: 'number',  storage_hint: 'jsonb', index_hint: 'none' },
+    { key: 'hasAuth',   label: '带认证',     wire_type: 'boolean', storage_hint: 'jsonb', index_hint: 'none' },
+    { key: 'filePath',  label: '文件路径',   wire_type: 'string',  storage_hint: 'jsonb', index_hint: 'none' },
+    // v0.42.0: RPC 链（命中服务端路由时非空）
+    { key: 'serverRouteId', label: '服务端路由 ID', wire_type: 'ref', storage_hint: 'jsonb', index_hint: 'btree' },
   ],
   UserScript: [
     { key: 'id',   label: '脚本 ID', wire_type: 'string', storage_hint: 'jsonb', index_hint: 'none' },

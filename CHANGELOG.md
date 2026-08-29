@@ -2,6 +2,96 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.42.0] - 2026-08-29
+
+### 前后端 RPC 双向链 —— outbound 端点 ↔ 服务端 API 路由
+
+详见 `docs/adr/0010-rpc-bidirectional-chain.md`。
+
+#### 新增 Python 客户端 ↔ 服务端路由的匹配（7c-d2 段）
+
+- v0.41.0 建出的 outbound 端点此前是孤立节点，现在与服务端路由双向建链
+- 匹配目标限定 `go` / `python` 两类路由（routePath 具备真实 URL path 语义）
+  - 不含 `php`：zentaopms 是 `/<module>-<method>` 的 query 式 URL，段匹配会误命中
+  - 不含 `next-api`：构建于 7e 段晚于匹配点，且 Next 项目的 Python 客户端场景罕见
+- 端点侧落 `serverRouteId` / `serverRoutePath` / `apiMatch`，路由侧落 `clientEndpointIds`
+- 实测：客户端 `{uid}` ↔ 服务端 `{user_id}` 参数名不同仍能正确命中；跨语言 Go `:id` ↔ Python `{uid}` 同样命中
+
+#### 匹配逻辑上提为公共函数（不重写）
+
+- 7c-d 段原有的 `normPath` + 段级匹配抽成 `apiPathOf` / `apiPathSegments` / `matchApiRoute`
+- 相比原实现扩展两点：支持 FastAPI 的 `{param}` 语法（原只认 Go 的 `:` 与 `*`）；
+  host 含占位符时也能正确切出 path（`https://%s/redfish/v1/Systems` → `/redfish/v1/Systems`）
+- 7c-d 段改为调用公共函数，行为不变
+
+#### method 采用软校验
+
+- 路径命中即建链，method 是否一致记在 `apiMatch.methodMatches`（`{ methodMatches, routeMethods, endpointMethod }`）
+- 与 7c-d 既有的"method 不一致仍记录"哲学一致，并为候选 3（跨语言 API diff）预留数据
+
+#### 新增 callsApi 边（LINK_TYPES 55 → 56）
+
+- `net:` → 命中的服务端路由；`route:` → 调用该路由的全部客户端端点（双向可查）
+- `OBJECT_TYPES` 仍 38
+
+#### 覆盖度统计
+
+- `_meta.rpcChain`：`{ serverRouteCount, endpointCount, matched, methodMismatch, unresolved }`
+- 无服务端路由或无 Python 端点时为 `null`（维度不适用，区别于"匹配到 0 条"）
+
+#### 修复既有缺陷：`Route.apiMethods` 口径不统一
+
+- Go 路由是数组 `[method]`，Python 路由是裸字符串
+- 直接 `includes` 会退化成子串匹配（`'POST'.includes('OST')` 误为 true），已归一为数组
+
+## [0.41.0] - 2026-08-29
+
+### 统一 NetworkEndpoint —— 还清 v0.40.0 的孤儿 fact 技术债
+
+详见 `docs/adr/0009-unified-network-endpoint.md`。
+
+#### 修复：v0.40.0 的 Python HTTP 客户端数据从未进本体图谱
+
+- `facts.httpClientCalls`（v0.40.0 D3 新增）在 `src/` 内除声明与赋值外**零消费**，
+  `dataMap.NetworkEndpoint` 的唯一来源始终是油猴分支
+- 修：新增 `buildPythonOutboundEndpoints()`，按 `(method, url)` 全局跨文件聚合建 outbound 实体
+- 实测 iDRAC-Redfish-Scripting（225 文件）：NetworkEndpoint **0 → 166**，其中 61 个为跨文件聚合端点
+- 同时接入单文件分析路径（`analyzeFile xxx.py` 也能看到端点）
+
+#### 修复：`%` 格式化 URL 截断错误（数据质量 bug）
+
+- `requests.get("https://%s/redfish/v1/Systems" % idrac_ip)` 在 v0.40.0 产出
+  `https://%s/redfish/v1/Systems" % idrac_ip`（`" % idrac_ip` 被误留在 url 内）
+- 修：改为提取首个字符串字面量，前缀 `[a-zA-Z]*` 兼容 `f""` / `rf""` / `b""`
+- iDRAC 166 个端点中 160 个含占位符，此修复直接决定数据可用性
+
+#### NetworkEndpoint 实体模型统一
+
+- 新增 `direction`（当前两侧均为 `outbound`，`inbound` 留待 v0.42.0 服务端 handler 接入）、`lang`、`lib` 三字段
+- 油猴专有字段 `allowedByConnect` / `scriptId` / `scriptName` 在 Python 侧置 null，字段保留以维持两端同构
+- 选"加字段"而非"拆新类型"，`OBJECT_TYPES` 仍 38 / `LINK_TYPES` 仍 55
+
+#### 存储投影属性补齐
+
+- `TYPE_PROPERTIES.NetworkEndpoint` 从 1 项扩到 10 项（新增 direction/lang/lib/kind/domain/url/callCount/hasAuth/filePath）
+- `domain` 与 `url` 用 btree 索引提示，供 v0.42.0 RPC 链检索
+
+#### 增量解析
+
+- `incrementalParser` 的失效类型对 `.py` 追加 `NetworkEndpoint`（此前仅 `.user.js` 触发）
+- `defaultTypesForFile()` 由 private 改为 export 以便单测覆盖
+
+#### 消费方适配
+
+- `exporter` 网络请求表格：来源列改为 `scriptName ?? filePath`（表头"脚本"→"来源"），kind 映射加 `http-client`，新增"方法"列（同 URL 的 GET/POST 是独立端点，缺此列会渲染成重复行）
+- `viewer`：`scriptBlueprint.totalNetworkCount` 只统计 `scriptId` 非空的端点（与列表里的油猴端点口径一致）
+
+#### 已知限制（留待 v0.42.0）
+
+- 函数级归属 `fns` / `fnIds` 留空：pythonAnalyzer 的 function fact 只有 `pos` 没有 `end`，无法可靠做区间判定
+- `callCount` 仅在跨文件时累加（analyzer 层按文件内 `(lib, method, url)` 去重只记首次）
+- 160/166 端点的 URL 含占位符（`%s` / `{}`），需占位符归一化后才能做 RPC 链匹配
+
 ## [0.40.0] - 2026-08-29
 
 ### 多语言脚本架构增强 —— argparse / HTTP 客户端 / UTF-16 PowerShell / 跨语言同步

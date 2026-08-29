@@ -428,6 +428,134 @@ function linkMethodOverrides(interfaces, classes, methods) {
   }
 }
 
+// ---------- v0.42.0: 前后端 RPC 链公共匹配 ----------
+// 7c-d（TS 前端 httpCalls ↔ Go 路由）与新加的 Python outbound 端点匹配共用这一套逻辑。
+
+// 服务端 API 路由类型：routePath 具备真实 URL path 语义。
+// 不含 'php'（zentaopms 形态是 `/<module>-<method>` 的 query 式 URL，path 段匹配会误命中），
+// 不含 'next-api'（构建于 7e 段，晚于匹配点；且 Next 项目的 Python 客户端场景罕见）。
+export const SERVER_API_ROUTE_TYPES = ['go', 'python'];
+
+// 从 URL / 路径中取 path 部分。
+//   'https://host/a/b?x=1' → '/a/b'      （host 含 %s / {} 占位符也能正确切到首个 '/'）
+//   '/api/user/'           → '/api/user/'
+//   'url' / 'uri'          → null        （纯变量名，静态不可解析，不参与匹配）
+function apiPathOf(urlOrPath) {
+  const s = String(urlOrPath ?? '');
+  const m = /^https?:\/\/[^/]*(\/[^?#]*)?/i.exec(s);
+  if (m) return m[1] ?? '/';
+  return s.startsWith('/') ? s.split('?')[0] : null;
+}
+
+// 去 query、尾斜杠归一后切段；无法解析为路径时返回 null
+function apiPathSegments(urlOrPath) {
+  const p = apiPathOf(urlOrPath);
+  if (p == null) return null;
+  return p.replace(/\/+$/, '').split('/').filter(Boolean);
+}
+
+// 段级匹配：支持 Go 的 :param / *wildcard、FastAPI 的 {param}，以及字面量相等
+function matchApiRoute(reqSegs, routeSegsList) {
+  const segMatches = (s, fe) =>
+    s.startsWith(':') || s.startsWith('*') || (s.startsWith('{') && s.endsWith('}')) || s === fe;
+  for (const { r, segs } of routeSegsList) {
+    if (segs.length === reqSegs.length) {
+      if (segs.every((s, i) => segMatches(s, reqSegs[i]))) return r;
+    } else if (segs.length < reqSegs.length && segs.some((s) => s.startsWith('*'))) {
+      // 后端尾段 *wildcard 可吞掉请求剩余段
+      const prefix = segs.slice(0, -1);
+      if (prefix.length <= reqSegs.length && prefix.every((s, i) => segMatches(s, reqSegs[i]))) return r;
+    }
+  }
+  return null;
+}
+
+// ---------- v0.41.0: 统一 NetworkEndpoint（outbound 侧）----------
+// URL → 稳定 slug，用于 NetworkEndpoint 的 id。
+// 保留 {} %s $ 等插值占位符（v0.42.0 再做占位符归一化），其余非安全字符折叠为 _。
+function slugifyEndpointUrl(url) {
+  return String(url)
+    .replace(/^https?:\/\//i, '')
+    .replace(/[^A-Za-z0-9._\-/:{}%$]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/_+$/, '')
+    .slice(0, 140) || 'unknown';
+}
+
+// URL → host（domain 字段）。带插值占位符的 URL 会原样保留占位符（如 https://%s/redfish/... → %s）。
+function endpointDomainOf(url) {
+  const m = /^(?:https?:)?\/\/([^/?#]+)/i.exec(String(url));
+  if (m) return m[1];
+  return String(url).split(/[/?#]/)[0] || 'unknown';
+}
+
+// Python HTTP 客户端调用（facts.httpClientCalls）→ 全局聚合的 outbound NetworkEndpoint 实体。
+// 聚合键 = (method, url)：同一端点被 N 个文件调用只产出一个实体，files/lines 承载调用点证据。
+// 注意：v0.41.0 不填 fns/fnIds —— pythonAnalyzer 的 function fact 只有 pos 没有 end，
+// 无法可靠判定调用行归属哪个函数；宁可留空也不做易误报的近似归属（v0.42.0 补齐 end 后再接）。
+function buildPythonOutboundEndpoints(scanFiles, factsMap, fileObjectByPath, usedIds) {
+  // 聚合键用 "::" 分隔：method 恒为 [A-Z]+ 或 MIXED，不含 ":"，故拼接无歧义
+  const agg = new Map(); // key = `${method}::${url}`
+  for (const relPath of scanFiles) {
+    if (!relPath.endsWith('.py')) continue;
+    const calls = factsMap.get(relPath)?.httpClientCalls;
+    if (!calls || calls.length === 0) continue;
+    for (const c of calls) {
+      const key = `${c.method}::${c.url}`;
+      let e = agg.get(key);
+      if (!e) {
+        e = { method: c.method, url: c.url, libs: new Set(), files: new Set(), lines: [], hasAuth: false, hasJson: false, hasData: false };
+        agg.set(key, e);
+      }
+      e.libs.add(c.lib);
+      e.files.add(relPath);
+      e.lines.push({ file: relPath, line: c.line, lib: c.lib, method: c.method, url: c.url });
+      if (c.hasAuth) e.hasAuth = true;
+      if (c.hasJson) e.hasJson = true;
+      if (c.hasData) e.hasData = true;
+    }
+  }
+  // 排序保证 id 与输出顺序稳定（不依赖扫描顺序）
+  const sorted = [...agg.values()].sort((a, b) => a.url.localeCompare(b.url) || a.method.localeCompare(b.method));
+  const out = [];
+  for (const e of sorted) {
+    const slug = slugifyEndpointUrl(e.url);
+    let id = `net:out:${e.method.toLowerCase()}:${slug}`;
+    let n = 2;
+    while (usedIds.has(id)) id = `net:out:${e.method.toLowerCase()}:${slug}#${n++}`;
+    usedIds.add(id);
+    const files = [...e.files].sort();
+    out.push({
+      id,
+      direction: 'outbound',
+      lang: 'python',
+      lib: [...e.libs].sort().join('+'),   // 同端点被多个 lib 调用时合并（罕见但保留证据）
+      libs: [...e.libs].sort(),
+      kind: 'http-client',
+      domain: endpointDomainOf(e.url),
+      url: e.url,
+      urls: [e.url],
+      methods: [e.method],
+      callCount: e.lines.length,
+      lines: e.lines,
+      files,
+      fileIds: files.map((p) => fileObjectByPath.get(p)?.id ?? `file:${p}`),
+      hasAuth: e.hasAuth,
+      hasJson: e.hasJson,
+      hasData: e.hasData,
+      fns: [],
+      fnIds: [],
+      // 油猴专有字段：Python 侧置 null（字段保留以维持两端的实体同构）
+      allowedByConnect: null,
+      scriptId: null,
+      scriptName: null,
+      filePath: files[0],
+      reviewed: false, notes: null,
+    });
+  }
+  return out;
+}
+
 // 单个油猴脚本的五类对象（UserScript/GmApiUsage/InjectionPoint/NetworkEndpoint/ScriptFunction）
 // 单文件分析（buildSingleFileOntology）与全仓库扫描共用
 function buildUserScriptObjects(relPath, facts, fileObj) {
@@ -548,6 +676,7 @@ function buildUserScriptObjects(relPath, facts, fileObj) {
   });
 
   // 网络端点对象（fnIds = 发起请求的函数）
+  // v0.41.0: 补 direction / lang / lib 三字段，使 NetworkEndpoint 从"油猴专用"升为统一网络端点
   const networkEndpoints = [];
   const netIds = [];
   for (const net of facts.networkRequests ?? []) {
@@ -555,6 +684,10 @@ function buildUserScriptObjects(relPath, facts, fileObj) {
     netIds.push(netId);
     networkEndpoints.push({
       id: netId,
+      // v0.41.0 统一字段：油猴脚本的 GM_xmlhttpRequest / fetch / XHR 全部是客户端发出，即 outbound
+      direction: 'outbound',
+      lang: 'javascript',
+      lib: null,
       kind: net.kind,
       domain: net.domain,
       urls: net.urls,
@@ -564,6 +697,8 @@ function buildUserScriptObjects(relPath, facts, fileObj) {
       allowedByConnect: net.allowedByConnect,
       fns: net.fns ?? [],
       fnIds: (net.fns ?? []).map((n) => fnIdMap.get(n)).filter(Boolean),
+      files: [relPath],
+      fileIds: [fileObj ? fileObj.id : `file:${relPath}`],
       scriptId: usId,
       scriptName,
       filePath: relPath,
@@ -1932,6 +2067,15 @@ export async function buildOntologyData(projectRoot, options = {}) {
     scriptFunctions.push(...set.scriptFunctions);
   }
 
+  // 5b-1. v0.41.0: Python HTTP 客户端（requests / urllib / httpx / aiohttp）→ outbound NetworkEndpoint
+  // 还 v0.40.0 的技术债：D3 已在 analyzer 层抽出 httpClientCalls，但本体层从未消费，
+  // 导致 iDRAC 一类仓库的 2000+ outbound URL 全部不进图谱。此处接上本体层。
+  {
+    const usedIds = new Set(networkEndpoints.map((n) => n.id));
+    const pyOutbound = buildPythonOutboundEndpoints(scan.files, factsMap, fileObjectByPath, usedIds);
+    networkEndpoints.push(...pyOutbound);
+  }
+
   // 5c. v0.38.0: Shell 脚本（ShellScript / PsScript / BashFunction / PsFunction / BashBuiltin / Cmdlet + 边）
   const shellScripts = [];
   const psScripts = [];
@@ -2899,26 +3043,13 @@ export async function buildOntologyData(projectRoot, options = {}) {
   {
     const goApiRoutes = routes.filter((r) => r.routeType === 'go');
     if (goApiRoutes.length > 0) {
-      const normPath = (p) => (p.split('?')[0].replace(/\/+$/, '') || '/');
-      const routeSegs = goApiRoutes.map((r) => ({ r, segs: normPath(r.routePath).split('/').filter(Boolean) }));
-      const matchRoute = (feSegs) => {
-        for (const { r, segs } of routeSegs) {
-          const segMatches = (s, fe) => s.startsWith(':') || s.startsWith('*') || s === fe;
-          if (segs.length === feSegs.length) {
-            if (segs.every((s, i) => segMatches(s, feSegs[i]))) return r;
-          } else if (segs.length < feSegs.length && segs.some((s) => s.startsWith('*'))) {
-            // 后端尾段 *wildcard 可吞前端剩余段
-            const prefix = segs.slice(0, -1);
-            if (prefix.length <= feSegs.length && prefix.every((s, i) => segMatches(s, feSegs[i]))) return r;
-          }
-        }
-        return null;
-      };
+      // v0.42.0: 匹配逻辑上提为公共函数（apiPathSegments / matchApiRoute），供 Python 端点复用
+      const routeSegs = goApiRoutes.map((r) => ({ r, segs: apiPathSegments(r.routePath) ?? [] }));
       for (const [relPath, facts] of factsMap) {
         if (/\.(go|rs|dart)$/.test(relPath)) continue;
         for (const call of facts.httpCalls ?? []) {
-          const feSegs = normPath(call.path).split('/').filter(Boolean);
-          const route = matchRoute(feSegs);
+          const feSegs = apiPathSegments(call.path);
+          const route = feSegs ? matchApiRoute(feSegs, routeSegs) : null;
           const fileObj = fileObjectByPath.get(relPath);
           const entry = { fileId: fileObj?.id ?? `file:${relPath}`, filePath: relPath, line: call.line, method: call.method };
           if (route) {
@@ -2933,6 +3064,47 @@ export async function buildOntologyData(projectRoot, options = {}) {
           }
         }
       }
+    }
+  }
+
+  // 7c-d2. v0.42.0: Python outbound 端点 ↔ 服务端 API 路由 —— 双向 RPC 链
+  // 与 7c-d 同源的匹配逻辑，但源侧是 NetworkEndpoint（跨文件聚合后的端点），
+  // 目标侧扩到 go + python 两类服务端路由。
+  // method 仍为软校验：路径命中即建链，method 是否一致记在 apiMatch.methodMatches
+  // （与 7c-d 的"method 不一致仍记录"同哲学，并为候选 3 的跨语言 API diff 留数据）。
+  let rpcChainStats = null;
+  {
+    const serverRoutes = routes.filter((r) => SERVER_API_ROUTE_TYPES.includes(r.routeType));
+    const pyEndpoints = networkEndpoints.filter((n) => n.direction === 'outbound' && n.lang === 'python');
+    if (serverRoutes.length > 0 && pyEndpoints.length > 0) {
+      const routeSegsList = serverRoutes.map((r) => ({ r, segs: apiPathSegments(r.routePath) ?? [] }));
+      let matched = 0;
+      let methodMismatch = 0;
+      for (const ep of pyEndpoints) {
+        const segs = apiPathSegments(ep.url);
+        if (!segs) continue; // 纯变量 URL，静态不可解析
+        const route = matchApiRoute(segs, routeSegsList);
+        if (!route) continue;
+        // apiMethods 口径不统一：Go 路由是数组 [method]，Python 路由是裸字符串。
+        // 归一为数组，否则字符串上的 includes 会退化成子串匹配（如 'POST'.includes('OST') 误为 true）
+        const rawMethods = route.apiMethods ?? [];
+        const routeMethods = Array.isArray(rawMethods) ? rawMethods : (rawMethods ? [rawMethods] : []);
+        const methodMatches = routeMethods.length === 0 || routeMethods.includes('*') || routeMethods.includes(ep.methods[0]);
+        ep.serverRouteId = route.id;
+        ep.serverRoutePath = route.routePath;
+        ep.apiMatch = { methodMatches, routeMethods, endpointMethod: ep.methods[0] };
+        if (!route.clientEndpointIds) route.clientEndpointIds = [];
+        if (!route.clientEndpointIds.includes(ep.id)) route.clientEndpointIds.push(ep.id);
+        matched += 1;
+        if (!methodMatches) methodMismatch += 1;
+      }
+      rpcChainStats = {
+        serverRouteCount: serverRoutes.length,
+        endpointCount: pyEndpoints.length,
+        matched,
+        methodMismatch,
+        unresolved: pyEndpoints.length - matched,
+      };
     }
   }
 
@@ -3311,6 +3483,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
       orphanCandidates,
       deadExportCandidates,
       unmatchedFrontendCalls,
+      // v0.42.0 RPC 链覆盖度：无服务端路由或无 Python 端点时为 null（该维度不适用）
+      rpcChain: rpcChainStats,
       // v0.35.0 解析覆盖度（借鉴 GitNexus resolution-outcome.ts）
       // 关键派生指标：importResolutionRate（解析成功/总尝试）让 agent 一眼看到"图谱完整度"
       resolutionStats: {
@@ -3584,6 +3758,12 @@ export async function buildSingleFileOntology(absFilePath) {
     ? buildUserScriptObjects(fileName, facts, fileObj)
     : { userScript: null, gmApiUsages: [], injectionPoints: [], networkEndpoints: [], scriptFunctions: [] };
 
+  // v0.41.0: Python 文件的 outbound HTTP 端点（单文件模式，与全仓库扫描同聚合逻辑）
+  const pyOutbound = facts.httpClientCalls && facts.httpClientCalls.length > 0
+    ? buildPythonOutboundEndpoints([fileName], factsMap, fileObjectByPath, new Set())
+    : [];
+  const networkEndpoints = [...us.networkEndpoints, ...pyOutbound];
+
   // v0.38.0: 单文件模式下的 Shell / CMake / PKGBUILD / Nix 分支
   let shellSet = null, cmakeSet = null, archSet = null, nixSet = null;
   if (facts.isShellScript) shellSet = buildShellScriptObjects(fileName, facts);
@@ -3606,7 +3786,7 @@ export async function buildSingleFileOntology(absFilePath) {
         UserScript: us.userScript ? 1 : 0,
         GmApiUsage: us.gmApiUsages.length,
         InjectionPoint: us.injectionPoints.length,
-        NetworkEndpoint: us.networkEndpoints.length,
+        NetworkEndpoint: networkEndpoints.length,
         ScriptFunction: us.scriptFunctions.length,
         // v0.38.0
         ShellScript: shellSet && shellSet.mainObj && facts.shellLanguage !== 'powershell' ? 1 : 0,
@@ -3634,7 +3814,7 @@ export async function buildSingleFileOntology(absFilePath) {
     UserScript: us.userScript ? [us.userScript] : [],
     GmApiUsage: us.gmApiUsages,
     InjectionPoint: us.injectionPoints,
-    NetworkEndpoint: us.networkEndpoints,
+    NetworkEndpoint: networkEndpoints,
     ScriptFunction: us.scriptFunctions,
     // v0.38.0
     ShellScript: shellSet && shellSet.mainObj && facts.shellLanguage !== 'powershell' ? [shellSet.mainObj] : [],

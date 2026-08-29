@@ -469,16 +469,24 @@ export function exportToMarkdown(dataMap, opts = {}) {
     out.push('');
 
     heading('网络请求与请求劫持');
+    // v0.41.0: NetworkEndpoint 统一后混排油猴端点与 Python 客户端端点
+    // 来源列：油猴取 scriptName，Python 取 filePath（聚合端点取首调用文件）
     const netRows = (dataMap.NetworkEndpoint ?? []).map((n) => [
-      n.scriptName,
-      { 'gm-xhr': 'GM_xmlhttpRequest', 'fetch': 'fetch', 'xhr': 'XHR', 'websocket': 'WebSocket', 'beacon': 'sendBeacon' }[n.kind] ?? n.kind,
+      n.scriptName ?? n.filePath ?? '-',
+      {
+        'gm-xhr': 'GM_xmlhttpRequest', 'fetch': 'fetch', 'xhr': 'XHR',
+        'websocket': 'WebSocket', 'beacon': 'sendBeacon',
+        'http-client': n.lib ? `${n.lib} 客户端` : 'HTTP 客户端',
+      }[n.kind] ?? n.kind,
+      // 方法列：聚合后同一 URL 的 GET/POST 是独立端点，无此列会渲染成两行完全相同的"重复行"
+      (n.methods ?? []).join('/') || '-',
       n.domain, n.callCount, (n.urls ?? []).slice(0, 2).join('<br>') || '-',
       n.allowedByConnect === null ? '-' : (n.allowedByConnect ? '✓' : '⚠️ 未声明'),
     ]);
     const hijackRows = userScripts.flatMap((s) => (s.risks ?? [])
       .filter((r) => r.kind.startsWith('hijack-'))
       .map((r) => [s.name, r.kind.replace('hijack-', '劫持 '), r.detail, r.line ?? '-']));
-    out.push(table(['脚本', '方式', '域名', '次数', '示例 URL', '@connect'], netRows));
+    out.push(table(['来源', '方式', '方法', '域名', '次数', '示例 URL', '@connect'], netRows));
     out.push('');
     if (hijackRows.length > 0) {
       out.push(`请求劫持（原型/全局函数重写）共 ${hijackRows.length} 处：`);

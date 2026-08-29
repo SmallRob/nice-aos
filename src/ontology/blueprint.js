@@ -43,7 +43,7 @@ export const OBJECT_TYPES = [
   { type: 'Dependency', prefix: 'dep:', category: 'Environment', level: 'L2', description: '依赖（npm 包 / pub 包）' },
   { type: 'GmApiUsage', prefix: 'gm:', category: 'AuditFact', level: 'L0', description: 'GM API 使用（@grant 声明比对）' },
   { type: 'InjectionPoint', prefix: 'inject:', category: 'AuditFact', level: 'L0', description: 'DOM 注入点（含归属函数 fns/fnIds，构成逻辑注入链）' },
-  { type: 'NetworkEndpoint', prefix: 'net:', category: 'AuditFact', level: 'L0', description: '网络端点（含归属函数 fns/fnIds）' },
+  { type: 'NetworkEndpoint', prefix: 'net:', category: 'AuditFact', level: 'L0', description: '网络端点（v0.41.0 统一：direction=outbound|inbound；覆盖油猴脚本与 Python requests/urllib/httpx/aiohttp 客户端；含归属函数 fns/fnIds）' },
   // ---- v0.38.0: Shell / CMake / PKGBUILD / Nix 维度 ----
   { type: 'ShellScript', prefix: 'sh:', category: 'Script', level: 'L2', description: 'Bash / Zsh 脚本（CLI/安装器/构建/运维；含 fnCount/cliParams/builtinCalls/risks）' },
   { type: 'PsScript', prefix: 'ps:', category: 'Script', level: 'L2', description: 'PowerShell 脚本（CLI/安装器；含 CmdletBinding/Parameters/cmdletCalls/registryOps）' },
@@ -91,6 +91,8 @@ export const LINK_TYPES = [
   'executesProcess',    // RosLaunch → ExecuteProcess（外部进程）
   // ---- v0.40.0: 跨语言脚本同步 ----
   'crossLangMatches',   // SourceFile(py) ↔ SourceFile(ps) / BashFunction：同名工作流的多语言实现（iDRAC CreateVirtualDiskREDFISH.py ↔ Invoke-CreateVirtualDiskREDFISH.psm1）
+  // ---- v0.42.0: 前后端 RPC 链 ----
+  'callsApi',           // NetworkEndpoint(outbound) ↔ Route(go/python)：客户端端点请求到服务端 API 路由；双向（net: 查命中的路由，route: 查调用方端点）
 ];
 
 export const ACTION_NAMES = ['refreshRepo', 'analyzeFile', 'markReviewed', 'addNote'];
@@ -443,6 +445,21 @@ export function createBlueprint(dataMap) {
       if (srcId.startsWith('net:')) {
         const endpoint = getObject(index, srcId);
         return endpoint ? [getObject(index, endpoint.scriptId)].filter(Boolean) : [];
+      }
+      return [];
+    },
+
+    // ---- v0.42.0: 前后端 RPC 链 ----
+    // NetworkEndpoint(outbound) ↔ Route(go/python)：客户端端点请求到服务端 API 路由
+    // 双向：net: → 命中的服务端路由；route: → 调用该路由的全部客户端端点
+    callsApi(srcId) {
+      if (srcId.startsWith('net:')) {
+        const endpoint = getObject(index, srcId);
+        return endpoint?.serverRouteId ? [getObject(index, endpoint.serverRouteId)].filter(Boolean) : [];
+      }
+      if (srcId.startsWith('route:')) {
+        const route = getObject(index, srcId);
+        return objectsForIds(index, route?.clientEndpointIds ?? []);
       }
       return [];
     },

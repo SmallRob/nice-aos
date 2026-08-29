@@ -436,7 +436,9 @@ export function buildViewerModel(dataMap) {
     mediumRiskCount: userScripts.filter((s) => s.riskLevel === 'medium').length,
     totalFunctionCount: scriptFunctions.length,
     totalInjectionCount: injectionPoints.length,
-    totalNetworkCount: networkEndpoints.length,
+    // v0.41.0: 仅限油猴端点（scriptId 非空）—— Python outbound 端点不归属脚本蓝图，
+    // 计入会让"脚本蓝图网络端点总数"与下列表的油猴端点数对不上
+    totalNetworkCount: networkEndpoints.filter((n) => n.scriptId).length,
     roleMeta: Object.entries(SCRIPT_ROLE_META).map(([key, v]) => ({ key, ...v })),
     scripts: scriptBlueprints,
   } : null;

@@ -1025,7 +1025,11 @@ function extractHttpClientCalls(clean, lineStarts) {
       if (args.length === 0) continue;
       // url 可能是字面量或 f-string / 变量；保留原文本
       const urlRaw = args[0].trim();
-      const url = urlRaw.replace(/^['"]|['"]$/g, '');
+      // v0.41.0 修复：`"https://%s/x" % idrac_ip` 一类格式化表达式，只取首个字符串字面量。
+      // v0.40.0 用 replace 去首尾引号，会把 `" % idrac_ip` 一并留在 url 里（iDRAC 大量此模式）。
+      // 前缀 [a-zA-Z]* 兼容 f"" / rf"" / b"" 字面量。
+      const firstStr = /^[a-zA-Z]*(['"])((?:(?!\1).)*)\1/.exec(urlRaw);
+      const url = firstStr ? firstStr[2] : urlRaw.replace(/^['"]|['"]$/g, '');
       const key = `${pat.lib}|${method}|${url}`;
       if (seen.has(key)) continue;
       seen.add(key);
