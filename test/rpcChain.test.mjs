@@ -188,3 +188,87 @@ test('RPC 链：跨语言 Python 客户端 ↔ Go gin 路由', async () => {
 
   assert.ok(dm._meta.rpcChain.matched >= 2, JSON.stringify(dm._meta.rpcChain));
 });
+
+// ---- v0.42.1: 路由声明顺序无关（字面量优先）----
+
+// 故意把通配 :id 声明在字面量 self 之前，验证 matchApiRoute 的"字面量优先"兜底
+const MAIN_GO_REVERSED = [
+  'package main',
+  '',
+  'import (',
+  '    "github.com/gin-gonic/gin"',
+  '    "example.com/oneapi/controller"',
+  ')',
+  '',
+  'func main() {',
+  '    r := gin.New()',
+  '    api := r.Group("/api")',
+  '    user := api.Group("/user")',
+  '    // 先声明通配，再声明字面量 —— 反 Gin 习惯，但 matchApiRoute 应当字面量优先',
+  '    user.GET("/:id", controller.GetUser)',
+  '    user.GET("/self", controller.GetSelf)',
+  '    r.Run()',
+  '}',
+].join('\n');
+
+test('RPC 链 v0.42.1：字面量路由在通配之后声明时，self 仍命中字面量（不是 :id）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-rpc-rev-'));
+  fs.writeFileSync(path.join(dir, 'go.mod'), GO_MOD);
+  fs.writeFileSync(path.join(dir, 'main.go'), MAIN_GO_REVERSED);
+  fs.writeFileSync(path.join(dir, 'controller.go'), CONTROLLER_GO);
+  fs.writeFileSync(path.join(dir, 'client.py'), [
+    'import requests',
+    '',
+    'def load_self():',
+    '    requests.get("http://localhost:8080/api/user/self")',
+    '',
+    'def load(uid):',
+    '    requests.get(f"http://localhost:8080/api/user/{uid}")',
+  ].join('\n'));
+
+  const dm = await buildOntologyData(dir);
+  const nets = dm.NetworkEndpoint ?? [];
+
+  const self = nets.find((n) => n.url.endsWith('/api/user/self'));
+  assert.ok(self, JSON.stringify(nets.map((n) => n.url)));
+  // v0.42.1 修复：原实现在 :id 路由先声明时会错误命中 :id
+  // routeId 格式：`route:METHOD path`（Go analyzer 把 method + space + path 作为 id）
+  assert.equal(self.serverRouteId, 'route:GET /api/user/self',
+    `应命中字面量 /api/user/self 而不是 :id，实际 ${self.serverRouteId}`);
+  assert.equal(self.serverRoutePath, '/api/user/self');
+  assert.equal(self.apiMatch.methodMatches, true);
+
+  const byId = nets.find((n) => n.url.endsWith('/api/user/{uid}'));
+  assert.equal(byId.serverRouteId, 'route:GET /api/user/:id',
+    `通配路由 :id 应被 {uid} 命中，实际 ${byId.serverRouteId}`);
+
+  // 路由侧反向 clientEndpointIds 仍正确
+  const routes = dm.Route ?? [];
+  const selfRoute = routes.find((r) => r.routePath === '/api/user/self');
+  const idRoute = routes.find((r) => r.routePath === '/api/user/:id');
+  assert.deepEqual(selfRoute.clientEndpointIds, [self.id]);
+  assert.deepEqual(idRoute.clientEndpointIds, [byId.id]);
+});
+
+// ---- v0.42.1: 双向字段原子赋值（linkRouteToEndpoint helper）----
+
+test('RPC 链 v0.42.1：linkRouteToEndpoint 双向字段一致（ep ↔ route 同时维护）', async () => {
+  const { dataMap } = await buildPyFixture();
+  const nets = dataMap.NetworkEndpoint ?? [];
+  const routes = dataMap.Route ?? [];
+  // 每个被匹配的端点，路由侧 clientEndpointIds 必含其 id；端点侧 serverRouteId
+  // 必指向该路由的 id。任一方向不一致即 helper invariant 被破坏。
+  for (const ep of nets) {
+    if (!ep.serverRouteId) continue;
+    const route = routes.find((r) => r.id === ep.serverRouteId);
+    assert.ok(route, `端点 ${ep.id} 的 serverRouteId ${ep.serverRouteId} 应指向已存在的 Route`);
+    assert.ok(
+      (route.clientEndpointIds ?? []).includes(ep.id),
+      `Route ${route.id} 的 clientEndpointIds 应含端点 ${ep.id}`,
+    );
+    // apiMatch 结构稳定
+    assert.equal(typeof ep.apiMatch.methodMatches, 'boolean');
+    assert.ok(Array.isArray(ep.apiMatch.routeMethods));
+    assert.equal(typeof ep.apiMatch.endpointMethod, 'string');
+  }
+});

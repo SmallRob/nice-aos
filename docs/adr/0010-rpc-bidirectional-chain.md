@@ -121,8 +121,42 @@ v0.38/39/40 新增的边同样未列入，遵循既有惯例。
    只差 CLI 参数与 return/error 的比对
 3. **补 Python function fact 的 `end`** —— 接上 v0.41.0 留空的 `fns` / `fnIds`
 
+## v0.42.1 闭环（v0.42.0 review 修复）
+
+code review 发现 3 个真问题 + 2 个设计债，本小版本闭环前 3 个，后 2 个继续作为 v0.43 候选。
+
+### 已修
+
+- **A. matchApiRoute 字面量优先（ordering bug）**—— 原实现按 `routeSegsList` 顺序遍历，
+  当通配路由（`/:id`）先于字面量（`/self`）声明时，客户端请求 `/self` 会错误命中 `:id`。
+  修复：matchApiRoute 加第一轮"全字面量命中"扫描，再退化到原通配逻辑；顺序无关。
+- **B. urllib/requests.request method 推断（MIXED 假阳）**—— 原实现对 `requests.request` /
+  `urllib.request.urlopen` / `urllib.request.Request` 一律标 `MIXED`，导致 iDRAC 一类
+  urllib 仓库的 `_meta.rpcChain.methodMismatch` 虚高。修复：
+  - `urllib.request.urlopen(url)` 默认按 `GET`（HTTP 事实标准）
+  - `urllib.request.urlopen(url, data=...)` 按 `POST`
+  - `urllib.request.Request(url, method='PUT')` 读 `method=` kwarg
+  - `urllib.request.Request(url, data=...)` 没 `method=` 时按 `POST`；都没有时仍为 `MIXED`（method 未定）
+  - `requests.request(method='DELETE', url=...)` 读 `method=` kwarg
+  - `requests.request('POST', 'url', ...)` 首位置参识别
+- **C. 双向字段原子赋值**（`serverRouteId` / `clientEndpointIds`）—— 7c-d2 段原先分散赋值
+  4 个字段（`ep.serverRouteId` / `ep.serverRoutePath` / `ep.apiMatch` / `route.clientEndpointIds`），
+  易出现单边赋值失败。修复：抽 `linkRouteToEndpoint(route, ep, apiMatch)` helper 集中维护双向 invariant。
+
+### 仍为 v0.43+ 候选（本次不做）
+
+- **D. 7c-d 段（TS httpCalls）扩到 Python 服务端路由**—— 7c-d 当前仍只支持 Go 路由，
+  纯 Python 后端 + TypeScript 前端项目的 TS 调用无法匹配 Python 路由。
+  修复方向：把 7c-d 段的 `r.routeType === 'go'` 改为 `SERVER_API_ROUTE_TYPES.includes(r.routeType)`，
+  并与 7c-d2 段合并为单 loop。
+- **E. `slugifyEndpointUrl` 在 id 中保留 `{ }` 占位符**—— `f"https://{host}/..."` 产生的 id
+  包含 `{` `}`，当前下游消费方（SQLite JSON / viewer 渲染）按 string 处理无问题，
+  但视觉上不是稳定 slug。修复方向：先归一为 `<>` 或单字符占位符（**breaking change**，
+  需 v0.43 重新生成 id）。
+
 ## 参考
 
 - ADR 0008（v0.40.0）—— 候选清单出处
 - ADR 0009（v0.41.0）—— 本 ADR 的前置（outbound 端点进图谱）
-- 新增测试：`test/rpcChain.test.mjs`（8 例）；全量 872/872 通过
+- 新增测试：`test/rpcChain.test.mjs`（10 例，含 v0.42.1 的字面量优先 + 双向 invariant）；
+  `test/pythonAnalyzer.test.mjs` +8 例（method 推断）；全量 860/860 通过

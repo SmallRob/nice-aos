@@ -455,9 +455,22 @@ function apiPathSegments(urlOrPath) {
 }
 
 // 段级匹配：支持 Go 的 :param / *wildcard、FastAPI 的 {param}，以及字面量相等
+// v0.42.1: 字面量优先 —— 先扫所有"全字面量命中"的路由，再退化到通配。
+//   原因：Gin / FastAPI 等框架的字面量路由应优先于通配（`/self` vs `/:id`），
+//   即便通配路由在源码中先声明。原实现是按 routes 数组顺序遍历，遇到 `/:id` 在
+//   `self` 之前会错误匹配。修复后顺序无关（routeSegsList 的稳定性由 builder 入口
+//   的 sort 保证，且匹配函数自身也兜底字面量优先）。
 function matchApiRoute(reqSegs, routeSegsList) {
-  const segMatches = (s, fe) =>
-    s.startsWith(':') || s.startsWith('*') || (s.startsWith('{') && s.endsWith('}')) || s === fe;
+  const isParam = (s) => s.startsWith(':') || s.startsWith('*') || (s.startsWith('{') && s.endsWith('}'));
+  const segMatches = (s, fe) => isParam(s) || s === fe;
+  // 第一轮：字面量全匹配（所有段都是字面量且与请求段完全相等）。
+  //         这一轮排除了带参数的路由，确保 `/self` 永远不被 `/:id` 抢匹配。
+  for (const { r, segs } of routeSegsList) {
+    if (segs.length === reqSegs.length && segs.every((s) => !isParam(s)) && segs.every((s, i) => s === reqSegs[i])) {
+      return r;
+    }
+  }
+  // 第二轮：原匹配逻辑（参数通配 + 尾段 *wildcard 吞剩余）
   for (const { r, segs } of routeSegsList) {
     if (segs.length === reqSegs.length) {
       if (segs.every((s, i) => segMatches(s, reqSegs[i]))) return r;
@@ -468,6 +481,19 @@ function matchApiRoute(reqSegs, routeSegsList) {
     }
   }
   return null;
+}
+
+// ---------- v0.42.1: 前后端 RPC 链双向字段原子赋值 ----------
+// 7c-d2 段同时维护三组双向字段（端点侧 serverRouteId/serverRoutePath/apiMatch +
+// 路由侧 clientEndpointIds）。原实现分散赋值，未来若重跑 / 加新匹配规则易出现
+// 单边赋值失败。集中到 helper 保持 invariant：调用即双向更新。
+function linkRouteToEndpoint(route, ep, apiMatch) {
+  if (!route || !ep) return;
+  ep.serverRouteId = route.id;
+  ep.serverRoutePath = route.routePath;
+  ep.apiMatch = apiMatch;
+  if (!Array.isArray(route.clientEndpointIds)) route.clientEndpointIds = [];
+  if (!route.clientEndpointIds.includes(ep.id)) route.clientEndpointIds.push(ep.id);
 }
 
 // ---------- v0.41.0: 统一 NetworkEndpoint（outbound 侧）----------
@@ -3090,11 +3116,8 @@ export async function buildOntologyData(projectRoot, options = {}) {
         const rawMethods = route.apiMethods ?? [];
         const routeMethods = Array.isArray(rawMethods) ? rawMethods : (rawMethods ? [rawMethods] : []);
         const methodMatches = routeMethods.length === 0 || routeMethods.includes('*') || routeMethods.includes(ep.methods[0]);
-        ep.serverRouteId = route.id;
-        ep.serverRoutePath = route.routePath;
-        ep.apiMatch = { methodMatches, routeMethods, endpointMethod: ep.methods[0] };
-        if (!route.clientEndpointIds) route.clientEndpointIds = [];
-        if (!route.clientEndpointIds.includes(ep.id)) route.clientEndpointIds.push(ep.id);
+        // v0.42.1: 双向字段集中到 helper，避免单边赋值失败导致反向查询失配
+        linkRouteToEndpoint(route, ep, { methodMatches, routeMethods, endpointMethod: ep.methods[0] });
         matched += 1;
         if (!methodMatches) methodMismatch += 1;
       }

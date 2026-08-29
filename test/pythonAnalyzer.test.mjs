@@ -867,7 +867,10 @@ test('pythonAnalyzer v0.40.0：HTTP 客户端调用抽取（requests / urllib / 
   const f = analyzePythonFile('client.py', src);
   assert.equal(f.httpClientCalls.length, 4, '同 (lib, method, url) 应去重');
   const libMethods = f.httpClientCalls.map((c) => `${c.lib}.${c.method}`).sort();
-  assert.deepEqual(libMethods, ['httpx.GET', 'requests.GET', 'requests.POST', 'urllib.MIXED']);
+  assert.deepEqual(libMethods, ['httpx.GET', 'requests.GET', 'requests.POST', 'urllib.GET']);
+  // v0.42.1: urllib.request.urlopen 默认按 GET 推断（HTTP 事实标准），不再一律 MIXED
+  const urllib = f.httpClientCalls.find((c) => c.lib === 'urllib');
+  assert.equal(urllib.method, 'GET');
   const getCall = f.httpClientCalls.find((c) => c.lib === 'requests' && c.method === 'GET');
   assert.equal(getCall.url, 'https://api.example.com/v1/users');
   const postCall = f.httpClientCalls.find((c) => c.method === 'POST');
@@ -884,4 +887,93 @@ test('pythonAnalyzer v0.40.0：crossLangKey 从 relPath 派生（去 .py）', ()
   // 深层路径只取基名
   const f3 = analyzePythonFile('a/b/c/d.py', '');
   assert.equal(f3.crossLangKey, 'd');
+});
+
+// ---- v0.42.1: method 推断（urllib / requests.request）----
+
+test('pythonAnalyzer v0.42.1：urllib.request.urlopen 默认 GET（事实标准）', () => {
+  const src = [
+    'import urllib.request',
+    'def fetch():',
+    '    urllib.request.urlopen("https://api.example.com/a")',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  assert.equal(f.httpClientCalls.length, 1);
+  assert.equal(f.httpClientCalls[0].method, 'GET');
+  assert.equal(f.httpClientCalls[0].lib, 'urllib');
+});
+
+test('pythonAnalyzer v0.42.1：urllib.request.urlopen 有 data= 推断 POST', () => {
+  const src = [
+    'import urllib.request',
+    'def post():',
+    '    urllib.request.urlopen("https://api.example.com/a", data=b"x")',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  assert.equal(f.httpClientCalls[0].method, 'POST');
+});
+
+test('pythonAnalyzer v0.42.1：urllib.request.Request 读 method= kwarg', () => {
+  const src = [
+    'import urllib.request',
+    'def post():',
+    '    req = urllib.request.Request("https://api.example.com/a", method="PUT")',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  assert.equal(f.httpClientCalls[0].method, 'PUT');
+});
+
+test('pythonAnalyzer v0.42.1：urllib.request.Request 没 method 但有 data= 推断 POST', () => {
+  const src = [
+    'import urllib.request',
+    'def post():',
+    '    req = urllib.request.Request("https://api.example.com/a", data=b"x")',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  assert.equal(f.httpClientCalls[0].method, 'POST');
+});
+
+test('pythonAnalyzer v0.42.1：urllib.request.Request 既没 method 也没 data= 标 MIXED', () => {
+  const src = [
+    'import urllib.request',
+    'def get():',
+    '    req = urllib.request.Request("https://api.example.com/a")',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  assert.equal(f.httpClientCalls[0].method, 'MIXED');
+});
+
+test('pythonAnalyzer v0.42.1：requests.request(method="DELETE", url=...) 读 kwarg', () => {
+  const src = [
+    'import requests',
+    'def del_():',
+    '    requests.request(method="DELETE", url="https://api.example.com/a")',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  assert.equal(f.httpClientCalls[0].method, 'DELETE');
+});
+
+test('pythonAnalyzer v0.42.1：requests.request("POST", url) 首位置参识别', () => {
+  const src = [
+    'import requests',
+    'def post():',
+    '    requests.request("POST", "https://api.example.com/a", json={})',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  assert.equal(f.httpClientCalls[0].method, 'POST');
+});
+
+test('pythonAnalyzer v0.42.1：rpcChain 不再被 urllib.urlopen 标 MIXED 假阳', () => {
+  // 端到端：urllib 客户端 + Go GET 路由，methodMatches 应当 true
+  // （原 v0.42.0 实现会因 MIXED != "GET" 标 false）
+  // 这里只验证 analyzer 层 method 不再一律 MIXED
+  const src = [
+    'import urllib.request',
+    'def fetch():',
+    '    urllib.request.urlopen("https://api.example.com/a")',
+    '    urllib.request.urlopen("https://api.example.com/b", data=b"x")',
+  ].join('\n');
+  const f = analyzePythonFile('client.py', src);
+  const methods = f.httpClientCalls.map((c) => c.method).sort();
+  assert.deepEqual(methods, ['GET', 'POST'], 'urllib.urlopen 应按 data= 推断 method');
 });

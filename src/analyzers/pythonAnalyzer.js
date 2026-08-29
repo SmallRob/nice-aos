@@ -1010,13 +1010,44 @@ function extractHttpClientCalls(clean, lineStarts) {
     { lib: 'httpx',   re: /\bhttpx\.(get|post|put|patch|delete|head|options|request)\s*\(/g },
     { lib: 'aiohttp', re: /\b(?:self\.)?(?:session|client|Session|ClientSession)\.(get|post|put|patch|delete|head|options|request)\s*\(/g },
   ];
+  // v0.42.1: 推断 method 而非一律标 MIXED。
+  //   requests.request(method=..., url=...)   → 读 method= kwarg
+  //   urllib.request.urlopen(url, data=...)   → 有 data 视为 POST，否则 GET（HTTP 事实标准）
+  //   urllib.request.Request(url, data=..., method='POST') → 读 method= kwarg；没 method 但有 data → POST；都没有 → MIXED
+  //   原实现一律 MIXED 会让 rpcChain.methodMismatch 在 iDRAC 一类 urllib 仓库里虚高
+  const inferMethod = (methodRaw, argsText, positionalArgs) => {
+    if (methodRaw === 'request' || methodRaw === 'Request') {
+      // requests.request / urllib.request.Request：method 可能在第一个位置参数
+      // （requests.request('POST', url)）或 method= kwarg
+      const kwMethod = extractKwarg(argsText, 'method');
+      if (kwMethod) {
+        const s = String(kwMethod).replace(/^['"]|['"]$/g, '').toUpperCase();
+        if (s) return s;
+      }
+      // 位置参数：requests.request('POST', 'url') 形式
+      if (methodRaw === 'request' && positionalArgs.length >= 1) {
+        const head = String(positionalArgs[0]).replace(/^['"]|['"]$/g, '').toUpperCase();
+        // 仅当首参是已知的 HTTP method 名才采纳
+        if (['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(head)) return head;
+      }
+      // urllib.Request 没声明 method 时：有 data= 视为 POST，否则 MIXED（method 未定）
+      const hasData = /\bdata\s*=/.test(argsText);
+      return hasData ? 'POST' : 'MIXED';
+    }
+    if (methodRaw === 'urlopen') {
+      // urlopen(url, data=...)：data 非空 → POST，否则 GET（事实标准，库默认 GET）
+      const hasData = /\bdata\s*=/.test(argsText);
+      return hasData ? 'POST' : 'GET';
+    }
+    return methodRaw.toUpperCase();
+  };
+
   for (const pat of pats) {
     pat.re.lastIndex = 0;
     let m;
     const seen = new Set(); // 去重：同一 (lib, method, url) 只记首次
     while ((m = pat.re.exec(clean))) {
       const methodRaw = m[1];
-      const method = methodRaw === 'request' || methodRaw === 'urlopen' || methodRaw === 'Request' ? 'MIXED' : methodRaw.toUpperCase();
       const open = m.index + m[0].length - 1;
       const close = findMatchingParen(clean, open);
       if (close < 0) continue;
@@ -1030,6 +1061,8 @@ function extractHttpClientCalls(clean, lineStarts) {
       // 前缀 [a-zA-Z]* 兼容 f"" / rf"" / b"" 字面量。
       const firstStr = /^[a-zA-Z]*(['"])((?:(?!\1).)*)\1/.exec(urlRaw);
       const url = firstStr ? firstStr[2] : urlRaw.replace(/^['"]|['"]$/g, '');
+      // v0.42.1: 推断 method（requests.request / urllib.Request 读 kwarg；urllib.urlopen 视 data 推 POST/GET）
+      const method = inferMethod(methodRaw, argsText, args);
       const key = `${pat.lib}|${method}|${url}`;
       if (seen.has(key)) continue;
       seen.add(key);

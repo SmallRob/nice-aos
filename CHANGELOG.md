@@ -2,6 +2,44 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.42.1] - 2026-08-29
+
+### v0.42.0 review 闭环 —— 3 个真问题修复
+
+详见 `docs/adr/0010-rpc-bidirectional-chain.md` 的"v0.42.1 闭环"章节。
+
+#### 修复 matchApiRoute 字面量优先（ordering bug）
+
+- 原实现按 `routeSegsList` 顺序遍历匹配，当通配路由（`/:id`）先于字面量（`/self`）声明时，
+  客户端请求 `/self` 会错误命中 `:id`，导致 `serverRouteId` 错指
+- 修复：matchApiRoute 加第一轮"全字面量命中"扫描，再退化到原通配逻辑；**路由声明顺序无关**
+- 新增 test：`RPC 链 v0.42.1：字面量路由在通配之后声明时，self 仍命中字面量（不是 :id）`
+
+#### 修复 urllib/requests.request method 推断（MIXED 假阳）
+
+- 原实现对 `requests.request` / `urllib.request.urlopen` / `urllib.request.Request` 一律标 `MIXED`，
+  导致 iDRAC 一类 urllib 仓库的 `_meta.rpcChain.methodMismatch` 统计虚高
+- 修复：
+  - `urllib.request.urlopen(url)` 默认按 `GET`（HTTP 事实标准）
+  - `urllib.request.urlopen(url, data=...)` 按 `POST`
+  - `urllib.request.Request(url, method='PUT')` 读 `method=` kwarg
+  - `urllib.request.Request(url, data=...)` 没 `method=` 时按 `POST`；都没有仍为 `MIXED`
+  - `requests.request(method='DELETE', url=...)` 读 `method=` kwarg
+  - `requests.request('POST', 'url', ...)` 首位置参识别
+- 新增 7 个 test 覆盖 method 推断各分支
+
+#### 双向字段原子赋值（`linkRouteToEndpoint` helper）
+
+- 7c-d2 段原先分散赋值 `ep.serverRouteId` / `ep.serverRoutePath` / `ep.apiMatch` /
+  `route.clientEndpointIds` 4 个字段，未来重跑或加新匹配规则易出现单边赋值失败
+- 抽 `linkRouteToEndpoint(route, ep, apiMatch)` helper 集中维护双向 invariant
+- 新增 test 验证：所有匹配端点 ↔ 路由的 `clientEndpointIds` 必含其 id
+
+#### 仍为 v0.43+ 候选
+
+- 7c-d 段（TS httpCalls）扩到 Python 服务端路由
+- `slugifyEndpointUrl` 在 id 中保留 `{ }` 占位符（breaking change，需重新生成 id）
+
 ## [0.42.0] - 2026-08-29
 
 ### 前后端 RPC 双向链 —— outbound 端点 ↔ 服务端 API 路由
