@@ -6,7 +6,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   analyzeSqlFile,
-  analyzeSqlFileFromDisk,
   parseSprintFilePath,
 } from '../analyzers/sqlAnalyzer.js';
 import { detectDomain, detectPatterns, versionCompare, DOMAIN_COLORS } from './dbModel.js';
@@ -31,10 +30,6 @@ const DDL_FILE_PATTERNS = [
 
 function isDdlFile(fileName) {
   return DDL_FILE_PATTERNS.some((p) => p.test(fileName));
-}
-
-function isExcludedDir(dirName) {
-  return DEFAULT_EXCLUDE_DIRS.some((d) => dirName.toLowerCase() === d.toLowerCase());
 }
 
 // 递归扫描目录，收集所有 SQL 文件
@@ -471,10 +466,6 @@ export async function buildDatabaseModelIncremental(migrationDir, existingModel,
   model._meta = buildMeta(migrationDir, sortedFiles, model, durationMs, true, newManifest, layout);
 
   return model;
-}
-
-export function analyzeSingleSqlFile(filePath) {
-  return analyzeSqlFileFromDisk(filePath);
 }
 
 export { walkSqlFiles, detectLayout, prepareFiles, buildDatabasesArray };

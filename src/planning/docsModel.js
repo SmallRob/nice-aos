@@ -1,10 +1,5 @@
 // 产品规划 / PRD 文档蓝图数据模型：实体类型、状态/优先级归一化常量与特性对象规范化。
 
-// 可查询的对象类型（query <type>）与油猴问答代理 planning 模式一一对应
-export const PLANNING_TYPES = [
-  'features', 'modules', 'releases', 'milestones', 'themes', 'dependencies',
-];
-
 // 特性状态定义：key → { label, emoji }
 export const STATUS_DEFS = {
   done: { label: '已完成', emoji: '🟢' },
@@ -49,10 +44,6 @@ export function statusKey(text) {
   return 'unknown';
 }
 
-export function statusLabel(key) {
-  return (STATUS_DEFS[key] || STATUS_DEFS.unknown).label;
-}
-
 // 优先级归一化：任一大小写写法的 P0/P1/P2/P3 与高/中/低
 export function priorityKey(text) {
   if (!text) return '';
@@ -66,8 +57,6 @@ export function priorityKey(text) {
   if (/低|一般/.test(t)) return 'P3';
   return t.slice(0, 3);
 }
-
-export const PRIORITY_ORDER = ['P0', 'P1', 'P2', 'P3', ''];
 
 // markdown 链接单元 → 链接文本与 URL：`[Title](url)` → { text, url }
 export function parseLinkCell(cell) {
@@ -107,16 +96,5 @@ export function normalizeFeature(f) {
     completion: f.completion ?? null,
     depIds: f.depIds || [],
     sources: f.sources || [],
-  };
-}
-
-// 模块对象 short form（供 viewer/query）
-export function moduleView(m) {
-  return {
-    key: m.key,
-    label: m.label,
-    description: m.description,
-    featureCount: (m.featureIds || []).length,
-    featureIds: m.featureIds || [],
   };
 }

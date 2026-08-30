@@ -25,8 +25,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
-import { setSnapshotDir, getSnapshotDirOverride } from '../../paths.js';
+import { setSnapshotDir } from '../../paths.js';
 import { createToolRegistry } from '../../ontology/toolRegistry.js';
+import { resolveSnapshotDirs, loadSnapshotFile } from '../shared.js';
 
 // 动态 import SDK（避免未安装时启动报错）
 async function loadMcpSdk() {
@@ -48,32 +49,6 @@ async function loadMcpSdk() {
   }
 }
 
-function resolveDirs(opts) {
-  const root = path.resolve(opts.root || process.cwd());
-  const explicitDir = opts.dir || getSnapshotDirOverride() || process.env.NICE_AOS_SNAPSHOT_DIR;
-  const dataDir = explicitDir ? path.resolve(explicitDir) : path.join(root, '.nice-aos', 'data');
-  return { root, dataDir };
-}
-
-function loadSnapshot(snapPath) {
-  if (!fs.existsSync(snapPath)) {
-    return { ok: false, error: 'NOT_FOUND' };
-  }
-  let text;
-  try {
-    text = fs.readFileSync(snapPath, 'utf-8');
-  } catch (err) {
-    return { ok: false, error: `READ_FAILED: ${err?.message ?? err}` };
-  }
-  let snap;
-  try {
-    snap = JSON.parse(text);
-  } catch (err) {
-    return { ok: false, error: `PARSE_FAILED: ${err?.message ?? err}` };
-  }
-  return { ok: true, snap };
-}
-
 export const mcpCommand = new Command('mcp')
   .description('启动 MCP server（stdio 传输）—— 把 nice-aos 7 个能力暴露为 MCP tools，供 Claude Code / Cursor / Continue 等 MCP 客户端直接调用')
   .option('--root <dir>', '项目根目录（默认当前目录，用于定位 .nice-aos/data）', process.cwd())
@@ -81,7 +56,7 @@ export const mcpCommand = new Command('mcp')
   .option('--name <name>', 'MCP server 显示名（默认 nice-aos）', 'nice-aos')
   .option('--version <version>', 'MCP server 版本（默认读 package.json）')
   .action(async (opts) => {
-    const { root, dataDir } = resolveDirs(opts);
+    const { root, dataDir } = resolveSnapshotDirs(opts);
     const snapPath = path.join(dataDir, 'snapshot.json');
     setSnapshotDir(dataDir);
 
@@ -92,7 +67,7 @@ export const mcpCommand = new Command('mcp')
     process.stderr.write(`[nice-aos mcp]   snap = ${snapPath}\n`);
 
     // 加载快照（fail-fast）
-    const loaded = loadSnapshot(snapPath);
+    const loaded = loadSnapshotFile(snapPath);
     if (!loaded.ok) {
       if (loaded.error === 'NOT_FOUND') {
         process.stderr.write(`\n[错误] 快照未找到: ${snapPath}\n`);

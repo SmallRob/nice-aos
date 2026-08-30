@@ -8,28 +8,6 @@ export const SERVICE_MODEL_META = {
   description: '后端服务模型：从 asdm-aos Java 后端本体快照解析出的模块、分层、API 端点、数据层、依赖技术栈、代码质量与健康度结构',
 };
 
-export const SERVICE_OBJECT_TYPES = [
-  { key: 'Repository', label: '代码仓库', description: '仓库元信息：名称/路径/语言/分支/commit/文件数/分析错误' },
-  { key: 'Module', label: '模块', description: '按包前缀划分的模块（core / adapter / portal 等）及其类/接口/方法/端点规模' },
-  { key: 'Layer', label: '架构分层', description: 'Controller / Service / Repository / Mapper / Entity / DTO / Config / Adapter / 任务 / 工具' },
-  { key: 'Class', label: '类', description: '类/枚举的归一化摘要：注解、数据模型类型、所属模块与分层、方法数、复杂度' },
-  { key: 'Interface', label: '接口', description: '接口摘要：可见性/行数/方法签名数/所属模块' },
-  { key: 'Method', label: '方法', description: '方法摘要：复杂度、测试标识、API 端点信息、所属类/模块/分层' },
-  { key: 'Endpoint', label: 'API 端点', description: 'REST 端点：HTTP 方法/路径/框架/Controller/领域前缀' },
-  { key: 'Table', label: '数据库表', description: 'DDL 表：列数/主键/外键数/实体映射/孤儿表标记' },
-  { key: 'ForeignKey', label: '外键', description: '表间外键引用明细（列名 → 引用表.列）' },
-  { key: 'Dependency', label: '外部依赖', description: 'Maven/Gradle 依赖：版本/scope/技术栈分类' },
-  { key: 'Mapper', label: 'MyBatis Mapper', description: 'MyBatis Mapper 接口摘要（namespace/映射表/POJO/resultMap）' },
-];
-
-export const SERVICE_LINK_TYPES = [
-  { key: 'belongsTo', label: '属于', description: '类/接口/方法 → 模块与分层' },
-  { key: 'exposes', label: '暴露', description: 'Controller 方法 → API 端点' },
-  { key: 'mapsTo', label: '映射', description: '实体类 → 数据库表' },
-  { key: 'fkReferences', label: '外键引用', description: '表 → 表（DDL FOREIGN KEY）' },
-  { key: 'uses', label: '使用依赖', description: '包 → 外部依赖（技术栈证据）' },
-];
-
 // ---------- 模块规则 ----------
 // 模块不硬编码：从待转换的 asdm-aos 快照包结构动态推导（deriveModuleRules），
 // 推导结果可写入模块配置文件（service-modules.json），后续构建从配置文件加载；
@@ -207,21 +185,7 @@ export function parseModulePrefixJson(jsonStr) {
 }
 
 // ---------- 分层规则 ----------
-// 展示顺序固定；检测优先级见 detectLayer
-export const LAYER_RULES = [
-  { key: 'controller', label: '接口层' },
-  { key: 'service', label: '业务层' },
-  { key: 'repository', label: '数据访问' },
-  { key: 'mapper', label: 'Mapper' },
-  { key: 'entity', label: '实体' },
-  { key: 'dto', label: 'DTO-VO' },
-  { key: 'config', label: '配置' },
-  { key: 'adapter', label: '适配与客户端' },
-  { key: 'job', label: '任务' },
-  { key: 'util', label: '工具' },
-  { key: 'other', label: '其他' },
-];
-
+// 检测优先级见 detectLayer（分层展示顺序由 viewer 侧维护）
 const ANNOTATION_TO_LAYER = [
   ['@RestController', 'controller'],
   ['@Controller', 'controller'],
@@ -321,8 +285,6 @@ export const TECH_STACK_RULES = [
   { key: 'test', label: '测试框架', regex: /junit|mockito|assertj|spring-boot-starter-test/ },
   { key: 'spring-boot', label: 'Spring Boot', regex: /(^|:)spring-boot(-starter)?(-web|-actuator|-aop|-autoconfigure|-devtools|-logging)?($|\.)/ },
 ];
-
-export const TECH_STACK_LABELS = Object.fromEntries(TECH_STACK_RULES.map((r) => [r.key, r.label]));
 
 // 依赖名 → 技术栈分类；无匹配兜底 other
 export function detectTechCategory(depName) {

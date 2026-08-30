@@ -11,11 +11,9 @@ const kit = createSnapshotFileKit({
 });
 
 export const setDbSnapshotDir = kit.setDirOverride;
-export const getDbSnapshotDir = kit.getDir;
 export const getDbSnapshotPath = kit.getPath;
 export const saveDbSnapshot = kit.save;
 export const loadDbSnapshot = kit.load;
-export const hasDbSnapshot = kit.has;
 
 export function fileHash(filePath) {
   return snapshotFileHash(filePath);

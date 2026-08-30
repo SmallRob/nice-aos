@@ -11,8 +11,6 @@ const kit = createSnapshotFileKit({
 });
 
 export const setPlanningSnapshotDir = kit.setDirOverride;
-export const getPlanningSnapshotDir = kit.getDir;
 export const getPlanningSnapshotPath = kit.getPath;
 export const savePlanningSnapshot = kit.save;
 export const loadPlanningSnapshot = kit.load;
-export const hasPlanningSnapshot = kit.has;

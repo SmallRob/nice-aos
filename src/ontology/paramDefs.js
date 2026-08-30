@@ -52,23 +52,6 @@ export function validateParamDef(def) {
 }
 
 /**
- * 校验 ActionDef 是否合法。
- * @param {ActionDef} def
- * @returns {string|null}
- */
-export function validateActionDef(def) {
-  if (!def || typeof def !== 'object') return 'ActionDef 必须是对象';
-  if (!def.name || typeof def.name !== 'string') return 'ActionDef.name 必填';
-  if (!def.label) return 'ActionDef.label 必填';
-  if (!Array.isArray(def.params)) return 'ActionDef.params 必须是数组';
-  for (let i = 0; i < def.params.length; i++) {
-    const err = validateParamDef(def.params[i]);
-    if (err) return `params[${i}]: ${err}`;
-  }
-  return null;
-}
-
-/**
  * 蓝图 UI 自动渲染契约：将 ParamDef 列表转为 HTML 表单字段数组。
  * 不渲染 HTML 字符串（避免 SSR 风险），仅产出字段描述，前端按此渲染。
  *

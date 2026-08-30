@@ -11,24 +11,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
-import { getSnapshotDirOverride } from '../../paths.js';
+import { resolveSnapshotDirs, loadSnapshotFile } from '../shared.js';
 import { scanSnapshotIOWithContent } from '../../analyzers/ioScanner.js';
-
-function resolveDirs(opts) {
-  const root = path.resolve(opts.root || process.cwd());
-  const explicitDir = opts.dir || getSnapshotDirOverride() || process.env.NICE_AOS_SNAPSHOT_DIR;
-  const dataDir = explicitDir ? path.resolve(explicitDir) : path.join(root, '.nice-aos', 'data');
-  return { root, dataDir };
-}
-
-function loadSnapshot(snapPath) {
-  if (!fs.existsSync(snapPath)) return { ok: false, error: 'NOT_FOUND' };
-  try {
-    return { ok: true, snap: JSON.parse(fs.readFileSync(snapPath, 'utf-8')) };
-  } catch (err) {
-    return { ok: false, error: `PARSE_FAILED: ${err?.message ?? err}` };
-  }
-}
 
 export const ioCommand = new Command('io')
   .description('扫描快照中所有 method 的 IO 敏感 API 使用（借鉴 code-graph-rag 的 IO_SINKS 数据驱动注册表，v0.32.0 静态扫描版）')
@@ -40,10 +24,10 @@ export const ioCommand = new Command('io')
   .option('--output <file>', '写入文件（默认 stdout）')
   .option('--limit <n>', '最大显示 method 数（默认 50）', (v) => Number(v), 50)
   .action((opts) => {
-    const { root, dataDir } = resolveDirs(opts);
+    const { root, dataDir } = resolveSnapshotDirs(opts);
     const snapPath = path.join(dataDir, 'snapshot.json');
 
-    const loaded = loadSnapshot(snapPath);
+    const loaded = loadSnapshotFile(snapPath);
     if (!loaded.ok) {
       if (loaded.error === 'NOT_FOUND') {
         console.error(`[错误] 快照未找到: ${snapPath}`);

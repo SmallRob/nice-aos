@@ -1,3 +1,31 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { getSnapshotDirOverride } from '../paths.js';
+
+// 快照目录解析链：显式 --dir → 全局 --snapshot-dir 覆盖 → 环境变量 → <root>/.nice-aos/data
+// 注：子命令不要重复定义 --snapshot-dir 选项——Commander 中与全局选项重名的子命令选项会被父命令吞掉，子命令 action 拿不到值
+export function resolveSnapshotDirs(opts) {
+  const root = path.resolve(opts.root || process.cwd());
+  const explicitDir = opts.dir || getSnapshotDirOverride() || process.env.NICE_AOS_SNAPSHOT_DIR;
+  const dataDir = explicitDir ? path.resolve(explicitDir) : path.join(root, '.nice-aos', 'data');
+  return { root, dataDir };
+}
+
+export function loadSnapshotFile(snapPath) {
+  if (!fs.existsSync(snapPath)) return { ok: false, error: 'NOT_FOUND' };
+  let text;
+  try {
+    text = fs.readFileSync(snapPath, 'utf-8');
+  } catch (err) {
+    return { ok: false, error: `READ_FAILED: ${err?.message ?? err}` };
+  }
+  try {
+    return { ok: true, snap: JSON.parse(text) };
+  } catch (err) {
+    return { ok: false, error: `PARSE_FAILED: ${err?.message ?? err}` };
+  }
+}
+
 // --where 过滤语法（与 asdm-aos 对齐，扩展模糊匹配）：
 //   "k1=v1,k2=v2" 多条件 AND；等号或冒号 = 精确相等；~ = 模糊匹配（子串包含，忽略大小写）
 //   数组值：精确为成员包含，模糊为任一成员包含

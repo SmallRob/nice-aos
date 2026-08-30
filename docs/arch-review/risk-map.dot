@@ -1,0 +1,62 @@
+// nice-aos v0.42.1 风险/技术债关系图
+// 证据: .nice-aos/data/snapshot.json + duplicates/io 体检 + wc -l (2026-08-30)
+// 渲染: Graphviz DOT (rankdir=TB, Canvas 友好)
+digraph nice_aos_risk_map {
+  rankdir=TB;
+  graph [fontname="Helvetica", label="nice-aos 架构风险图（current-state, 证据见 docs/arch-review/architecture-review.md）", labelloc=t, fontsize=16];
+  node [fontname="Helvetica", fontsize=11];
+  edge [fontname="Helvetica", fontsize=9];
+
+  // ---- 质量属性 ----
+  node [shape=box3d, style=filled, fillcolor="#dce8ff"];
+  QA_MAINT [label="可维护性"];
+  QA_EXT   [label="可扩展性"];
+  QA_GUARD [label="正确性护栏"];
+
+  // ---- 代码热点（椭圆=文件/族，括号内为证据数字）----
+  node [shape=ellipse, style=filled];
+  F_builder  [label="ontology/builder.js\n3860 行", fillcolor="#ffd9d9"];
+  F_viewer   [label="ontology/viewer.js\n3691 行", fillcolor="#ffd9d9"];
+  C_viewers  [label="Viewer 族 ×6\ndb/service/deploy/docs/blueprint\n合计 ~8600 行", fillcolor="#ffe8cc"];
+  C_dupAna   [label="分析器重复族\nlineAt×5 computeLineStarts×5\nanalyzeXFromDisk×4", fillcolor="#fff3bf"];
+  C_dupCli   [label="CLI 脚手架重复族\nresolveDirs×5 loadSnapshot×3", fillcolor="#fff3bf"];
+  F_dead     [label="死代码存量\n34 导出 + 22 函数 + 1 文件", fillcolor="#fff3bf"];
+  H_hubs     [label="高扇入枢纽\ncss/shared.js(12) blueprint.js(11)\nthemes(10) paths.js(9) snapshot.js(7)", fillcolor="#e6e6fa"];
+  P_scripts  [label="npm scripts 指向仓库外路径", fillcolor="#eeeeee"];
+  P_classify [label="产品误判: CLI 被标组件应用 / \nanalyzer 自身被判为 UserScript", fillcolor="#eeeeee"];
+
+  // ---- 健康基线（对照项）----
+  node [shape=note, style=filled, fillcolor="#d9f2d9"];
+  G_BASE [label="健康基线: 0 循环依赖 / 0 解析错误 /\n80 测试文件 / 10 ADR"];
+
+  // ---- 影响边 ----
+  F_builder -> QA_MAINT [label="单文件改动热点"];
+  F_viewer  -> QA_MAINT [label="单文件改动热点"];
+  C_viewers -> QA_EXT   [label="新蓝图=再造 800+ 行"];
+  C_viewers -> QA_MAINT [label="HTML 骨架逐份拷贝"];
+  C_dupAna  -> QA_EXT   [label="修一处漏四处"];
+  C_dupCli  -> QA_MAINT;
+  F_dead    -> QA_MAINT [label="认知噪音"];
+  H_hubs    -> QA_GUARD [label="缺契约测试" , style=dashed];
+  P_scripts -> QA_GUARD [label="干净克隆下不可用"];
+  P_classify -> QA_EXT  [label="产品改进机会", style=dashed];
+
+  // ---- 修复路径（虚线=建议落点）----
+  node [shape=component, style=filled, fillcolor="#f5f5f5"];
+  R_split   [label="拆分 builder/viewer\n(F1)"];
+  R_extract [label="抽取共享工具\ntextUtils / cli shared.js (F2)"];
+  R_kernel  [label="Viewer kernel\n抽象 (F3)"];
+  R_clean   [label="人工确认后删除 (F4)"];
+  R_test    [label="枢纽契约测试 (F5)"];
+
+  R_split   -> F_builder [style=dashed, color=gray];
+  R_split   -> F_viewer  [style=dashed, color=gray];
+  R_extract -> C_dupAna  [style=dashed, color=gray];
+  R_extract -> C_dupCli  [style=dashed, color=gray];
+  R_kernel  -> C_viewers [style=dashed, color=gray];
+  R_clean   -> F_dead    [style=dashed, color=gray];
+  R_test    -> H_hubs    [style=dashed, color=gray];
+  R_split   -> R_kernel  [label="先拆分再抽象", color=gray];
+
+  G_BASE -> QA_GUARD [style=dotted, color=gray, label="现有护栏"];
+}

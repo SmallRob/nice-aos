@@ -81,6 +81,8 @@
     "aos": "node src/cli/index.js --snapshot-dir ../.codebuddy/skills/nice-aos-skill/data",
     "aos:build": "node src/cli/index.js --snapshot-dir ../.codebuddy/skills/nice-aos-skill/data action refreshRepo --params \"{\\\"repoPath\\\":\\\"..\\\",\\\"roots\\\":[\\\"src\\\",\\\"nicekit/src\\\",\\\"nice-steam/src\\\"]}\"",
     "aos:report": "node src/cli/index.js --snapshot-dir ../.codebuddy/skills/nice-aos-skill/data export --format markdown --output ../.codebuddy/skills/nice-aos-skill/data/report.md",
+    "aos:self": "node src/cli/index.js action refreshRepo --params \"{\\\"repoPath\\\":\\\".\\\",\\\"roots\\\":[\\\"src\\\"]}\"",
+    "aos:self:report": "node src/cli/index.js export --format markdown --output .nice-aos/data/self-report.md",
     "test": "node --test \"test/*.test.mjs\" \"test/storage/*.test.mjs\""
   },
   "dependencies": {

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { Command } from 'commander';
-import { fail, parseWhere, matchesWhere } from '../shared.js';
+import { fail, parseWhere, matchesWhere, resolveSnapshotDirs } from '../shared.js';
 import { checkAuth, parseTokens, authorizeRole, minRoleFor, ROLES } from './serveAuth.js';
 import { createRateLimiter, clientKeyOf } from './rateLimiter.js';
 import { buildOpenApiSpec, ENDPOINTS } from './serveOpenApi.js';
@@ -12,7 +12,7 @@ import { invokeApiChat } from './openaiCompat.js';
 import { isValidSessionId, loadSession, appendTurn } from './askSession.js';
 import { resolveSavePath, formatAskArchive, writeAskArchive } from './askSave.js';
 import { writeServeRuntime, cleanupServeRuntime } from './notifyServe.js';
-import { getSnapshotDirOverride, setSnapshotDir } from '../../paths.js';
+import { setSnapshotDir } from '../../paths.js';
 import { loadType, buildAskContextFromSql } from '../../storage/index.js';
 import { buildAskContext } from './askContext.js';
 import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META, createBlueprint } from '../../ontology/blueprint.js';
@@ -67,16 +67,6 @@ const isLoopbackAddr = (addr) => addr === '127.0.0.1' || addr === '::1' || addr 
 
 // 鉴权实现已抽到 ./serveAuth.js（v0.33.0+ 拆分）。
 // checkAuth / timingSafeEqualStr 单独可单测；serve.js 不再含 security-sensitive 代码。
-
-function resolveDirs(opts) {
-  const root = path.resolve(opts.root || process.cwd());
-  // 数据源目录解析链：显式 --dir → 全局 --snapshot-dir（preAction 钩子经 setSnapshotDir 写入的覆盖值）
-  //   → 环境变量 NICE_AOS_SNAPSHOT_DIR → <root>/.nice-aos/data
-  // 注：不在 serve 上重复定义 --snapshot-dir 选项——Commander 中与全局选项重名的子命令选项会被父命令吞掉，子命令 action 拿不到值
-  const explicitDir = opts.dir || getSnapshotDirOverride() || process.env.NICE_AOS_SNAPSHOT_DIR;
-  const dataDir = explicitDir ? path.resolve(explicitDir) : path.join(root, '.nice-aos', 'data');
-  return { root, dataDir };
-}
 
 function respond(res, status, body, headers = {}) {
   const isHtml = typeof body === 'string' && headers['Content-Type']?.includes('html');
@@ -145,7 +135,7 @@ export const serveCommand = new Command('serve')
   .option('--window-ms <ms>', '限流窗口时长毫秒（默认 60000）', '60000')
   .option('--ws-interval <ms>', 'WebSocket 推送：mtime 轮询间隔（毫秒；默认 2000；设 0 关闭）', '2000')
   .action((opts) => {
-    const { root, dataDir } = resolveDirs(opts);
+    const { root, dataDir } = resolveSnapshotDirs(opts);
     const snapPath = path.join(dataDir, 'snapshot.json');
     const bpPath = path.join(root, 'blueprint.html');
     // v0.38：docs 文档目录（output docs 产物）；/docs 浏览器入口 + /context/* 静态资源

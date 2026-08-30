@@ -158,21 +158,6 @@ function parseRouteBlock(block) {
   return { title: pick('title'), name: pick('name'), path: pick('path') };
 }
 
-// defineProps 宏调用参数（数组/对象形式）→ props 数量
-function countDefineProps(script) {
-  const callRe = /defineProps\s*(?:<[^>]*>)?\s*\(\s*(\[[\s\S]*?\]|\{[\s\S]*?\})/;
-  const m = script.match(callRe);
-  if (!m) return null;
-  const arg = m[1].trim();
-  if (arg.startsWith('[')) {
-    const items = [...arg.matchAll(/['"]([^'"]+)['"]/g)].map((x) => x[1]);
-    return items.length;
-  }
-  // 对象形式数顶层 key（粗粒度：按行首 key 计数）
-  const keys = [...arg.matchAll(/^\s*['"]?([\w$]+)['"]?\s*:/gm)].map((x) => x[1]);
-  return keys.length;
-}
-
 // defineProps 宏调用参数（数组/对象形式）→ props 名列表（forward 分类用）
 function extractDefinePropsNames(script) {
   const callRe = /defineProps\s*(?:<[^>]*>)?\s*\(\s*(\[[\s\S]*?\]|\{[\s\S]*?\})/;

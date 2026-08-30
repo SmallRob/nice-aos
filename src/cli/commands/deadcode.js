@@ -11,24 +11,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
-import { getSnapshotDirOverride } from '../../paths.js';
+import { resolveSnapshotDirs, loadSnapshotFile } from '../shared.js';
 import { findDeadExported, markDeadCandidates } from '../../analyzers/deadCode.js';
-
-function resolveDirs(opts) {
-  const root = path.resolve(opts.root || process.cwd());
-  const explicitDir = opts.dir || getSnapshotDirOverride() || process.env.NICE_AOS_SNAPSHOT_DIR;
-  const dataDir = explicitDir ? path.resolve(explicitDir) : path.join(root, '.nice-aos', 'data');
-  return { root, dataDir };
-}
-
-function loadSnapshot(snapPath) {
-  if (!fs.existsSync(snapPath)) return { ok: false, error: 'NOT_FOUND' };
-  try {
-    return { ok: true, snap: JSON.parse(fs.readFileSync(snapPath, 'utf-8')) };
-  } catch (err) {
-    return { ok: false, error: `PARSE_FAILED: ${err?.message ?? err}` };
-  }
-}
 
 export const deadcodeCommand = new Command('deadcode')
   .description('基于 entry-point BFS 找出"导出但不可达"的 class（借鉴 code-graph-rag 的 cgr dead-code 算法）')
@@ -40,10 +24,10 @@ export const deadcodeCommand = new Command('deadcode')
   .option('--output <file>', '写入文件（默认 stdout）')
   .option('--write-back', '把 dead 信息写回到 snapshot（标记 deadCandidate 字段）', false)
   .action((opts) => {
-    const { root, dataDir } = resolveDirs(opts);
+    const { root, dataDir } = resolveSnapshotDirs(opts);
     const snapPath = path.join(dataDir, 'snapshot.json');
 
-    const loaded = loadSnapshot(snapPath);
+    const loaded = loadSnapshotFile(snapPath);
     if (!loaded.ok) {
       if (loaded.error === 'NOT_FOUND') {
         console.error(`[错误] 快照未找到: ${snapPath}`);

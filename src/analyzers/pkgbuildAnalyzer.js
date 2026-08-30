@@ -22,53 +22,6 @@ export function isPkgbuildCandidate(absFilePath) {
   return path.basename(absFilePath) === 'PKGBUILD';
 }
 
-// ---------------------------------------------------------------------------
-// 噪声剥离（PKGBUILD 用 Bash 语法，注释以 # 开头，here-doc <<EOF 可保留）
-// ---------------------------------------------------------------------------
-
-function stripNoise(content) {
-  let out = '';
-  let i = 0;
-  const n = content.length;
-  let inHereDoc = null;
-  while (i < n) {
-    if (inHereDoc) {
-      if (content.startsWith(inHereDoc, i) && (content[i + inHereDoc.length] === '\n' || i + inHereDoc.length === n)) {
-        out += ' '.repeat(inHereDoc.length);
-        i += inHereDoc.length;
-        inHereDoc = null;
-        continue;
-      }
-      out += content[i] === '\n' ? '\n' : ' ';
-      i++;
-      continue;
-    }
-    const c = content[i];
-    const nx = content[i + 1];
-    if (c === '#') {
-      while (i < n && content[i] !== '\n') { out += ' '; i++; }
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      const q = c;
-      out += c; i++;
-      while (i < n && content[i] !== q) {
-        if (content[i] === '\\' && i + 1 < n) { out += '  '; i += 2; continue; }
-        out += content[i] === '\n' ? '\n' : ' '; i++;
-      }
-      if (i < n) { out += q; i++; }
-      continue;
-    }
-    // here-doc 起始(只识别 <<EOF / <<-EOF 不带引号)
-    if (c === '<' && nx === '<' && /[A-Za-z]/.test(content[i + 2] ?? '')) {
-      const m = content.slice(i).match(/^<<-?\s*([A-Za-z_][\w]*)/);
-      if (m) { inHereDoc = m[1]; out += ' '.repeat(m[0].length); i += m[0].length; continue; }
-    }
-    out += c; i++;
-  }
-  return out;
-}
-
 // 给定 ( 起点，返回匹配的 )
 function findMatchingParen(content, start) {
   let depth = 0;

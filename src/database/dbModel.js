@@ -1,29 +1,6 @@
 // 数据库对象模型定义：对象类型、链接类型、领域规则、模式检测规则
 // 与 ontology/blueprint.js 对应，但针对数据库分析子系统独立建模
 
-export const DB_MODEL_META = {
-  version: '1.0',
-  subsystem: 'database',
-  description: 'MySQL 迁移脚本数据库模型',
-};
-
-export const DB_OBJECT_TYPES = [
-  { type: 'Table',      prefix: 'table:', description: '数据库表（含列/主键/外键/索引/注释/迁移版本/模式特征）' },
-  { type: 'Column',     prefix: 'col:',   description: '表列（名称/类型/可空/默认值/约束/注释）' },
-  { type: 'ForeignKey', prefix: 'fk:',    description: '外键约束（源表/源列 → 目标表/目标列 + ON DELETE/UPDATE）' },
-  { type: 'Index',      prefix: 'idx:',   description: '索引（名称/列/唯一性）' },
-  { type: 'Migration',  prefix: 'mig:',   description: '迁移脚本（版本/描述/文件名/操作统计）' },
-  { type: 'DbDomain',   prefix: 'dbdom:', description: '数据库领域（按表名前缀自动分组）' },
-  { type: 'View',       prefix: 'view:',  description: '数据库视图（名称/定义/依赖表）' },
-  { type: 'Trigger',    prefix: 'trig:',  description: '数据库触发器（名称/关联表/时机/事件）' },
-  { type: 'Procedure',  prefix: 'proc:',  description: '存储过程/函数（名称/参数/体）' },
-];
-
-export const DB_LINK_TYPES = [
-  'containsColumn', 'hasForeignKey', 'hasIndex', 'references',
-  'migratedBy', 'belongsToDomain', 'dependsOn', 'triggersOn',
-];
-
 export const DOMAIN_RULES = [
   { key: 'auth',   label: '用户与权限',   prefixes: ['user', 'role', 'personal_access', 'invitation', 'notification', 'org_create', 'org_inheritance', 'org_audit', 'super_admin', 'sso_user', 'bank_user', 'user_managed'] },
   { key: 'proj',   label: '项目与仓库',   prefixes: ['project', 'project_collection', 'global_repositor', 'asset_repositor', 'pipeline'] },
@@ -352,11 +329,3 @@ export const FRONTEND_DATA_MODEL_RULES = [
     },
   },
 ];
-
-// 识别代码实体的数据模型类型
-export function detectDataModelType(entity, tableNames) {
-  for (const rule of FRONTEND_DATA_MODEL_RULES) {
-    if (rule.detector(entity, tableNames)) return rule.type;
-  }
-  return null;
-}

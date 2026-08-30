@@ -6,25 +6,6 @@ export const DEPLOY_MODEL_META = {
   description: '部署架构模型：从 Dockerfile / docker-compose / K8s manifest / nginx.conf / .env 解析出的服务、路由、依赖、中间件、环境与分层结构',
 };
 
-export const DEPLOY_OBJECT_TYPES = [
-  { key: 'Service', label: '服务', description: '部署单元（容器 / K8s workload）：名称、镜像、端口、类型、分层、来源' },
-  { key: 'Route', label: '网关路由', description: 'nginx location → proxy_pass → upstream 的路由规则' },
-  { key: 'Upstream', label: '上游', description: 'nginx upstream 定义与后端服务器列表' },
-  { key: 'Dependency', label: '依赖关系', description: '服务间依赖边（depends_on / 路由 / 环境变量引用 / 配置引用）' },
-  { key: 'Middleware', label: '中间件', description: '基础设施组件（MySQL / Redis / MinIO / ES / Nacos 等）及其消费方' },
-  { key: 'Environment', label: '部署环境', description: '环境配置文件（.env.prod / .env.sit 等）与变量、服务引用' },
-  { key: 'DeployFile', label: '部署文件', description: '源配置文件（compose / k8s / nginx / dockerfile / env / shell / ci / config）' },
-  { key: 'Layer', label: '架构分层', description: '部署架构分层（接入层 → 应用服务层 → 数据层 → 可观测层 等）' },
-];
-
-export const DEPLOY_LINK_TYPES = [
-  { key: 'routesTo', label: '路由到', description: '网关路由规则指向目标服务' },
-  { key: 'dependsOn', label: '依赖', description: '服务启动/运行依赖另一服务' },
-  { key: 'consumes', label: '消费', description: '服务消费中间件（数据库/缓存/存储）' },
-  { key: 'configuredBy', label: '由…配置', description: '服务引用 ConfigMap / Secret / .env 配置' },
-  { key: 'deployedBy', label: '由…部署', description: '服务由某部署文件定义' },
-];
-
 // 服务类型推断规则（按顺序匹配，先匹配先得；角色型词 init/fix 先于技术栈词）
 // 词边界用 [^a-z0-9]，兼容 name 与 image 以 '|' 拼接后的边界
 export const SERVICE_TYPE_RULES = [

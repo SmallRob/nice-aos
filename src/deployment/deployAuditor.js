@@ -375,14 +375,3 @@ export function auditHealth(model) {
     audits,
   };
 }
-
-// 汇总：全部审计结果
-export function runAllDeployAudits(model) {
-  return {
-    health: auditHealth(model),
-    security: auditSecurity(model),
-    resilience: auditResilience(model),
-    configConsistency: auditConfigConsistency(model),
-    dependency: auditDependency(model),
-  };
-}

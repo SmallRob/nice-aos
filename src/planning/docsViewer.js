@@ -21,12 +21,6 @@ function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function readableDuration(ms) {
-  if (ms == null) return '';
-  if (ms < 1000) return ms + 'ms';
-  return (ms / 1000).toFixed(2) + 's';
-}
-
 export function buildPlanningViewerModel(model) {
   const meta = model._meta || {};
   return {

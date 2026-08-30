@@ -17,6 +17,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { computeLineStarts, lineAt } from './textUtils.js';
 
 export function isDartCandidate(relPath) {
   return relPath.endsWith('.dart');
@@ -133,23 +134,6 @@ function stripCommentsOnly(src) {
     i += 1;
   }
   return out.join('');
-}
-
-// ---------- 行号计算 ----------
-function computeLineStarts(src) {
-  const starts = [0];
-  for (let i = 0; i < src.length; i += 1) {
-    if (src.charCodeAt(i) === 10) starts.push(i + 1);
-  }
-  return starts;
-}
-function lineAt(lineStarts, pos) {
-  let lo = 0, hi = lineStarts.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
-  }
-  return lo + 1;
 }
 
 // ---------- import / export / part 提取（commentsOnly 文本，字符串内容保留） ----------

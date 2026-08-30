@@ -91,8 +91,3 @@ export function auditHealth(model) {
   );
   return { score, level: levelOf(score), dimensions, issues };
 }
-
-// 便捷：审计结果作为 viewer 模型的一部分
-export function runPlanningAudit(model) {
-  return auditHealth(model);
-}

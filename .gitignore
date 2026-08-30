@@ -9,3 +9,7 @@ node_modules
 *-planning-overview.html
 .codebuddy/plans/
 .zcode/
+.baseline-fails.txt
+*.log
+.deadcode-report.json
+.qoder/

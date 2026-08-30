@@ -33,7 +33,3 @@ export function loadSnapshot() {
   }
   return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 }
-
-export function hasSnapshot() {
-  return fs.existsSync(getSnapshotPath());
-}

@@ -30,6 +30,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { computeLineStarts, lineAt } from './textUtils.js';
 
 // 调用提取时排除的关键字 / 内建 / 预声明
 const CALL_EXCLUDE = new Set([
@@ -245,21 +246,6 @@ function stripCommentsOnly(src) {
 }
 
 // ---------- 行号 / 缩进辅助 ----------
-function computeLineStarts(src) {
-  const starts = [0];
-  for (let i = 0; i < src.length; i += 1) {
-    if (src.charCodeAt(i) === 10) starts.push(i + 1);
-  }
-  return starts;
-}
-function lineAt(lineStarts, pos) {
-  let lo = 0, hi = lineStarts.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
-  }
-  return lo + 1;
-}
 function lineIndent(line) {
   // 跳过空白行
   if (!line.trim()) return -1;
@@ -1498,10 +1484,6 @@ export function checkPythonSyntaxBulk(relPaths, projectRoot) {
   } catch {
     // 解析 stdout 失败或 spawn 异常，保留原行为（不阻塞主流程）
   }
-  return pythonSyntaxErrors;
-}
-
-export function getPythonSyntaxErrors() {
   return pythonSyntaxErrors;
 }
 

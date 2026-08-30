@@ -9,8 +9,6 @@
 //   - 内部 .md 链接拦截为站内导航；?doc=<path> 走 pushState，可分享/前进后退
 // 零依赖、数据不内嵌：运行时按需 fetch ./tree.json 与 ./<path>.md，任意静态服务器可跑。
 
-export const DOCS_VIEWER_VERSION = '0.4.0';
-
 const DOCS_CSS = `
 :root{--bg:#0a0e1a;--bg2:#0d1424;--bg3:#121b30;--border:#1d2a47;--fg:#dbe4f5;--muted:#7e8db0;
 --accent:#22d3ee;--accent2:#818cf8;--good:#34d399;--mono:ui-monospace,'JetBrains Mono',SFMono-Regular,Menlo,monospace}
