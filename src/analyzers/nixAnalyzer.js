@@ -18,8 +18,8 @@
 //   - 形态:Nix 表达式语法（attribute set {a=b; c=d;} / let bindings / 字符串 / 列表 / 函数 / 注释 # 开头 / /* */）
 //   - 候选:*.nix 强匹配；flake.lock 跳过（锁定文件，不解析）
 
-import fs from 'node:fs';
 import path from 'node:path';
+import { lineOf, analyzeFileFromDisk } from './textUtils.js';
 
 // ---------------------------------------------------------------------------
 // 候选检测
@@ -94,12 +94,6 @@ function findMatch(content, start, open, close) {
     else if (c === close) { depth--; if (depth === 0) return i; }
   }
   return -1;
-}
-
-function lineOf(stripped, pos) {
-  let line = 1;
-  for (let i = 0; i < pos && i < stripped.length; i++) if (stripped[i] === '\n') line++;
-  return line;
 }
 
 // 在 stripped 中找所有顶层 { ... } 块（深度 0 → 0 的配对）
@@ -458,6 +452,5 @@ export function analyzeNix(filePath, content) {
 }
 
 export function analyzeNixFromDisk(relPath, projectRoot) {
-  const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf-8');
-  return analyzeNix(relPath, content);
+  return analyzeFileFromDisk(relPath, projectRoot, analyzeNix);
 }

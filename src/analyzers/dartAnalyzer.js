@@ -15,18 +15,15 @@
 // 死代码判定契约：nameReferences（全文标识符位置）+ 实体 pos/end（声明范围），
 // 由 collectTypeEntities 统一消费——Dart 类型引用即使用。
 
-import fs from 'node:fs';
 import path from 'node:path';
-import { computeLineStarts, lineAt } from './textUtils.js';
+import { computeLineStarts, lineAt, analyzeFileFromDisk } from './textUtils.js';
 
 export function isDartCandidate(relPath) {
   return relPath.endsWith('.dart');
 }
 
 export function analyzeDartFileFromDisk(relPath, projectRoot) {
-  const abs = path.join(projectRoot, relPath);
-  const content = fs.readFileSync(abs, 'utf-8');
-  return analyzeDartFile(relPath, content);
+  return analyzeFileFromDisk(relPath, projectRoot, analyzeDartFile);
 }
 
 // Flutter Widget 基类（extends 命中即视为组件）

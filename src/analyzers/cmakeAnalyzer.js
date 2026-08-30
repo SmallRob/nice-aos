@@ -19,8 +19,8 @@
 //   - 噪声剥离:# 行注释 / [[...]] 跨行注释 / "..." 字符串 / [=[...]=] 跨行字符串
 //   - 输出 shape 与 userScriptAnalyzer / shellScriptAnalyzer 同形（imports / classes / routes 等置空壳供 builder 复用）
 
-import fs from 'node:fs';
 import path from 'node:path';
+import { lineOf, analyzeFileFromDisk, findMatchingParen } from './textUtils.js';
 
 // ---------------------------------------------------------------------------
 // 候选检测
@@ -102,31 +102,7 @@ function stripNoise(content) {
 }
 
 // ---------------------------------------------------------------------------
-// 括号配对（CMake 用 ( ) 作为函数调用边界，{ } 仅在 if / foreach 条件里有意义但函数体不会用 {}）
-// ---------------------------------------------------------------------------
-
-// 给定 ( 起点，返回匹配的 ) 索引。CMake 没有真正的 { } 块。
-function findMatchingParen(content, start) {
-  let depth = 0;
-  let inStr = false;
-  for (let i = start; i < content.length; i++) {
-    const c = content[i];
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === '(') depth++;
-    else if (c === ')') { depth--; if (depth === 0) return i; }
-  }
-  return -1;
-}
-
-// 在 stripped 文本中按行号定位
-function lineOf(stripped, pos) {
-  let line = 1;
-  for (let i = 0; i < pos && i < stripped.length; i++) if (stripped[i] === '\n') line++;
-  return line;
-}
-
-// ---------------------------------------------------------------------------
+// 括号配对（findMatchingParen 收敛于 textUtils；CMake 用 ( ) 作为函数调用边界）
 // 解析参数列表
 // ---------------------------------------------------------------------------
 
@@ -487,6 +463,5 @@ export function analyzeCMake(filePath, content) {
 }
 
 export function analyzeCMakeFromDisk(relPath, projectRoot) {
-  const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf-8');
-  return analyzeCMake(relPath, content);
+  return analyzeFileFromDisk(relPath, projectRoot, analyzeCMake);
 }

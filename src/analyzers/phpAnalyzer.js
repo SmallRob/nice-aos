@@ -20,6 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { findMatchingPair } from './textUtils.js';
 
 export function isPhpCandidate(relPath) {
   return relPath.endsWith('.php') && !relPath.endsWith('.blade.php');
@@ -137,22 +138,9 @@ function lineAt(ls, pos) {
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (ls[mid] <= pos) lo = mid; else hi = mid - 1; }
   return lo + 1;
 }
-function findMatchingBrace(s, openIdx) {
-  let depth = 0;
-  for (let i = openIdx; i < s.length; i += 1) {
-    if (s[i] === '{') depth += 1;
-    else if (s[i] === '}') { depth -= 1; if (depth === 0) return i; }
-  }
-  return -1;
-}
-function findMatchingParen(s, openIdx) {
-  let depth = 0;
-  for (let i = openIdx; i < s.length; i += 1) {
-    if (s[i] === '(') depth += 1;
-    else if (s[i] === ')') { depth -= 1; if (depth === 0) return i; }
-  }
-  return -1;
-}
+// 配对查找收敛于 textUtils.findMatchingPair（输入为已剥离注释的文本）
+function findMatchingBrace(s, openIdx) { return findMatchingPair(s, openIdx, '{', '}'); }
+function findMatchingParen(s, openIdx) { return findMatchingPair(s, openIdx, '(', ')'); }
 function readIdent(s, pos) {
   if (pos >= s.length) return { name: '', end: pos };
   if (!/[A-Za-z_]/.test(s[pos])) return { name: '', end: pos };

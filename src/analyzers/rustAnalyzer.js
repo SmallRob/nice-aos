@@ -6,9 +6,7 @@
 // 死代码判定契约：nameReferences（全文标识符位置）+ 实体 pos/end（声明范围），
 // 由 collectTypeEntities 统一消费——Rust 类型引用即使用（Vec<Game> / -> Game / impl Game 均计引用）。
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { computeLineStarts, lineAt } from './textUtils.js';
+import { computeLineStarts, lineAt, analyzeFileFromDisk } from './textUtils.js';
 
 /** @deprecated 内部无调用方（文件候选判定由 builder 分发）；保留供外部兼容使用 */
 export function isRustCandidate(relPath) {
@@ -16,9 +14,7 @@ export function isRustCandidate(relPath) {
 }
 
 export function analyzeRustFileFromDisk(relPath, projectRoot) {
-  const abs = path.join(projectRoot, relPath);
-  const content = fs.readFileSync(abs, 'utf-8');
-  return analyzeRustFile(relPath, content);
+  return analyzeFileFromDisk(relPath, projectRoot, analyzeRustFile);
 }
 
 // ---------- 噪声剥离：等长替换字符串/字符字面量/注释为空格（保留换行与偏移量不变） ----------

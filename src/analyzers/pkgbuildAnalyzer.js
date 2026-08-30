@@ -11,8 +11,8 @@
 //   - 形态:Bash 语法（变量赋值 / 函数 / 数组括号 () / 双引号 / here-doc 注释）
 //   - 候选:文件名严格匹配 PKGBUILD（区分大小写）
 
-import fs from 'node:fs';
 import path from 'node:path';
+import { lineOf, analyzeFileFromDisk, findMatchingParen } from './textUtils.js';
 
 // ---------------------------------------------------------------------------
 // 候选检测
@@ -22,25 +22,7 @@ export function isPkgbuildCandidate(absFilePath) {
   return path.basename(absFilePath) === 'PKGBUILD';
 }
 
-// 给定 ( 起点，返回匹配的 )
-function findMatchingParen(content, start) {
-  let depth = 0;
-  let inStr = false;
-  for (let i = start; i < content.length; i++) {
-    const c = content[i];
-    if (c === '"') { inStr = !inStr; continue; }
-    if (inStr) continue;
-    if (c === '(') depth++;
-    else if (c === ')') { depth--; if (depth === 0) return i; }
-  }
-  return -1;
-}
-
-function lineOf(stripped, pos) {
-  let line = 1;
-  for (let i = 0; i < pos && i < stripped.length; i++) if (stripped[i] === '\n') line++;
-  return line;
-}
+// 给定 ( 起点返回匹配的 )（findMatchingParen 收敛于 textUtils）
 
 // 抽 array 名( ... ) 的内容,返回 trim 后的数组元素
 // 支持单行多元素(depends=('steam' 'libxtst'))与多行元素(arch=('x86_64' ...))
@@ -275,6 +257,5 @@ export function analyzePkgbuild(filePath, content) {
 }
 
 export function analyzePkgbuildFromDisk(relPath, projectRoot) {
-  const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf-8');
-  return analyzePkgbuild(relPath, content);
+  return analyzeFileFromDisk(relPath, projectRoot, analyzePkgbuild);
 }

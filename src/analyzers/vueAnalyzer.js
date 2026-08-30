@@ -11,10 +11,10 @@
 //   - router-link 静态 to → overlayOpens（builder 7c 导航边）
 // 输出与 tsAnalyzer 相同 shape 的 facts，供 builder 无缝复用。
 
-import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 import { analyzeFile } from './tsAnalyzer.js';
+import { analyzeFileFromDisk } from './textUtils.js';
 
 // 原生 HTML 标签（不进组件标签集）
 const NATIVE_TAGS = new Set([
@@ -659,6 +659,5 @@ export function analyzeVueFile(filePath, content, projectRoot) {
 }
 
 export function analyzeVueFileFromDisk(relPath, projectRoot) {
-  const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf-8');
-  return analyzeVueFile(relPath, content, projectRoot);
+  return analyzeFileFromDisk(relPath, projectRoot, (rp, content) => analyzeVueFile(rp, content, projectRoot));
 }

@@ -24,18 +24,14 @@
 // 由 collectTypeEntities 统一消费——Kotlin 类型引用即使用（Vec<Game> / -> Game / impl Game 均计引用）。
 // 块结构状态机以 stripped 内容为输入，findbraces/pos 计算基于 src（保留偏移）。
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { computeLineStarts, lineAt } from './textUtils.js';
+import { computeLineStarts, lineAt, analyzeFileFromDisk, findMatchingPair } from './textUtils.js';
 
 export function isKotlinCandidate(relPath) {
   return relPath.endsWith('.kt') || relPath.endsWith('.kts');
 }
 
 export function analyzeKotlinFileFromDisk(relPath, projectRoot) {
-  const abs = path.join(projectRoot, relPath);
-  const content = fs.readFileSync(abs, 'utf-8');
-  return analyzeKotlinFile(relPath, content);
+  return analyzeFileFromDisk(relPath, projectRoot, analyzeKotlinFile);
 }
 
 // ---------- 噪声剥离 ----------
@@ -102,46 +98,10 @@ function stripKotlinNoise(src) {
   return out.join('');
 }
 
-// ---------- 工具 ----------
-function findMatchingBrace(cleaned, openIdx) {
-  let depth = 0;
-  const n = cleaned.length;
-  for (let i = openIdx; i < n; i += 1) {
-    const ch = cleaned[i];
-    if (ch === '{') depth += 1;
-    else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
-function findMatchingParen(cleaned, openIdx) {
-  let depth = 0;
-  const n = cleaned.length;
-  for (let i = openIdx; i < n; i += 1) {
-    const ch = cleaned[i];
-    if (ch === '(') depth += 1;
-    else if (ch === ')') {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
-function findMatchingAngle(cleaned, openIdx) {
-  let depth = 0;
-  const n = cleaned.length;
-  for (let i = openIdx; i < n; i += 1) {
-    const ch = cleaned[i];
-    if (ch === '<') depth += 1;
-    else if (ch === '>') {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
+// ---------- 工具（配对查找收敛于 textUtils.findMatchingPair；输入为已剥离噪声的文本） ----------
+function findMatchingBrace(cleaned, openIdx) { return findMatchingPair(cleaned, openIdx, '{', '}'); }
+function findMatchingParen(cleaned, openIdx) { return findMatchingPair(cleaned, openIdx, '(', ')'); }
+function findMatchingAngle(cleaned, openIdx) { return findMatchingPair(cleaned, openIdx, '<', '>'); }
 
 function readIdent(cleaned, pos) {
   const n = cleaned.length;

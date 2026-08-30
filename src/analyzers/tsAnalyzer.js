@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { analyzeMethodHealth, placeholderHealth } from './methodHealth.js';
+import { analyzeFileFromDisk as readAndAnalyze } from './textUtils.js';
 
 let ts;
 // 解析顺序：宿主项目 → 当前工作目录 → nice-aos 自身依赖
@@ -1470,6 +1471,5 @@ export function analyzeFile(filePath, content, projectRoot) {
 }
 
 export function analyzeFileFromDisk(relPath, projectRoot) {
-  const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf-8');
-  return analyzeFile(relPath, content, projectRoot);
+  return readAndAnalyze(relPath, projectRoot, (rp, content) => analyzeFile(rp, content, projectRoot));
 }

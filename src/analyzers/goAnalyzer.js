@@ -16,9 +16,7 @@
 // 死代码判定契约：nameReferences（全文标识符位置）+ 实体 pos/end（声明范围），
 // 由 collectTypeEntities 统一消费——Go 标识符引用即使用。
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { computeLineStarts, lineAt } from './textUtils.js';
+import { computeLineStarts, lineAt, analyzeFileFromDisk } from './textUtils.js';
 
 /** @deprecated 内部无调用方（文件候选判定由 builder 分发）；保留供外部兼容使用 */
 export function isGoCandidate(relPath) {
@@ -26,9 +24,7 @@ export function isGoCandidate(relPath) {
 }
 
 export function analyzeGoFileFromDisk(relPath, projectRoot) {
-  const abs = path.join(projectRoot, relPath);
-  const content = fs.readFileSync(abs, 'utf-8');
-  return analyzeGoFile(relPath, content);
+  return analyzeFileFromDisk(relPath, projectRoot, analyzeGoFile);
 }
 
 // 方法体内调用提取时排除的关键字 / 内建函数 / 预声明类型（裸调用名匹配用）
