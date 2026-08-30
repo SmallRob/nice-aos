@@ -5,10 +5,43 @@
 import { ARCH_LAYERS } from './semantics.js';
 import { ONTOLOGY_META, OBJECT_TYPES, LINK_TYPES } from './blueprint.js';
 import { ACTION_DEFS } from './actionDefs.js'; // E-2：纯定义单源（blueprintActions.js 仍 re-export 兼容）
-import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
-import { SHARED_CSS } from '../themes/sharedCss.js';
 
 const layerLabel = (key) => ARCH_LAYERS[key]?.label ?? key;
+
+// 大仓库保护：单元清单按上限截断（计数保留全量，列表供浏览）
+const UNIT_CAP = { components: 200, hooks: 120, stores: 100, services: 150, userScripts: 60, routes: 100 };
+const USED_BY_CAP = 30;
+const HUB_CAP = 15;
+const MODULE_CAP = 150;
+
+// 脚本蓝图保护：图节点/锚点/清单截断（大油猴仓库单脚本可达数千函数）
+const SCRIPT_CAP = 24;
+const SCRIPT_NODE_CAP = 50;
+const SCRIPT_TABLE_CAP = 40;
+const SCRIPT_INJECT_CAP = 20;
+const SCRIPT_NET_CAP = 12;
+
+// 实体类图保护：图节点 / 实体清单 / 每框成员上限（大仓库类实体可达数百个）
+const ENTITY_NODE_CAP = 48;
+const ENTITY_GRAPH_MIN = 24;
+const ENTITY_TABLE_CAP = 120;
+const ENTITY_MEMBER_CAP = 6;
+
+// 代码图谱保护：力导向图节点 / 边上限（大仓库模块/组件可达数百个）
+const MODULE_GRAPH_NODE_CAP = 90;
+const COMPONENT_GRAPH_NODE_CAP = 130;
+const STORE_GRAPH_NODE_CAP = 36;
+const GRAPH_EDGE_CAP = 600;
+
+// 脚本函数业务角色（与解析器 inferRoles 对应）；desc 为意图描述，供脚本意图功能域展示
+const SCRIPT_ROLE_META = {
+  render: { label: '渲染注入', color: '#58a6ff', desc: '向页面注入与渲染 DOM 内容' },
+  data: { label: '数据获取', color: '#bc8cff', desc: '发起网络请求获取外部数据' },
+  state: { label: '状态存取', color: '#3fb950', desc: '读写持久化状态（GM 存储 / localStorage）' },
+  event: { label: '事件监听', color: '#d29922', desc: '监听事件 / 观察 DOM 变化 / 定时器' },
+  ui: { label: '元素构建', color: '#39c5cf', desc: '创建与组装页面元素' },
+  logic: { label: '纯逻辑', color: '#8b949e', desc: '纯计算与流程控制' },
+};
 
 export function buildViewerModel(dataMap) {
   const project = (dataMap.Project ?? [])[0] ?? {};

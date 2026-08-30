@@ -1,5 +1,5 @@
 // 本体查看器（Viewer）——使用者层的"企业级知识中心"（对应参考架构中的 Web UI 消费者）
-// 数据流：snapshot.json（DataMap）→ buildViewerModel()（数据聚合）→ renderViewerHtml()（视图层渲染）
+// 数据流：snapshot.json（DataMap）→ buildViewerModel()（数据聚合，viewerModel.js）→ renderViewerHtml()（视图层渲染）
 // 视图：
 //   1. 领域蓝图（Domain Blueprint）：每个功能域的业务层级构成 / 代码组织 / 单元清单
 //   2. 业务数据图（Data Map）：Store 数据枢纽 + 跨域数据依赖
@@ -14,9 +14,6 @@
 // 原则：视图模型（JSON）独立于渲染，可被 AI agent 直接消费；HTML 自包含零依赖，可离线打开；
 //       宽屏分档扩展内容宽度（1400 → 2400px），SVG 图等比自适应不截断
 
-import { ARCH_LAYERS } from './semantics.js';
-import { ONTOLOGY_META, OBJECT_TYPES, LINK_TYPES } from './blueprint.js';
-import { ACTION_DEFS } from './actionDefs.js'; // E-2：纯定义单源（blueprintActions.js 仍 re-export 兼容）
 import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
 import { SHARED_CSS } from '../themes/sharedCss.js';
 import { BLUEPRINT_CSS } from './viewerStyles.js';
@@ -24,49 +21,8 @@ import { renderInteractive, renderActionCardHtml } from './viewerInteractive.js'
 import { CLIENT_BASE } from './viewerClient.js';
 export { buildViewerModel } from './viewerModel.js';
 
-// 大仓库保护：单元清单按上限截断（计数保留全量，列表供浏览）
-const UNIT_CAP = { components: 200, hooks: 120, stores: 100, services: 150, userScripts: 60, routes: 100 };
-const USED_BY_CAP = 30;
-const HUB_CAP = 15;
-const MODULE_CAP = 150;
-
-// 脚本蓝图保护：图节点/锚点/清单截断（大油猴仓库单脚本可达数千函数）
-const SCRIPT_CAP = 24;
-const SCRIPT_NODE_CAP = 50;
-const SCRIPT_TABLE_CAP = 40;
-const SCRIPT_INJECT_CAP = 20;
-const SCRIPT_NET_CAP = 12;
-
-// 实体类图保护：图节点 / 实体清单 / 每框成员上限（大仓库类实体可达数百个）
-const ENTITY_NODE_CAP = 48;
-const ENTITY_GRAPH_MIN = 24;
-const ENTITY_TABLE_CAP = 120;
-const ENTITY_MEMBER_CAP = 6;
-
-// 代码图谱保护：力导向图节点 / 边上限（大仓库模块/组件可达数百个）
-const MODULE_GRAPH_NODE_CAP = 90;
-const COMPONENT_GRAPH_NODE_CAP = 130;
-const STORE_GRAPH_NODE_CAP = 36;
-const GRAPH_EDGE_CAP = 600;
-
-// 脚本函数业务角色（与解析器 inferRoles 对应）；desc 为意图描述，供脚本意图功能域展示
-const SCRIPT_ROLE_META = {
-  render: { label: '渲染注入', color: '#58a6ff', desc: '向页面注入与渲染 DOM 内容' },
-  data: { label: '数据获取', color: '#bc8cff', desc: '发起网络请求获取外部数据' },
-  state: { label: '状态存取', color: '#3fb950', desc: '读写持久化状态（GM 存储 / localStorage）' },
-  event: { label: '事件监听', color: '#d29922', desc: '监听事件 / 观察 DOM 变化 / 定时器' },
-  ui: { label: '元素构建', color: '#39c5cf', desc: '创建与组装页面元素' },
-  logic: { label: '纯逻辑', color: '#8b949e', desc: '纯计算与流程控制' },
-};
-
-const layerLabel = (key) => ARCH_LAYERS[key]?.label ?? key;
-
 // ============================================================
-// 第一部分：数据聚合 —— DataMap → 视图模型（JSON）
-// ============================================================
-
-// ============================================================
-// 第二部分：视图层 —— 视图模型 → 自包含 HTML（零依赖，可离线打开）
+// 视图层 —— 视图模型 → 自包含 HTML（零依赖，可离线打开）
 // ============================================================
 export function renderViewerHtml(model, options = {}) {
   const dataJson = JSON.stringify(model).replace(/</g, '\\u003c').replace(/-->/g, '--\\u003e');
@@ -116,9 +72,7 @@ ${BLUEPRINT_CSS}
   <section class="view" id="view-interactive"></section>
 </main>
 <script id="viewer-data" type="application/json">${dataJson}</script>
-${CLIENT_BASE}
-` + renderInteractiveScript() + `
-</script>` + renderInteractiveScript() + `
+${CLIENT_BASE}` + renderInteractiveScript() + `
 </body>
 </html>`;
 }
@@ -145,5 +99,3 @@ function renderInteractiveScript() {
     endScript(),
   ].join('\n');
 }
-
-

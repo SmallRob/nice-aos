@@ -2,6 +2,37 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.42.2] - 2026-08-30
+
+### viewer 封装提取阻断修复（48c19d6 遗留 3 个缺陷）
+
+v0.42.1 的 viewer 模块拆分（viewer.js 3692 行 → viewerModel/viewerClient/viewerStyles/viewerInteractive 四模块）
+在 48c19d6 提交中为半成品，本次补齐使其真正可用。
+
+#### 修复 buildViewerModel 运行时崩溃（致命）
+
+- `buildViewerModel` 迁到 viewerModel.js 时，其引用的 17 个模块级常量滞留 viewer.js 未随迁：
+  `UNIT_CAP / USED_BY_CAP / HUB_CAP / MODULE_CAP`、5 个 `SCRIPT_*`、4 个 `ENTITY_*`、4 个图上限、`SCRIPT_ROLE_META`
+- 后果：`ReferenceError: HUB_CAP is not defined`，所有 viewer / HTML 蓝图 / viewmodel / report 导出路径全部崩溃
+- 修复：常量随迁 viewerModel.js（数据聚合层），viewer.js 同步清理
+
+#### 修复 renderViewerHtml 脚本块拼接残缺
+
+- 模板字符串被改为残缺拼接：`renderInteractiveScript()` 重复输出两次 + 游离 `</script>`
+- 后果：交互操作脚本重复注入（监听器/提交动作翻倍），HTML 结构损坏
+- 修复：`${CLIENT_BASE}` + 单次 `renderInteractiveScript()` 正确拼接；script 3 开 3 闭配对
+
+#### 清理双侧死导入
+
+- viewerModel.js：剔除仅渲染层使用的 `buildThemeCss / DEFAULT_THEMES / SHARED_CSS`
+- viewer.js：剔除已随迁的 `ARCH_LAYERS / ONTOLOGY_META / OBJECT_TYPES / LINK_TYPES / ACTION_DEFS` 与全部常量定义
+
+#### 验证
+
+- viewer 族 + export 链路测试全过；全量 882 测试失败集与重构前基线（14dc55b / e243327）逐条一致（19 条均为 storage/ask/mcp 环境预存），零回归
+- 同一快照在修复版与重构前基线渲染的蓝图 HTML 归一化后逐字节一致——蓝图特性零丢失
+- 端到端实测：nice-today-2.0（1592 文件 / 831 组件大仓库）与 asdm-admin 部署目录、MySQL 迁移目录蓝图均正常产出并 DOM 执行验证通过
+
 ## [0.42.1] - 2026-08-29
 
 ### v0.42.0 review 闭环 —— 3 个真问题修复
