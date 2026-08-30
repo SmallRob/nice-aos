@@ -4,7 +4,6 @@
 //   INSERT, UPDATE + CREATE VIEW/TRIGGER/PROCEDURE/FUNCTION（扩展支持）
 // 处理幂等 DDL 模式：SET @col_exists := ...; PREPARE stmt FROM @sql; EXECUTE stmt;
 
-import fs from 'node:fs';
 import path from 'node:path';
 
 // 从文件名提取 Flyway 版本信息
@@ -690,10 +689,4 @@ export function analyzeSqlFile(filePath, content, options = {}) {
     currentDatabase: dbInfo.currentDb,
     isEmptyTemplate: options.extractTemplate && effectiveContent.trim().length <= 20 && !/CREATE\s+TABLE|ALTER\s+TABLE|CREATE\s+INDEX/i.test(effectiveContent),
   };
-}
-
-// 从磁盘读取并分析单个 SQL 文件
-export function analyzeSqlFileFromDisk(filePath) {
-  const content = fs.readFileSync(filePath, 'utf-8');
-  return analyzeSqlFile(filePath, content);
 }

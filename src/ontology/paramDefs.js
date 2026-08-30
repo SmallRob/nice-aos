@@ -12,12 +12,6 @@
 // 控件契约：每个 ParamDef 对应一个 HTML 控件，自动绑定到 form 的 dataset[paramName]。
 
 /**
- * 控件类型（ParamDef.kind 形态枚举）。
- * 借鉴 aos + 扩展。
- */
-export const PARAM_KINDS = ['text', 'number', 'boolean', 'enum', 'objectRef', 'objectRefMulti'];
-
-/**
  * 控件类型 → HTML 控件默认属性。
  * 蓝图 UI 渲染表单时按此生成。
  */
@@ -29,27 +23,6 @@ export const PARAM_RENDER_DEFAULTS = {
   objectRef: { tag: 'select', attrs: { class: 'bp-select bp-ref' }, multiple: false },
   objectRefMulti: { tag: 'select', attrs: { class: 'bp-select bp-ref', multiple: 'multiple' } },
 };
-
-/**
- * 校验 ParamDef 是否合法（蓝图 schema 自检用）。
- * @param {ParamDef} def
- * @returns {string|null} 错误信息，null 表示合法
- */
-export function validateParamDef(def) {
-  if (!def || typeof def !== 'object') return 'ParamDef 必须是对象';
-  if (!def.name || typeof def.name !== 'string') return 'ParamDef.name 必填且为字符串';
-  if (!PARAM_KINDS.includes(def.kind)) {
-    return `ParamDef.kind 必须是 ${PARAM_KINDS.join('|')} 之一，得到: ${def.kind}`;
-  }
-  if (def.kind === 'enum' && (!Array.isArray(def.options) || def.options.length === 0)) {
-    return 'enum 类型 ParamDef 必须有非空 options 数组';
-  }
-  if ((def.kind === 'objectRef' || def.kind === 'objectRefMulti') && !def.refType) {
-    return `${def.kind} 类型 ParamDef 必须有 refType 字段`;
-  }
-  if (!def.label || typeof def.label !== 'string') return 'ParamDef.label 必填且为字符串';
-  return null;
-}
 
 /**
  * 蓝图 UI 自动渲染契约：将 ParamDef 列表转为 HTML 表单字段数组。
