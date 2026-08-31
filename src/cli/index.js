@@ -46,7 +46,7 @@ program
     return [
       '★ 三大核心命令（输入 / 输出 / 服务）',
       '  ask       基于本体快照向 AI 提问（自定义模型服务优先，可选 codebuddy/opencode/trae/qoder 等 CLI 或 --agent-cmd 接入；支持 --tools 自治深查 / --since 增量问答 / --save 落盘 / ask eval 评测）',
-      '  output    导出项目报告与蓝图（Markdown / JSON / HTML 蓝图 / viewmodel；output = export 别名）',
+      '  output    导出项目报告与蓝图（Markdown / JSON / HTML 蓝图 / viewmodel / 架构图画布；output = export 别名）',
       '  serve     启动本地数据源 HTTP 服务（CORS *），暴露快照与 7 个 /api/* 端点给 agent 跨源拉取',
       '',
       '详细定位见 README "三大核心命令" 区块；升级路线见 docs/plan/aos-three-core-roadmap.md。',

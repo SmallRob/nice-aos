@@ -1,4 +1,4 @@
-// export / output 命令：导出本体快照为 Markdown / JSON / HTML 蓝图 / 视图模型 JSON
+// export / output 命令：导出本体快照为 Markdown / JSON / HTML 蓝图 / 视图模型 JSON / 画布 HTML
 // 增量模式（--since <ref>）：git diff 解析 + 末尾追加"增量变更摘要"节
 //
 // v0.34.0 升级：
@@ -6,6 +6,9 @@
 //   - out-4 `--include <types>` / `--exclude <types>` 类型过滤（作用于全部格式）
 //   - out-5 theme 子命令组：add/list/remove 管理用户自定义主题（~/.nice-aos/themes/）
 //   - out-6 `--format all`：一条命令产出 markdown + html + viewmodel 三件套
+// v0.43.0 升级：
+//   - out-7 `--format canvas` 输出架构图画布（自包含 HTML+SVG），自动检测可用的
+//     deploy / overview 蓝图快照；对应 nice-aos-canvas-skill 的程序化入口。
 import fs from 'node:fs';
 import path from 'node:path';
 import { Command } from 'commander';
@@ -22,6 +25,9 @@ import { buildContextDocs } from '../../ontology/contextDocs.js';
 import { renderDocsHtml } from '../../ontology/docsViewer.js';
 import { notifyServe } from './notifyServe.js';
 import { getSnapshotDir } from '../../paths.js';
+import { buildCanvasAuto } from '../../canvas/canvasBuilder.js';
+import { loadDeploySnapshot, hasDeploySnapshot } from '../../deployment/deploySnapshot.js';
+import { loadOverviewSnapshot, hasOverviewSnapshot } from '../../overview/overviewSnapshot.js';
 
 function parseTypeList(raw) {
   return String(raw ?? '')
@@ -31,9 +37,9 @@ function parseTypeList(raw) {
 }
 
 export const exportCommand = new Command('export')
-  .description('导出本体快照为 Markdown / JSON / HTML 蓝图 / 视图模型 JSON（亦名 output：作为三大核心命令之一，对应用户视角的"产出报告"）')
-  .option('--format <format>', '导出格式: markdown | json | html | viewmodel | all（all = md+html+viewmodel 三件套，需 --output）', 'markdown')
-  .option('--output <path>', '写入文件（默认输出到 stdout）；--format all 时作为基准路径派生 .md/.html/.viewmodel.json')
+  .description('导出本体快照为 Markdown / JSON / HTML 蓝图 / 视图模型 JSON / 架构图画布（亦名 output：作为三大核心命令之一，对应用户视角的"产出报告"）')
+  .option('--format <format>', '导出格式: markdown | json | html | viewmodel | canvas | all（all = md+html+viewmodel 三件套，需 --output；canvas 自动检测 deploy/overview 快照）', 'markdown')
+  .option('--output <path>', '写入文件（默认输出到 stdout）；--format all 时作为基准路径派生 .md/.html/.viewmodel.json；--format canvas 时必须是 .html 路径')
   .option('--theme <name>', `HTML 主题风格（默认 deep-blue，内置与用户主题可用: 见 nice-aos output theme list）`, 'deep-blue')
   .option('--since <ref>', '增量导出：仅列出 ref 以来变更涉及的对象（git diff --name-only <ref>..HEAD；含未跟踪文件）；末尾追加"增量变更摘要"节。ref 语法：HEAD / HEAD~1 / abc..def / abc123')
   .option('--staged', '配合 --since：只列已暂存变更（git diff --staged）；用于"pre-commit 体检"')
@@ -43,6 +49,36 @@ export const exportCommand = new Command('export')
   .option('--include <types>', '类型白名单（逗号分隔，如 Component,Hook）：仅导出这些类型的对象（作用于全部格式）')
   .option('--exclude <types>', '类型黑名单（逗号分隔）：从导出中剔除这些类型（include 应用后再剔除）')
   .action((opts) => {
+    // out-7 canvas 格式：跳过 dataMap 加载与过滤，直接消费 deploy / overview 快照
+    if (opts.format === 'canvas') {
+      if (!opts.output) {
+        fail('--format canvas 必须配合 --output 指定 .html 路径（避免大量 HTML 刷屏）');
+      }
+      let deployModel = null;
+      let overviewModel = null;
+      if (hasDeploySnapshot()) {
+        try { deployModel = loadDeploySnapshot(); } catch { /* 单项失败不阻塞 overview 探测 */ }
+      }
+      if (hasOverviewSnapshot()) {
+        try { overviewModel = loadOverviewSnapshot(); } catch { /* 同上 */ }
+      }
+      let canvas;
+      try {
+        canvas = buildCanvasAuto({ deployModel, overviewModel });
+      } catch (err) {
+        fail(err.message);
+      }
+      fs.writeFileSync(opts.output, canvas.html, 'utf-8');
+      console.error(`已写入: ${opts.output}`);
+      console.error(`   画布类型: ${canvas.kind} · 数据源: ${canvas.source}`);
+      console.error(`   ${JSON.stringify(canvas.stats)}`);
+      // 通知 serve（运行中才生效）
+      notifyServe({ dataDir: getSnapshotDir(), event: 'report:changed', paths: [opts.output] })
+        .then((r) => { if (r.notified) console.error('ℹ️  已通知运行中的 serve 广播 report:changed'); })
+        .catch(() => {});
+      return;
+    }
+
     // out-3 合并：多快照路径 → 合成 dataMap（在 dataMap 层合成，全格式自然复用）
     let dataMap;
     if (opts.merge?.length) {
@@ -155,7 +191,7 @@ export const exportCommand = new Command('export')
       // 视图模型 JSON（供 agent / 其他前端直接消费的聚合数据）
       emit(opts, JSON.stringify(buildViewerModel(dataMap), null, 2), writeOut);
     } else {
-      fail(`未知格式: ${opts.format}（支持 markdown / json / html / viewmodel / all）`);
+      fail(`未知格式: ${opts.format}（支持 markdown / json / html / viewmodel / canvas / all）`);
     }
 
     if (writtenPaths.length > 0 && sinceCtx) {

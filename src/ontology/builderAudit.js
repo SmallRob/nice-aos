@@ -12,6 +12,9 @@ export function builderAuditPhase(ctx) {
     indirectlyReferencedFiles, importedTypeRefs, rustUsedNames,
   } = ctx;
 
+  // 后端项目的 routes/ controllers/ endpoints/ 文件应归 service 层而不是 presentation
+  const projectFramework = scan?.framework ?? null;
+
   // 7d. 语义富化：文件级架构分层 → 功能域聚合 → 模块职责画像 → 单元归属回填
   //     分类以内容信号为准（单元构成/路由归属/引用结构），目录名仅作弱信号兜底
   const importersOf = new Map(); // fileId -> Set(importerFileIds)
@@ -33,6 +36,7 @@ export function builderAuditPhase(ctx) {
       componentCount: facts?.components?.length ?? 0,
       storeCount: facts?.stores?.length ?? 0,
       hookCount: facts?.hooks?.length ?? 0,
+      framework: projectFramework,
     });
     f.archLayer = archLayer;
     fileArchLayer.set(f.path, archLayer);

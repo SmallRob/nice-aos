@@ -2,6 +2,75 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.43.0] - 2026-08-31
+
+### 画布作为 output 的第六种格式：架构图与蓝图产出的同构
+
+v0.42 新增的 `nice-aos-canvas-skill` 只覆盖 Agent 视角的手动工作流（复制模板 + 替换数据块），
+未在 CLI 暴露画布入口；v0.43 把画布做成 `output --format canvas` 的程序化产出，与
+markdown / json / html / viewmodel 同列。详见 `docs/adr/0011-canvas-output-blueprint.md`。
+
+#### 新增画布模块（src/canvas/）
+
+- **`src/canvas/canvasPaths.js`** — 模板路径解析 + 占位符注入（含 `</script` 字符串转义）
+- **`src/canvas/canvasBuilder.js`** — 4 个公开 API：
+  - `buildCanvas({ kind, snapshot, title })` 通用入口
+  - `buildDeployCanvas(model)` 部署画布快捷入口
+  - `buildOverviewCanvas(model)` 全景画布快捷入口
+  - `buildCanvasAuto({ deployModel, overviewModel, preferKind })` 自动检测
+  - 错误前置：缺 `services` / `projects` 时抛明确错误，不产出半残 HTML
+
+#### 模板增强（skills/nice-aos-canvas-skill/assets/）
+
+- **`deploy-canvas-template.html`**：
+  - 9 类风险徽标（latest / 单副本 / 无 HC / 未限额 / env 多 / env 兜底 / 孤儿 / 路由未解析 / 中间件无消费方）
+  - 跨域边（Docker ↔ K8s）走点划线（8,3,2,3）
+  - 运行时识别新增 **Rust**（已有 JVM/Node.js/Python/Nginx/PHP/.NET/Go）
+  - 启动脚本检测占位符 token，未注入时降级到使用提示（不抛错）
+  - 数据块 token 改为清晰的 `__CANVAS_DATA_JSON__`（之前是 `{"_placeholder": true}`）
+- **`overview-canvas-template.html`**（新增）：
+  - 项目列 × 分层行矩阵布局（接入 / 前端 / 应用 / 服务 / 数据 / 基础设施 / 工具 7 层）
+  - 跨项目依赖长边（紫色虚线，从 `architecture.crossMatrix` 推导）
+  - 按语言 / 按分层高亮过滤的图例
+  - 同款零依赖 / 缩放 / 平移 / 节点详情抽屉
+
+#### CLI 接入
+
+- `nice-aos deploy export --format canvas --output x.html`  — 部署画布
+- `nice-aos overview export --format canvas --output x.html` — 全景画布
+- `nice-aos output --format canvas --output x.html`         — 三大核心命令 output 的 canvas 格式
+  - 自动检测可用的 deploy → overview 快照，stderr 报告 `画布类型` 与 `数据源`
+  - 无快照时给出可执行的 `nice-aos deploy scan / overview scan` 提示
+  - `--format canvas` 必须配合 `--output`（避免大量 HTML 刷屏）
+- `nice-aos --help` 顶部 `output` 命令描述同步更新
+- `package.json` keywords 新增 `canvas` / `html-canvas`，description 更新
+- `src/deployment/deploySnapshot.js` 补 `hasDeploySnapshot` 导出（自动检测需要）
+
+#### 测试
+
+- `test/canvasBuilder.test.mjs` — 19 个单测（模板加载、占位符注入、转义安全、3 种部署形态、overview 矩阵、auto 优先级、错误前置、SPA 路径资产完整性）
+- `test/canvasExportCli.test.mjs` — 5 个端到端 CLI 测试（deploy/overview/output 三种入口、缺快照 fail、无 --output fail）
+- 全量 `node --test`：在 v0.42.2 基线 882 个测试基础上新增 24 个画布测试，零回归
+
+#### 已锁定的 8 个设计决策（详见 ADR 0011）
+
+- D1 画布作为 output 的第 6 种格式
+- D2 模板与数据解耦（模板只"画"，builder 只"装"）
+- D3 占位符 `__CANVAS_DATA_JSON__` 是源码字面量（不用 `{{ var }}` 风格）
+- D4 builder 暴露纯函数 API，CLI / Agent / 第三方工具共享
+- D5 错误前置：缺关键字段时抛明确错误而非产出半残图
+- D6 自动检测：output --format canvas 按 deploy → overview 顺序探测
+- D7 模板启动脚本检测占位符，未注入时降级到使用提示
+- D8 注入 JSON 时转义 `</script` 字符串，避免被浏览器提前关闭 data 块
+
+#### 后续候选（v0.44+）
+
+1. db / service / planning 三种蓝图画布（复用同一 builder 接口）
+2. overview 画布增强：服务间通信矩阵 / 资源配额热力图
+3. 画布对照模式（v1 / v2 diff）
+4. 画布主题与现有 `--theme` 联动
+5. 画布审计：直接叠加 `deploy audit` 红/黄/绿评级
+
 ## [0.42.2] - 2026-08-30
 
 ### viewer 封装提取阻断修复（48c19d6 遗留 3 个缺陷）

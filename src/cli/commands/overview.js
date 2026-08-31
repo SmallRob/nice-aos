@@ -22,6 +22,7 @@ import {
 import { scanOverview } from '../../overview/overviewScanner.js';
 import { buildOverviewViewerModel, renderOverviewHtml } from '../../overview/overviewViewer.js';
 import { parseWhere, matchesWhere, outputJson, outputPretty, succeed, fail } from '../shared.js';
+import { buildOverviewCanvas } from '../../canvas/canvasBuilder.js';
 
 export const overviewCommand = new Command('overview')
   .description('全景架构：多项目 code-ontology 快照聚合 + 5 层架构图 + 跨项目依赖矩阵 + 人类架构知识（设计意图 / 资源需求）');
@@ -72,9 +73,9 @@ overviewCommand
 
 overviewCommand
   .command('export')
-  .description('导出全景架构分析（json | html | viewmodel）')
-  .option('--format <format>', '导出格式: json | html | viewmodel', 'json')
-  .option('--output <path>', '写入文件（默认输出到 stdout）')
+  .description('导出全景架构分析（json | html | viewmodel | canvas）')
+  .option('--format <format>', '导出格式: json | html | viewmodel | canvas', 'json')
+  .option('--output <path>', '写入文件（默认输出到 stdout）；--format canvas 时必须是 .html 路径')
   .action((opts) => {
     const model = loadOverviewSnapshot();
     let content;
@@ -84,8 +85,17 @@ overviewCommand
       content = renderOverviewHtml(buildOverviewViewerModel(model));
     } else if (opts.format === 'viewmodel') {
       content = JSON.stringify(buildOverviewViewerModel(model), null, 2);
+    } else if (opts.format === 'canvas') {
+      try {
+        content = buildOverviewCanvas(model).html;
+      } catch (err) {
+        fail(`画布生成失败: ${err.message}`);
+      }
+      if (!opts.output) {
+        fail(`--format canvas 必须配合 --output 指定 .html 路径`);
+      }
     } else {
-      fail(`未知格式: ${opts.format}（支持 json / html / viewmodel）`);
+      fail(`未知格式: ${opts.format}（支持 json / html / viewmodel / canvas）`);
     }
     if (opts.output) {
       fs.writeFileSync(opts.output, content, 'utf-8');

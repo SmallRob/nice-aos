@@ -9,9 +9,10 @@ import {
 } from '../../deployment/deployAuditor.js';
 import { parseWhere, matchesWhere, outputJson, outputPretty, succeed, fail } from '../shared.js';
 import { listThemeNames } from '../../themes/index.js';
+import { buildDeployCanvas } from '../../canvas/canvasBuilder.js';
 
 export const deployCommand = new Command('deploy')
-  .description('部署配置目录分析：扫描 Dockerfile / docker-compose / K8s manifest / nginx.conf / .env → 部署架构模型 → 分析 JSON / 部署蓝图 deployoverview HTML');
+  .description('部署配置目录分析：扫描 Dockerfile / docker-compose / K8s manifest / nginx.conf / .env → 部署架构模型 → 分析 JSON / 部署蓝图 deployoverview HTML / 架构图画布');
 
 deployCommand
   .command('scan')
@@ -72,13 +73,14 @@ deployCommand
 
 deployCommand
   .command('export')
-  .description('导出部署架构分析结果（json | html | viewmodel）')
-  .option('--format <format>', '导出格式: json | html | viewmodel', 'json')
-  .option('--output <path>', '写入文件（默认输出到 stdout）')
+  .description('导出部署架构分析结果（json | html | viewmodel | canvas）')
+  .option('--format <format>', '导出格式: json | html | viewmodel | canvas', 'json')
+  .option('--output <path>', '写入文件（默认输出到 stdout）；--format canvas 时必须是 .html 路径')
   .option('--theme <name>', `HTML 主题风格（默认 deep-blue，可选: ${listThemeNames().join(' / ')}）`, 'deep-blue')
   .action((opts) => {
     const model = loadDeploySnapshot();
     let content;
+    let contentType = 'text/plain';
     if (opts.format === 'json') {
       content = JSON.stringify(model, null, 2);
     } else if (opts.format === 'html') {
@@ -89,12 +91,22 @@ deployCommand
       content = renderDeployOverviewHtml(buildDeployViewerModel(model), { theme });
     } else if (opts.format === 'viewmodel') {
       content = JSON.stringify(buildDeployViewerModel(model), null, 2);
+    } else if (opts.format === 'canvas') {
+      // v0.43 程序化画布：消费 deploy 快照 → 自包含 HTML（无需手动复制模板）
+      try {
+        content = buildDeployCanvas(model).html;
+        contentType = 'text/html';
+      } catch (err) {
+        fail(`画布生成失败: ${err.message}`);
+      }
     } else {
-      fail(`未知格式: ${opts.format}（支持 json / html / viewmodel）`);
+      fail(`未知格式: ${opts.format}（支持 json / html / viewmodel / canvas）`);
     }
     if (opts.output) {
       fs.writeFileSync(opts.output, content, 'utf-8');
       console.error(`已写入: ${opts.output}`);
+    } else if (contentType === 'text/html' && !opts.output) {
+      fail(`--format canvas 必须配合 --output 指定 .html 路径（避免大量 HTML 刷屏）`);
     } else {
       console.log(content);
     }

@@ -71,9 +71,15 @@ function matchDirSignal(relPath) {
 
 // 文件级语义层推断：内容信号（单元构成）优先，目录信号兜底
 export function inferFileArchLayer(input) {
-  const { relPath, isUserScript, isTest, isEntry, componentCount = 0, storeCount = 0, hookCount = 0 } = input;
+  const { relPath, isUserScript, isTest, isEntry, componentCount = 0, storeCount = 0, hookCount = 0, framework = null } = input;
   if (isUserScript) return 'script';
   if (isTest) return 'test';
+  // 后端项目：routes / controllers / endpoints 目录文件 → service（不是前端 SPA 的 "presentation"）
+  // 必须先于通用 DIR_SIGNALS，否则会被 'routes' → 'presentation' 抢判
+  if (BACKEND_FRAMEWORKS.has(framework)
+    && /(^|\/)(routes?|controllers?|endpoints?|handlers?)(\/|$)/.test(relPath)) {
+    return 'service';
+  }
   // 桌面客户端组件路径强信号（构建工具约定目录，直判）
   if (relPath.endsWith('.rs') || /\/src-tauri\//.test(relPath)) return 'tauri';
   if (/^electron\/|\/electron\//.test(relPath)) return 'electron';
@@ -147,6 +153,10 @@ export function inferFileArchLayer(input) {
   if (dirSignal) return dirSignal;
   return 'shared';
 }
+
+// 后端框架集合：这些 framework 走 backend-service 架构风格（区别于前端的 layered-spa / component-app）
+// 与 projectScanner.FRAMEWORK_LABELS_FULL 配合；flutter/dart 是客户端不在此列
+const BACKEND_FRAMEWORKS = new Set(['node-server', 'go', 'php', 'kotlin', 'python']);
 
 // 模块级语义层：按子树文件的层构成取主导层；构成分散（主导 < 60%）时如实标记 mixed
 export function inferModuleArchLayer(layerComposition) {
@@ -360,6 +370,7 @@ export function buildProjectProfile(ctx) {
     .sort((a, b) => b.fileCount - a.fileCount);
 
   const style = framework === 'userscript' ? 'script-collection'
+    : BACKEND_FRAMEWORKS.has(framework) ? 'backend-service'
     : (routes.length > 0 ? 'layered-spa' : 'component-app');
 
   const undeclaredDependencyCount = dependencies.filter((d) => d.source === 'undeclared').length;
@@ -391,7 +402,7 @@ export function buildProjectProfile(ctx) {
   return {
     architecture: {
       style,
-      styleLabel: { 'layered-spa': '分层单页应用', 'component-app': '组件应用', 'script-collection': '脚本集合' }[style],
+      styleLabel: { 'layered-spa': '分层单页应用', 'component-app': '组件应用', 'script-collection': '脚本集合', 'backend-service': '后端服务' }[style],
       layers,
       layerCount: layers.length,
       domainCount: domains.length,

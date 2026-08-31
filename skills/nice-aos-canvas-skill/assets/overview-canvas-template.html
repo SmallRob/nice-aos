@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>全景架构画布</title>
+<style>
+:root {
+  --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #30363d;
+  --fg: #e6edf3; --fg-dim: #8b949e; --fg-faint: #6e7681;
+  --blue: #58a6ff; --purple: #a78bfa; --green: #4ade80; --amber: #f0b429; --orange: #fb923c; --red: #f87171;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--fg); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px; overflow: hidden; }
+header { padding: 16px 24px 10px; border-bottom: 1px solid var(--border); background: var(--panel); }
+header h1 { font-size: 18px; font-weight: 700; }
+header .sub { font-size: 12px; color: var(--fg-dim); margin-top: 4px; }
+.shape-tags { display: inline-flex; gap: 6px; margin-left: 10px; vertical-align: 2px; }
+.shape-tags span { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--blue); }
+.lang-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.lang-chips .chip { font-size: 11px; padding: 2px 10px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--border); color: var(--fg-dim); }
+main { position: relative; height: calc(100vh - 130px); }
+.canvas-container { position: relative; height: 100%; overflow: hidden; background: radial-gradient(circle at 30% 20%, #11161f 0%, var(--bg) 70%); }
+.canvas-container svg { cursor: grab; }
+.canvas-toolbar { position: absolute; top: 10px; right: 12px; z-index: 20; display: flex; gap: 4px; }
+.canvas-toolbar button { padding: 4px 12px; font-size: 12px; background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; color: var(--fg-dim); cursor: pointer; }
+.canvas-toolbar button:hover { color: var(--fg); }
+.legend { position: absolute; bottom: 10px; left: 12px; z-index: 20; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 11px; max-width: 360px; max-height: 50%; overflow: auto; }
+.legend .lg-title { font-weight: 600; margin-bottom: 6px; color: var(--fg-dim); }
+.legend .item { display: flex; align-items: center; gap: 6px; margin: 3px 0; color: var(--fg-dim); cursor: pointer; }
+.legend .item:hover { color: var(--fg); }
+.legend .dot { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.legend .dot.round { border-radius: 50%; }
+.legend .line { width: 22px; height: 0; border-top: 2px solid; flex: none; }
+.detail-panel { position: absolute; top: 0; right: -360px; width: 350px; height: 100%; background: var(--panel); border-left: 1px solid var(--border); z-index: 30; transition: right .2s; padding: 16px; overflow: auto; }
+.detail-panel.open { right: 0; }
+.detail-panel h3 { font-size: 15px; margin-bottom: 4px; word-break: break-all; }
+.detail-panel .dp-sub { font-size: 12px; color: var(--fg-dim); margin-bottom: 10px; }
+.detail-panel .kv { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; border-bottom: 1px dashed var(--border); }
+.detail-panel .kv .k { min-width: 86px; color: var(--fg-dim); flex: none; }
+.detail-panel .kv .v { word-break: break-all; }
+.detail-panel .close-btn { position: absolute; top: 10px; right: 12px; cursor: pointer; color: var(--fg-dim); background: none; border: none; font-size: 16px; }
+footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 6px 24px; background: var(--panel); border-top: 1px solid var(--border); font-size: 11px; color: var(--fg-dim); display: flex; gap: 16px; flex-wrap: wrap; }
+footer .env-tag { padding: 1px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.placeholder-warn { padding: 40px; text-align: center; color: var(--amber); font-size: 14px; line-height: 2; }
+.cnode { cursor: pointer; }
+.cnode:hover .n-body { stroke-width: 2; }
+.cnode.dim { opacity: .08; }
+.cedge { fill: none; }
+.cedge.dim { opacity: .05; }
+.col-label { font-size: 13px; font-weight: 600; }
+.row-label { font-size: 12px; font-weight: 600; fill: var(--fg-dim); }
+@media print { .canvas-toolbar { display: none; } main { height: auto; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="ov-title">全景架构画布</h1>
+  <div class="sub" id="ov-sub"></div>
+  <div class="lang-chips" id="lang-chips"></div>
+</header>
+<main>
+  <div class="canvas-container">
+    <div class="canvas-toolbar">
+      <button onclick="ovZoom(-0.1)">−</button>
+      <button onclick="ovZoom(0.1)">+</button>
+      <button onclick="ovReset()">重置</button>
+    </div>
+    <svg id="svg-overview" width="100%" height="100%"></svg>
+  </div>
+  <aside class="detail-panel" id="detail-panel">
+    <button class="close-btn" onclick="document.getElementById('detail-panel').classList.remove('open')">✕</button>
+    <div id="detail-body"></div>
+  </aside>
+  <div class="legend" id="legend"></div>
+</main>
+<footer id="ov-footer"></footer>
+
+<!-- ═══════════ 数据块：程序化注入（nice-aos overview export --format canvas 自动填充） ═══════════ -->
+<script id="canvas-data" type="application/json">__CANVAS_DATA_JSON__</script>
+
+<script>
+'use strict';
+// ═══════════════ nice-aos-canvas overview 画布 ═══════════════
+let M = null;
+try {
+  const raw = document.getElementById('canvas-data').textContent;
+  M = raw && raw.trim() && !raw.includes('__CANVAS_DATA_JSON__') ? JSON.parse(raw) : null;
+} catch (e) { M = null; console.error('canvas-data 解析失败:', e); }
+
+// ──────────────── 常量 ────────────────
+const LAYERS = [
+  { k: 'edge',       label: '接入层' },
+  { k: 'frontend',   label: '前端层' },
+  { k: 'application',label: '应用层' },
+  { k: 'service',    label: '服务层' },
+  { k: 'data',       label: '数据层' },
+  { k: 'infra',      label: '基础设施' },
+  { k: 'tool',       label: '工具层' },
+];
+const LANGS_PALETTE = [
+  { ext: 'java',     label: 'Java',     color: '#f87171' },
+  { ext: 'ts',       label: 'TypeScript', color: '#58a6ff' },
+  { ext: 'tsx',      label: 'TSX',      color: '#38bdf8' },
+  { ext: 'js',       label: 'JavaScript', color: '#fbbf24' },
+  { ext: 'jsx',      label: 'JSX',      color: '#facc15' },
+  { ext: 'vue',      label: 'Vue',      color: '#4ade80' },
+  { ext: 'py',       label: 'Python',   color: '#a78bfa' },
+  { ext: 'go',       label: 'Go',       color: '#22d3ee' },
+  { ext: 'php',      label: 'PHP',      color: '#c084fc' },
+  { ext: 'kt',       label: 'Kotlin',   color: '#e879f9' },
+  { ext: 'rs',       label: 'Rust',     color: '#fb923c' },
+  { ext: 'dart',     label: 'Dart',     color: '#60a5fa' },
+  { ext: 'sh',       label: 'Shell',    color: '#94a3b8' },
+  { ext: 'yml',      label: 'YAML',     color: '#f0b429' },
+  { ext: 'sql',      label: 'SQL',      color: '#fb7185' },
+  { ext: 'cmake',    label: 'CMake',    color: '#2dd4bf' },
+  { ext: 'nix',      label: 'Nix',      color: '#c084fc' },
+];
+
+function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function colorForLang(ext) {
+  const c = LANGS_PALETTE.find((p) => p.ext === ext);
+  return c ? c.color : '#64748b';
+}
+
+// 推断服务所属分层（基于 applicationServices 字段 + name 启发式）
+function layerOf(svc) {
+  if (!svc) return 'service';
+  const name = (svc.name || '').toLowerCase();
+  if (svc.kind === 'gateway' || /nginx|gateway|ingress/.test(name)) return 'edge';
+  if (svc.kind === 'frontend' || /web|ui|portal|chatui|frontend/.test(name)) return 'frontend';
+  if (svc.kind === 'db' || svc.kind === 'cache' || svc.kind === 'storage' || /mysql|redis|minio|postgres/.test(name)) return 'data';
+  if (svc.kind === 'tool' || /portainer|pgadmin|adminer|docs/.test(name)) return 'tool';
+  if (svc.kind === 'cicd' || /jenkins|sonar|github-actions/.test(name)) return 'infra';
+  if (svc.kind === 'observability' || /prometheus|grafana|jaeger/.test(name)) return 'infra';
+  if (svc.kind === 'job' || /flyway|migration|init|bootstrap/.test(name)) return 'service';
+  if (svc.kind === 'application' || svc.kind === 'service' || svc.kind === 'backend' || svc.kind === 'adapter') return 'application';
+  return 'service';
+}
+
+// ──────────────── 矩阵布局 ────────────────
+const COL_W = 200, NODE_W = 180, NODE_H = 40, COL_GAP = 32, ROW_GAP = 14, ROW_PAD_TOP = 90, COL_PAD_LEFT = 96;
+
+function layoutMatrix(M) {
+  const projects = M.projects || [];
+  const svcArr = (M.applicationServices || []).map((s) => ({ ...s, _layer: layerOf(s) }));
+  const colPos = {}; const rowPos = {};
+  // 列：项目
+  projects.forEach((p, i) => {
+    colPos[p.name] = { x: COL_PAD_LEFT + i * (COL_W + COL_GAP), w: COL_W };
+  });
+  // 行：分层
+  LAYERS.forEach((l, i) => {
+    rowPos[l.k] = { y: ROW_PAD_TOP + i * 90, label: l.label };
+  });
+  // 节点：每个服务节点按 (project, layer) 摆位
+  const nodePos = {};
+  const colCounts = {};
+  projects.forEach((p) => {
+    colCounts[p.name] = {};
+    LAYERS.forEach((l) => { colCounts[p.name][l.k] = 0; });
+  });
+  svcArr.forEach((s) => {
+    const col = colPos[s.project];
+    const row = rowPos[s._layer];
+    if (!col || !row) return;
+    const i = colCounts[s.project][s._layer]++;
+    const x = col.x + 8;
+    const y = row.y + i * (NODE_H + 6);
+    nodePos[s.id || s.name] = { x, y, w: NODE_W, h: NODE_H, _project: s.project, _layer: s._layer };
+  });
+  // 跨项目依赖边（来自 architecture.crossMatrix）
+  const edges = [];
+  const cross = (M.architecture && M.architecture.crossMatrix) || {};
+  for (const [from, deps] of Object.entries(cross)) {
+    for (const to of deps) {
+      const a = nodePos[from] || (svcArr.find((s) => s.name === from) ? nodePos[svcArr.find((s) => s.name === from).id || svcArr.find((s) => s.name === from).name] : null);
+      const b = nodePos[to] || (svcArr.find((s) => s.name === to) ? nodePos[svcArr.find((s) => s.name === to).id || svcArr.find((s) => s.name === to).name] : null);
+      if (a && b && a._project !== b._project) edges.push({ from, to, type: 'cross' });
+    }
+  }
+  return { nodePos, colPos, rowPos, colCounts, edges, projects, services: svcArr };
+}
+
+function nodeHtml(s, x, y) {
+  const c = colorForLang(s.language || (s.name && s.name.match(/\.(ts|js|tsx|jsx|vue|py|go|php|kt|rs|dart|java)$/i)?.[1]));
+  const id = s.id || s.name;
+  return '<g class="cnode" data-id="' + esc(id) + '" transform="translate(' + x + ',' + y + ')">' +
+    '<rect class="n-body" width="' + NODE_W + '" height="' + NODE_H + '" rx="4" style="fill:var(--panel2);stroke:' + c + ';stroke-width:1.2"/>' +
+    '<rect width="3" height="' + NODE_H + '" rx="1.5" style="fill:' + c + '"/>' +
+    '<text x="10" y="16" style="fill:' + c + '" font-size="11" font-weight="600" font-family="Menlo,monospace">' +
+      esc(s.name.length > 22 ? s.name.slice(0, 21) + '…' : s.name) + '</text>' +
+    '<text x="10" y="30" style="fill:var(--fg-faint)" font-size="9">' + esc(s.language || '—') + (s.framework ? ' · ' + esc(s.framework) : '') + '</text>' +
+    '<text x="10" y="42" style="fill:var(--fg-dim)" font-size="9">' + esc(s.kind || '') + '</text>' +
+    '<title>' + esc(s.name + '\n' + (s.path || '') + '\n' + (s.framework || '') + ' · ' + (s.language || '')) + '</title>' +
+  '</g>';
+}
+
+function edgeHtml(e, nodePos) {
+  const a = nodePos[e.from], b = nodePos[e.to];
+  if (!a || !b) return '';
+  const ax = a.x + NODE_W, ay = a.y + NODE_H / 2, bx = b.x, by = b.y + NODE_H / 2;
+  const mx1 = ax + 24, mx2 = bx - 24;
+  const d = 'M' + ax + ',' + ay + ' C' + mx1 + ',' + ay + ' ' + mx2 + ',' + by + ' ' + bx + ',' + by;
+  return '<path class="cedge" data-type="cross" d="' + d + '" style="stroke:var(--purple)" stroke-width="1.4" stroke-dasharray="6,3" fill="none" opacity="0.55" marker-end="url(#ovarrow)"/>';
+}
+
+function renderSvg(layout) {
+  let html = '';
+  // 列头：项目名 + 颜色
+  layout.projects.forEach((p) => {
+    const col = layout.colPos[p.name];
+    if (!col) return;
+    html += '<rect x="' + col.x + '" y="50" width="' + col.w + '" height="32" rx="6" style="fill:var(--panel2);stroke:var(--blue)" stroke-width="1.2"/>';
+    html += '<text class="col-label" x="' + (col.x + col.w / 2) + '" y="71" text-anchor="middle" style="fill:var(--blue)">' + esc(p.name) + '</text>';
+    // 项目行计数 chip
+    const total = Object.values(layout.colCounts[p.name] || {}).reduce((s, n) => s + n, 0);
+    html += '<text class="row-label" x="' + (col.x + col.w / 2) + '" y="86" text-anchor="middle">' + total + ' 个服务</text>';
+  });
+  // 行头：分层名
+  LAYERS.forEach((l) => {
+    const r = layout.rowPos[l.k];
+    if (!r) return;
+    html += '<text class="row-label" x="12" y="' + (r.y + 24) + '">' + esc(l.label) + '</text>';
+  });
+  // 服务节点
+  layout.services.forEach((s) => {
+    const pos = layout.nodePos[s.id || s.name];
+    if (pos) html += nodeHtml(s, pos.x, pos.y);
+  });
+  // 跨项目依赖边（在节点下层避免遮挡标签，但 marker 在最顶层）
+  let edges = '<defs><marker id="ovarrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" style="fill:var(--purple)"/></marker></defs>';
+  layout.edges.forEach((e) => { edges += edgeHtml(e, layout.nodePos); });
+  return { html: edges + html, w: COL_PAD_LEFT + layout.projects.length * (COL_W + COL_GAP) + 40, h: ROW_PAD_TOP + LAYERS.length * 90 + 30 };
+}
+
+// ──────────────── 启动 ────────────────
+(function main() {
+  if (!M) {
+    document.body.innerHTML = '<div class="placeholder-warn">⚠ overview 画布数据块未注入。<br>请使用 <code>nice-aos overview export --format canvas --output canvas.html</code> 由 CLI 自动生成。</div>';
+    return;
+  }
+  const projects = M.projects || [];
+  const services = M.applicationServices || [];
+  const t = M.totals || {};
+  const meta = M._meta || {};
+  document.getElementById('ov-title').textContent = (meta.projectsRoot || '多项目').split('/').filter(Boolean).pop() + ' · 全景架构画布';
+  document.getElementById('ov-sub').innerHTML = esc(meta.projectsRoot || '') +
+    ' · 生成于 ' + esc(String(meta.generatedAt || '').replace('T', ' ').slice(0, 19)) +
+    ' · ' + (t.projects ?? projects.length) + ' 项目 / ' + (t.javaServices ?? 0) + ' Java 微服务 / ' +
+    (t.grandTotalFiles ?? 0) + ' 文件 / ' + (t.grandTotalLines ?? 0).toLocaleString?.() + ' 行' +
+    ' <span class="shape-tags">' + (t.layers ?? '—') + ' 层架构</span>';
+  // 语言 chips
+  const langChips = (M.languages ? Object.keys(M.languages) : []).slice(0, 14);
+  document.getElementById('lang-chips').innerHTML = langChips.map((ext) => {
+    const c = LANGS_PALETTE.find((p) => p.ext === ext);
+    const label = c ? c.label : ext;
+    return '<span class="chip" style="color:' + (c ? c.color : 'var(--fg-dim)') + '">' + esc(label) + '</span>';
+  }).join('');
+  // 画布
+  const layout = layoutMatrix(M);
+  const out = renderSvg(layout);
+  const svg = document.getElementById('svg-overview');
+  svg.innerHTML = out.html;
+  svg.setAttribute('viewBox', '0 0 ' + out.w + ' ' + out.h);
+  svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+  // 缩放 / 平移
+  let scale = 1, ox = 0, oy = 0, drag = false, sx = 0, sy = 0, ocx = 0, ocy = 0;
+  function apply() { svg.setAttribute('viewBox', ox + ' ' + oy + ' ' + (out.w / scale) + ' ' + (out.h / scale)); }
+  window.ovZoom = (d) => { scale = Math.max(0.3, Math.min(3, scale + d)); apply(); };
+  window.ovReset = () => { scale = 1; ox = 0; oy = 0; apply(); };
+  svg.addEventListener('wheel', (e) => { e.preventDefault(); window.ovZoom(e.deltaY > 0 ? -0.1 : 0.1); });
+  svg.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.cnode')) return;
+    drag = true; sx = e.clientX; sy = e.clientY; ocx = ox; ocy = oy;
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    const rect = svg.getBoundingClientRect();
+    const k = scale * (rect.width / out.w);
+    ox = ocx - (e.clientX - sx) / k; oy = ocy - (e.clientY - sy) / k; apply();
+  });
+  document.addEventListener('mouseup', () => { drag = false; });
+  svg.addEventListener('click', (e) => {
+    const g = e.target.closest('.cnode');
+    if (!g) return;
+    showDetail(g.dataset.id, services, projects);
+  });
+  // 图例
+  const langItems = Object.keys(M.languages || {}).slice(0, 12).map((ext) => {
+    const c = colorForLang(ext);
+    return '<div class="item" data-filter="lang:' + ext + '"><span class="dot" style="background:' + c + '"></span>' + esc(ext) + '</div>';
+  }).join('');
+  const layerItems = LAYERS.map((l) => '<div class="item" data-filter="layer:' + l.k + '"><span class="dot round" style="background:var(--fg-faint)"></span>' + esc(l.label) + '</div>').join('');
+  document.getElementById('legend').innerHTML =
+    '<div class="lg-title">图例（点击高亮 / 再点取消）</div>' +
+    '<div style="margin:4px 0;color:var(--fg-faint);font-size:10px;">语言</div>' + langItems +
+    '<div style="margin:8px 0 4px;color:var(--fg-faint);font-size:10px;">分层</div>' + layerItems +
+    '<div class="item"><span class="line" style="border-color:var(--purple);border-top-style:dashed;"></span>跨项目依赖</div>';
+  document.querySelectorAll('.legend .item[data-filter]').forEach((it) => {
+    it.addEventListener('click', () => {
+      const [kind, key] = it.dataset.filter.split(':');
+      const active = it.classList.contains('active');
+      document.querySelectorAll('.legend .item').forEach((i) => { i.style.opacity = ''; i.classList.remove('active'); });
+      document.querySelectorAll('.cnode, .cedge').forEach((el) => el.classList.remove('dim'));
+      if (active) return;
+      it.classList.add('active');
+      document.querySelectorAll('.cnode').forEach((n) => {
+        const svc = services.find((s) => (s.id || s.name) === n.dataset.id);
+        if (!svc) { n.classList.add('dim'); return; }
+        if (kind === 'lang' && svc.language !== key) n.classList.add('dim');
+        if (kind === 'layer' && layerOf(svc) !== key) n.classList.add('dim');
+      });
+      if (kind === 'layer') document.querySelectorAll('.cedge').forEach((e) => e.classList.add('dim'));
+    });
+  });
+  // 页脚
+  document.getElementById('ov-footer').innerHTML =
+    '<span>跨项目依赖: ' + (t.crossProjectDeps ?? '—') + ' 条</span>' +
+    '<span>API 控制器: ' + (t.apiControllers ?? '—') + ' 个 @RestController</span>' +
+    '<span>业务服务: ' + (t.businessServices ?? '—') + ' 个 @Service/@Component</span>' +
+    '<span style="margin-left:auto;">nice-aos canvas · 数据源 overview-snapshot · 生成于 ' + esc(new Date().toISOString().replace('T', ' ').slice(0, 19)) + '</span>';
+})();
+
+function showDetail(id, services, projects) {
+  const body = document.getElementById('detail-body');
+  const svc = services.find((s) => (s.id || s.name) === id);
+  if (!svc) { body.innerHTML = '<h3>未找到对象</h3><div class="dp-sub">' + esc(id) + '</div>'; document.getElementById('detail-panel').classList.add('open'); return; }
+  const proj = projects.find((p) => p.name === svc.project);
+  const rows = (o) => Object.entries(o).filter(([, v]) => v != null && v !== '').map(([k, v]) => '<div class="kv"><span class="k">' + esc(k) + '</span><span class="v">' + esc(typeof v === 'object' ? JSON.stringify(v) : String(v)) + '</span></div>').join('');
+  body.innerHTML =
+    '<h3>' + esc(svc.name) + '</h3>' +
+    '<div class="dp-sub">' + esc(svc.project || '—') + ' · ' + esc(svc.language || '—') + ' · ' + esc(svc.framework || '—') + '</div>' +
+    rows({ 路径: svc.path, 行数: svc.lines, 角色: svc.roles ? svc.roles.join(', ') : null, 类型: svc.kind, 框架: svc.framework, 通信: svc.communication }) +
+    (proj ? '<div style="margin-top:10px;font-size:11px;color:var(--fg-dim);">所属项目: ' + esc(proj.name) + ' · ' + (proj.fileCount || 0) + ' 文件 / ' + (proj.lineCount || 0).toLocaleString?.() + ' 行</div>' : '');
+  document.getElementById('detail-panel').classList.add('open');
+}
+</script>
+</body>
+</html>

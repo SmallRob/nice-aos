@@ -732,6 +732,10 @@ function detectFramework({ deps, configs, hostDir, packageJson, userScriptCount,
   if (deps.next) return 'next';
   if (deps.vue) return 'vue';
   if (deps.react) return 'react';
+  // 后端 Node.js 框架：Express / Fastify / Koa / NestJS / Hapi / Restify
+  // 必须在 node-cli 之前（CLI 仓库可能也用 express 做参数解析）
+  if (deps.express || deps.fastify || deps.koa || deps['@nestjs/core'] || deps['@nestjs/common']
+    || deps.hapi || deps['@hapi/hapi'] || deps.restify) return 'node-server';
   // 无 package.json（或无框架依赖）时用宿主配置文件旁证
   if (isExpoAppJson(hostDir, configs)) return 'expo';
   // 代码信号兜底：.vue 文件 → vue；tsx/jsx 组件文件 → react（扫描目录无任何清单时的启发式）
@@ -773,9 +777,10 @@ const FRAMEWORK_LABELS_FULL = {
   next: 'Next.js 应用',
   vue: 'Vue 单页应用',
   react: 'React 单页应用',
+  'node-server': 'Node.js 后端服务',
   'node-cli': 'Node.js CLI 工具',
   userscript: '油猴脚本集合',
-  unknown: '前端项目',
+  unknown: 'Node.js 项目',
 };
 const VARIANT_LABELS = {
   capacitor: 'Capacitor 跨端',

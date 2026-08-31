@@ -160,6 +160,57 @@ function mergeService(serviceMap, name, partial, source) {
   return svc;
 }
 
+// K8s 资源摘要：供部署蓝图「K8s 架构」独立视图。
+// 覆盖全部资源类型（工作负载 / Service / Ingress / ConfigMap / Secret / PVC / Kustomization 等），
+// 容器 env 只保留数量与引用关系，不落明文值（services 集合已含脱敏值）。
+const K8S_DATA_KEYS_CAP = 30;
+const K8S_KUSTOMIZE_RES_CAP = 50;
+
+function toK8sResourceSummary(doc, relativePath) {
+  const entry = {
+    kind: doc.kind,
+    name: doc.name,
+    namespace: doc.namespace,
+    source: relativePath,
+  };
+  if (doc.containers) {
+    entry.replicas = doc.replicas ?? null;
+    entry.strategy = doc.strategy ?? null;
+    entry.imagePullSecrets = doc.imagePullSecrets || [];
+    entry.containers = doc.containers.map((c) => ({
+      name: c.name,
+      image: c.image,
+      ports: c.ports || [],
+      envCount: Object.keys(c.env || {}).length,
+      envRefs: c.envRefs || [],
+      envFrom: c.envFrom || [],
+      readinessProbe: c.readinessProbe,
+      livenessProbe: c.livenessProbe,
+      resources: c.resources,
+      volumeMounts: c.volumeMounts || [],
+    }));
+  }
+  if (doc.kind === 'Service') {
+    entry.serviceType = doc.serviceType;
+    entry.ports = doc.ports || [];
+    entry.selector = doc.selector || {};
+  } else if (doc.kind === 'ConfigMap' || doc.kind === 'Secret') {
+    entry.dataKeyCount = (doc.dataKeys || []).length;
+    entry.dataKeys = (doc.dataKeys || []).slice(0, K8S_DATA_KEYS_CAP);
+    entry.dataSize = doc.dataSize ?? 0;
+  } else if (doc.kind === 'PersistentVolumeClaim') {
+    entry.storage = doc.storage;
+    entry.accessModes = doc.accessModes || [];
+  } else if (doc.kind === 'Ingress') {
+    entry.hosts = doc.hosts || [];
+    entry.paths = doc.paths || [];
+  } else if (doc.kind === 'Kustomization') {
+    entry.resources = (doc.resources || []).slice(0, K8S_KUSTOMIZE_RES_CAP);
+    entry.images = doc.images || [];
+  }
+  return entry;
+}
+
 // ---------- Nginx 网关归属 ----------
 
 const NGINX_ENV_WORDS = /[-_.](prod|sit|sit02|dt|dev|test|stage|staging|uat|allinone)$/i;
@@ -222,6 +273,7 @@ export function buildDeployModel(deployDir, options = {}) {
   const deployFiles = [];
   const fileManifest = [];
   const k8sResourceCounts = {};
+  const k8sResources = [];
   const nginxParseResults = [];
   let parseErrors = 0;
 
@@ -293,6 +345,7 @@ export function buildDeployModel(deployDir, options = {}) {
       }
     } else if (type === 'k8s') {
       for (const doc of analyzed.parsed.documents) {
+        k8sResources.push(toK8sResourceSummary(doc, file.relativePath));
         if (!doc.containers) continue;
         for (const container of doc.containers) {
           mergeService(serviceMap, container.name || doc.name, {
@@ -527,6 +580,7 @@ export function buildDeployModel(deployDir, options = {}) {
     files: deployFiles,
     layers,
     k8sResourceCounts,
+    k8sResources,
     _meta: {
       ...DEPLOY_MODEL_META,
       scannedAt: new Date().toISOString(),
@@ -539,6 +593,7 @@ export function buildDeployModel(deployDir, options = {}) {
       middlewareCount: middlewareList.length,
       environmentCount: environments.length,
       layerCount: layers.length,
+      k8sResourceCount: k8sResources.length,
       parseErrors,
       durationMs,
       incremental: false,

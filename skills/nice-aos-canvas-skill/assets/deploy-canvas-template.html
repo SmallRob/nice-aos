@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>部署架构画布</title>
+<style>
+:root {
+  --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #30363d;
+  --fg: #e6edf3; --fg-dim: #8b949e; --fg-faint: #6e7681;
+  --blue: #58a6ff; --purple: #a78bfa; --green: #4ade80; --amber: #f0b429; --orange: #fb923c; --red: #f87171;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--fg); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 14px; overflow: hidden; }
+header { padding: 16px 24px 10px; border-bottom: 1px solid var(--border); background: var(--panel); }
+header h1 { font-size: 18px; font-weight: 700; }
+header .sub { font-size: 12px; color: var(--fg-dim); margin-top: 4px; }
+.shape-tags { display: inline-flex; gap: 6px; margin-left: 10px; vertical-align: 2px; }
+.shape-tags span { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--blue); }
+.stack-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.stack-chips .chip { font-size: 11px; padding: 2px 10px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--border); color: var(--fg-dim); }
+.stack-chips .chip.orch { color: var(--purple); border-color: var(--purple); }
+.tabs { margin-top: 10px; display: flex; gap: 4px; }
+.tab-btn { padding: 6px 14px; background: transparent; border: 1px solid var(--border); border-radius: 6px 6px 0 0; color: var(--fg-dim); cursor: pointer; font-size: 13px; }
+.tab-btn.active { color: var(--fg); border-bottom-color: var(--bg); background: var(--bg); }
+main { position: relative; height: calc(100vh - 150px); }
+.canvas-view { display: none; height: 100%; }
+.canvas-view.active { display: block; }
+.canvas-container { position: relative; height: 100%; overflow: hidden; background: radial-gradient(circle at 30% 20%, #11161f 0%, var(--bg) 70%); }
+.canvas-container svg { cursor: grab; }
+.canvas-toolbar { position: absolute; top: 10px; right: 12px; z-index: 20; display: flex; gap: 4px; }
+.canvas-toolbar button { padding: 4px 12px; font-size: 12px; background: var(--panel2); border: 1px solid var(--border); border-radius: 4px; color: var(--fg-dim); cursor: pointer; }
+.canvas-toolbar button:hover { color: var(--fg); }
+.legend { position: absolute; bottom: 10px; left: 12px; z-index: 20; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-size: 11px; max-width: 330px; max-height: 46%; overflow: auto; }
+.legend .lg-title { font-weight: 600; margin-bottom: 6px; color: var(--fg-dim); }
+.legend .item { display: flex; align-items: center; gap: 6px; margin: 3px 0; color: var(--fg-dim); cursor: pointer; }
+.legend .item:hover { color: var(--fg); }
+.legend .dot { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.legend .line { width: 22px; height: 0; border-top: 2px solid; flex: none; }
+.legend .line.dashed { border-top-style: dashed; }
+.legend .line.dotted { border-top-style: dotted; border-top-width: 2px; }
+.legend .line.thin { border-top-width: 1px; }
+.detail-panel { position: absolute; top: 0; right: -360px; width: 350px; height: 100%; background: var(--panel); border-left: 1px solid var(--border); z-index: 30; transition: right .2s; padding: 16px; overflow: auto; }
+.detail-panel.open { right: 0; }
+.detail-panel h3 { font-size: 15px; margin-bottom: 4px; word-break: break-all; }
+.detail-panel .dp-sub { font-size: 12px; color: var(--fg-dim); margin-bottom: 10px; }
+.detail-panel .kv { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; border-bottom: 1px dashed var(--border); }
+.detail-panel .kv .k { min-width: 86px; color: var(--fg-dim); flex: none; }
+.detail-panel .kv .v { word-break: break-all; }
+.detail-panel .close-btn { position: absolute; top: 10px; right: 12px; cursor: pointer; color: var(--fg-dim); background: none; border: none; font-size: 16px; }
+footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 6px 24px; background: var(--panel); border-top: 1px solid var(--border); font-size: 11px; color: var(--fg-dim); display: flex; gap: 16px; flex-wrap: wrap; }
+footer .env-tag { padding: 1px 8px; border: 1px solid var(--border); border-radius: 8px; }
+.placeholder-warn { padding: 40px; text-align: center; color: var(--amber); font-size: 14px; line-height: 2; }
+/* SVG 元素 */
+.cnode { cursor: pointer; }
+.cnode:hover .n-body { stroke-width: 2; }
+.cnode.dim { opacity: .08; }
+.cedge { fill: none; }
+.cedge.dim { opacity: .05; }
+.zone-label { font-size: 12px; font-weight: 600; }
+.subzone-label { font-size: 10px; fill: var(--fg-faint); }
+@media print { .canvas-toolbar, .tabs { display: none; } main { height: auto; } }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="cv-title">部署架构画布</h1>
+  <div class="sub" id="cv-sub"></div>
+  <div class="stack-chips" id="stack-chips"></div>
+  <div class="tabs">
+    <button class="tab-btn active" data-canvas="deploy">部署架构总图</button>
+    <button class="tab-btn" data-canvas="k8s" id="tab-k8s" style="display:none">K8s 集群图</button>
+  </div>
+</header>
+<main>
+  <section class="canvas-view active" id="view-deploy">
+    <div class="canvas-container">
+      <div class="canvas-toolbar">
+        <button onclick="cvZoom('svg-deploy',-0.1)">−</button>
+        <button onclick="cvZoom('svg-deploy',0.1)">+</button>
+        <button onclick="cvReset('svg-deploy')">重置</button>
+      </div>
+      <svg id="svg-deploy" width="100%" height="100%"></svg>
+    </div>
+  </section>
+  <section class="canvas-view" id="view-k8s">
+    <div class="canvas-container">
+      <div class="canvas-toolbar">
+        <button onclick="cvZoom('svg-k8s',-0.1)">−</button>
+        <button onclick="cvZoom('svg-k8s',0.1)">+</button>
+        <button onclick="cvReset('svg-k8s')">重置</button>
+      </div>
+      <svg id="svg-k8s" width="100%" height="100%"></svg>
+    </div>
+  </section>
+  <aside class="detail-panel" id="detail-panel">
+    <button class="close-btn" onclick="document.getElementById('detail-panel').classList.remove('open')">✕</button>
+    <div id="detail-body"></div>
+  </aside>
+  <div class="legend" id="legend"></div>
+</main>
+<footer id="env-strip"></footer>
+
+<!-- ═══════════ 数据块：程序化注入（nice-aos deploy export --format canvas 自动填充；手动模式可粘贴 deploy export --format json 的输出） ═══════════ -->
+<script id="canvas-data" type="application/json">__CANVAS_DATA_JSON__</script>
+
+<script>
+'use strict';
+// ═══════════════ nice-aos-canvas 语义分析 + 布局 + 渲染管线 ═══════════════
+// 数据解析：未注入时（裸模板被直接打开）优雅降级到提示界面
+let M = null;
+try {
+  const raw = document.getElementById('canvas-data').textContent;
+  M = raw && raw.trim() && !raw.includes('__CANVAS_DATA_JSON__')
+    ? JSON.parse(raw)
+    : null;
+} catch (e) {
+  M = null;
+  console.error('canvas-data 解析失败:', e);
+}
+
+const LAYER_ORDER = ['edge', 'frontend', 'backend', 'adapter', 'job', 'data', 'observability', 'cicd', 'tool'];
+const LAYER_LABELS = {
+  edge: '接入层', frontend: '前端层', backend: '应用服务层', adapter: '适配器层', job: '任务层',
+  data: '数据层', observability: '可观测层', cicd: 'CI/CD 层', tool: '工具层',
+};
+const TYPE_COLORS = {
+  gateway: '#f472b6', frontend: '#38bdf8', backend: '#4ade80', adapter: '#a78bfa', app: '#2dd4bf',
+  job: '#fbbf24', db: '#fb923c', cache: '#f87171', storage: '#22d3ee', search: '#e879f9',
+  registry: '#c084fc', observability: '#facc15', cicd: '#60a5fa', tool: '#94a3b8',
+};
+const TYPE_LABELS = {
+  gateway: '网关', frontend: '前端', backend: '后端服务', adapter: '适配器', app: '应用', job: '任务',
+  db: '数据库', cache: '缓存', storage: '对象存储', search: '搜索引擎', registry: '注册中心',
+  observability: '可观测', cicd: 'CI/CD', tool: '工具',
+};
+const K8S_WL = new Set(['Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'CronJob', 'ReplicaSet']);
+const EDGE_COLORS = { route: '#a78bfa', env_ref: '#58a6ff', depends_on: '#4ade80', selector: '#8b949e', ingress: '#fb923c' };
+
+function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+// ────────────────── Phase 2: 企业级语义分析 ──────────────────
+// 风险徽标：服务级 6 维度评审要点（企业级架构评审常问的问题）
+function riskBadges(s) {
+  const r = [];
+  // 1. latest / 无 tag（生产禁用）
+  if (s.imageVersion === 'latest' || (s.image && !/:[^/:]+$/.test(s.image))) r.push({ k: 'latest', t: 'latest 镜像（生产禁用）' });
+  // 2. 单副本（无 HA）
+  if (K8S_WL.has(s.kind) && s.replicas === 1) r.push({ k: 'single', t: '单副本（无 HA）' });
+  // 3. 业务服务无健康检查
+  const biz = ['backend', 'frontend', 'adapter', 'app', 'gateway'].includes(s.type);
+  if (biz && !s.healthcheck && !s.readinessProbe && !s.livenessProbe) r.push({ k: 'nohc', t: '无健康检查' });
+  // 4. K8s workload 无资源限额
+  if (K8S_WL.has(s.kind) && (!s.resources || !s.resources.limits)) r.push({ k: 'nolimit', t: '未设资源限额' });
+  // 5. 环境变量过多（>30 通常意味着配置膨胀 / 应外移 ConfigMap）
+  const envCount = s.envCount || (s.env ? Object.keys(s.env).length : 0);
+  if (envCount > 30) r.push({ k: 'envlots', t: '环境变量过多 (' + envCount + ')' });
+  // 6. 启动参数含 ${VAR:-default}（运行时未注入，依赖环境兜底）
+  if (s.image && /\$\{[^}]+:-[^}]+\}/.test(s.image)) r.push({ k: 'envfallback', t: '镜像含环境兜底' });
+  return r;
+}
+
+function detectStack(m, shape) {
+  const chips = [];
+  if (shape.hasK8s && shape.hasDocker) chips.push({ t: '混合部署 Docker + Kubernetes', c: 'orch' });
+  else if (shape.hasK8s) chips.push({ t: 'Kubernetes', c: 'orch' });
+  else if (shape.hasDocker) chips.push({ t: 'Docker Compose', c: 'orch' });
+  const mws = (m.middleware || []).map(w => w.label + (w.version ? ' ' + w.version : ''));
+  mws.forEach(t => chips.push({ t }));
+  // 运行时识别：覆盖 JVM / Node / Python / Nginx / PHP / .NET / Go / Rust（新增 Rust 适配）
+  const RUNTIME = [
+    [/temurin|openjdk|java|jre|jdk/i, 'JVM'],
+    [/\bnode[:\/]/i, 'Node.js'],
+    [/python/i, 'Python'],
+    [/nginx/i, 'Nginx'],
+    [/php/i, 'PHP'],
+    [/dotnet|aspnet/i, '.NET'],
+    [/golang|(^|\/)go:|gcr\.io\/distroless\/static/i, 'Go'],
+    [/(^|[^a-z0-9])rust(:|-dev|:latest|nightly)/i, 'Rust'],
+  ];
+  const seen = new Set(chips.map(c => c.t));
+  (m.services || []).forEach(s => {
+    const hay = (s.image || '') + ' ' + (s.name || '');
+    for (const [re, label] of RUNTIME) {
+      if (re.test(hay) && !seen.has(label)) { seen.add(label); chips.push({ t: label }); break; }
+    }
+  });
+  if (shape.hasNginx) chips.push({ t: 'Nginx 网关' });
+  if (shape.hasIngress) chips.push({ t: 'K8s Ingress' });
+  return chips;
+}
+
+function analyze(m) {
+  const A = {};
+  const services = m.services || [];
+  const k8sResources = m.k8sResources || [];
+  A.hasK8s = services.some(s => K8S_WL.has(s.kind)) || k8sResources.some(r => K8S_WL.has(r.kind));
+  A.hasDocker = services.some(s => s.kind === 'container');
+  A.hasIngress = k8sResources.some(r => r.kind === 'Ingress');
+  A.hasNginx = (m.routes || []).length > 0;
+  A.shapeLabel = A.hasK8s && A.hasDocker ? '混合部署（Docker 宿主机 + K8s 集群）'
+    : A.hasK8s ? '纯 Kubernetes' : A.hasDocker ? 'Docker Compose' : '未识别编排形态';
+  // 风险聚合：服务级 6 类 + 拓扑级（孤儿/未解析/无消费方中间件）
+  const riskAgg = { latest: 0, single: 0, nohc: 0, nolimit: 0, envlots: 0, envfallback: 0, orphan: 0, unresolved: 0, mwNoConsumer: 0 };
+  services.forEach(s => {
+    s._dom = K8S_WL.has(s.kind) ? 'k8s' : 'docker';
+    s._ns = s.namespace || 'default';
+    s._risks = riskBadges(s);
+    s._risks.forEach(rs => { if (riskAgg[rs.k] != null) riskAgg[rs.k]++; });
+  });
+  // 拓扑级风险：依赖图中孤儿（无入度+无出度的业务服务）
+  const depSet = new Set();
+  (m.dependencies || []).forEach(d => { depSet.add(d.from); depSet.add(d.to); });
+  const routeSet = new Set();
+  (m.routes || []).forEach(r => { if (r.gateway) routeSet.add(r.gateway); if (r.resolvedService) routeSet.add(r.resolvedService); });
+  services.filter(s => !K8S_WL.has(s.kind) && s.layer !== 'tool' && s.layer !== 'job')
+    .forEach(s => { if (!depSet.has(s.name) && !routeSet.has(s.name)) { s._risks.push({ k: 'orphan', t: '孤儿服务（无依赖/无被调）' }); riskAgg.orphan++; } });
+  // 路由未解析
+  (m.routes || []).filter(r => !r.resolvedService).forEach(r => { riskAgg.unresolved++; });
+  // 中间件无消费方
+  (m.middleware || []).forEach(w => { if (!w.consumers || w.consumers.length === 0) riskAgg.mwNoConsumer++; });
+  A.riskAgg = riskAgg;
+  // 分层行（含中间件节点挂载数据层）
+  A.rows = LAYER_ORDER.filter(l => services.some(s => s.layer === l)
+    || (l === 'data' && (m.middleware || []).length > 0));
+  // 依赖边去重
+  const depMap = new Map();
+  (m.dependencies || []).forEach(d => {
+    const key = d.from + '|' + d.to + '|' + d.type;
+    if (!depMap.has(key)) depMap.set(key, { from: d.from, to: d.to, type: d.type });
+  });
+  A.depEdges = [...depMap.values()];
+  // 路由边（网关 → 已解析目标）
+  A.routeEdges = (m.routes || []).filter(r => r.resolvedService && r.gateway !== r.resolvedService)
+    .map(r => ({ from: r.gateway, to: r.resolvedService, type: 'route', path: r.path }));
+  A.stack = detectStack(m, A);
+  return A;
+}
+
+// ────────────────── Phase 3: 画布布局与渲染 ──────────────────
+const NW = 164, NH = 58, GX = 12, GY = 12, ROW_TOP = 34, ROW_GAP = 52, BOX_PAD = 22, BOX_LABEL = 26;
+
+function nodeRiskMarks(risks, x) {
+  // 节点右上角徽标序列（从右往左）
+  return risks.map((r, i) => {
+    const cx = x - 8 - i * 14;
+    const color = r.k === 'latest' || r.k === 'single' || r.k === 'nohc' ? 'var(--amber)' : 'var(--fg-faint)';
+    return '<circle cx="' + cx + '" cy="8" r="4.5" fill="' + color + '"><title>' + esc(r.t) + '</title></circle>';
+  }).join('');
+}
+
+function svcNodeHtml(s, x, y) {
+  const c = TYPE_COLORS[s.type] || '#64748b';
+  const img = s.image || (s.virtual ? '虚拟网关' : '镜像未知');
+  const domIcon = s._dom === 'k8s' ? '☸ ' + esc(s.kind) + (s._ns ? '@' + esc(s._ns) : '') : '🐳 Docker';
+  return '<g class="cnode" data-id="' + esc(s.name) + '" transform="translate(' + x + ',' + y + ')">' +
+    '<rect class="n-body" width="' + NW + '" height="' + NH + '" rx="6" style="fill:var(--panel2);stroke:' + c + ';stroke-width:1.2"/>' +
+    '<rect width="3" height="' + NH + '" rx="1.5" style="fill:' + c + '"/>' +
+    '<text x="10" y="20" style="fill:' + c + '" font-size="12" font-weight="600" font-family="Menlo,monospace">' +
+      esc(s.name.length > 20 ? s.name.slice(0, 19) + '…' : s.name) + '</text>' +
+    '<text x="10" y="36" style="fill:var(--fg-faint)" font-size="9" font-family="Menlo,monospace">' +
+      esc(img.length > 26 ? img.slice(0, 25) + '…' : img) + '</text>' +
+    '<text x="10" y="50" style="fill:var(--fg-dim)" font-size="9">' + domIcon +
+      (s.replicas != null && s.replicas > 1 ? ' ×' + s.replicas : '') + '</text>' +
+    nodeRiskMarks(s._risks, NW) +
+    '<title>' + esc(s.name + '\n' + img + '\n' + TYPE_LABELS[s.type] + ' · ' + (LAYER_LABELS[s.layer] || s.layer)) + '</title>' +
+  '</g>';
+}
+
+function mwNodeHtml(w, x, y) {
+  const c = TYPE_COLORS[w.kind] || '#fb923c';
+  return '<g class="cnode" data-id="' + esc(w.name) + '" transform="translate(' + x + ',' + y + ')">' +
+    '<rect class="n-body" width="' + NW + '" height="' + NH + '" rx="12" style="fill:var(--panel2);stroke:' + c + ';stroke-width:1.2" stroke-dasharray="0"/>' +
+    '<text x="12" y="22" style="fill:' + c + '" font-size="12" font-weight="600">' + esc(w.label || w.name) +
+      (w.version ? ' ' + esc(w.version) : '') + '</text>' +
+    '<text x="12" y="38" style="fill:var(--fg-faint)" font-size="9" font-family="Menlo,monospace">' +
+      esc((w.name || '').slice(0, 24)) + '</text>' +
+    '<text x="12" y="50" style="fill:var(--fg-dim)" font-size="9">中间件 · ' + (w.consumers || []).length + ' 消费方</text>' +
+    '<title>' + esc(w.label + ' ' + (w.version || '') + '\n镜像: ' + (w.image || '—') + '\n消费方: ' + (w.consumers || []).join(', ') || '无') + '</title>' +
+  '</g>';
+}
+
+// 组内节点流式换行布局，返回 {html, w, h, positions}
+function flowNodes(items, startX, startY, maxPerRow) {
+  let html = '', maxW = 0, row = 0, col = 0;
+  const positions = [];
+  items.forEach(it => {
+    const x = startX + col * (NW + GX), y = startY + row * (NH + GY);
+    html += it.nodeHtml(x, y);
+    positions.push({ name: it.name, x, y, _dom: it.dom });
+    maxW = Math.max(maxW, x - startX + NW);
+    col++; if (col >= maxPerRow) { col = 0; row++; }
+  });
+  return { html, w: maxW, h: (row + 1) * NH + row * GY, positions };
+}
+
+function edgeHtml(e, nodePos, layerY) {
+  const s = nodePos[e.from], t = nodePos[e.to];
+  if (!s || !t) return '';
+  const sx = s.x + NW / 2, sy = s.y + s.h, tx = t.x + NW / 2, ty = t.y;
+  const color = EDGE_COLORS[e.type] || '#8b949e';
+  // 跨域检测：源宿在 docker 域 / 目标在 k8s 域（或反之）→ 用点划线区分
+  const crossDom = (s._dom && t._dom && s._dom !== t._dom) || e.crossDomain;
+  const dash = e.type === 'depends_on' ? 'stroke-dasharray="5,4"'
+    : e.type === 'selector' ? 'stroke-dasharray="2,3"'
+    : crossDom ? 'stroke-dasharray="8,3,2,3"'
+    : '';
+  const width = e.type === 'route' || e.type === 'ingress' ? 1.8 : 1.1;
+  const mx = (sx + tx) / 2, my = (sy + ty) / 2;
+  const d = Math.abs(ty - sy) < 4
+    ? 'M' + (s.x + NW) + ',' + (s.y + NH / 2) + ' C' + (s.x + NW + 40) + ',' + (s.y + NH / 2) + ' ' + (t.x - 40) + ',' + (t.y + NH / 2) + ' ' + t.x + ',' + (t.y + NH / 2)
+    : 'M' + sx + ',' + sy + ' C' + mx + ',' + sy + ' ' + mx + ',' + ty + ' ' + tx + ',' + ty;
+  return '<path class="cedge edge-' + e.type + '" data-type="' + e.type + '" d="' + d + '" ' + dash +
+    ' style="stroke:' + color + '" stroke-width="' + width + '" opacity="0.5" marker-end="url(#arrow)"/>' +
+    (e.path && e.type === 'route' ? '<text x="' + mx + '" y="' + (my - 4) + '" text-anchor="middle" font-size="9" style="fill:var(--fg-faint)" font-family="Menlo,monospace">' + esc(e.path) + '</text>' : '');
+}
+
+function layoutDeployCanvas(A, m) {
+  const services = m.services || [];
+  const nodePos = {};
+  let html = '', y = 90, maxRight = 900;
+  // 顶部外部用户 + 入口
+  if (A.hasNginx || A.hasIngress) {
+    html += '<g class="cnode" data-id="__external"><ellipse cx="120" cy="30" rx="86" ry="20" style="fill:var(--panel2);stroke:var(--fg-dim)" stroke-dasharray="4,3"/>' +
+      '<text x="120" y="34" text-anchor="middle" style="fill:var(--fg-dim)" font-size="12">外部用户 / Internet</text></g>';
+    y = 90;
+  }
+  A.rows.forEach(layer => {
+    const rowTop = y;
+    let lineHtml = '';
+    // 分组：K8s 集群（按 ns）与 Docker 宿主机
+    const k8sSvcs = services.filter(s => s.layer === layer && s._dom === 'k8s');
+    const dockerSvcs = services.filter(s => s.layer === layer && s._dom === 'docker');
+    const mwItems = layer === 'data' ? (m.middleware || []).map(w => ({
+      name: w.name, dom: 'data', nodeHtml: (x, yy) => mwNodeHtml(w, x, yy),
+    })) : [];
+    const groups = [];
+    if (k8sSvcs.length) {
+      const nsMap = new Map();
+      k8sSvcs.forEach(s => {
+        if (!nsMap.has(s._ns)) nsMap.set(s._ns, []);
+        nsMap.get(s._ns).push(s);
+      });
+      groups.push({ type: 'k8s', nsGroups: [...nsMap.entries()] });
+    }
+    const dockerItems = dockerSvcs.map(s => ({
+      name: s.name, dom: 'docker', nodeHtml: (x, yy) => svcNodeHtml(s, x, yy),
+    }));
+    if (dockerItems.length) groups.push({ type: 'docker', items: dockerItems });
+
+    let x = 96; // 左侧留层名竖排
+    const inner = [];
+    const rowPositions = [];
+    for (const g of groups) {
+      if (g.type === 'k8s') {
+        // 集群框：内含 ns 子框
+        const clusterStart = x;
+        let cx = x + BOX_PAD, ch = 0;
+        const nsInner = [];
+        for (const [ns, items] of g.nsGroups) {
+          const nodes = items.map(s => ({ name: s.name, dom: s._dom, nodeHtml: (px, py) => svcNodeHtml(s, px, py) }));
+          const flow = flowNodes(nodes, cx + 8, rowTop + BOX_LABEL + 26, 4);
+          nsInner.push({ ns, flow, startX: cx });
+          cx += flow.w + 24;
+          ch = Math.max(ch, flow.h);
+        }
+        const clusterW = (cx - clusterStart) + BOX_PAD - 24 + 24;
+        const clusterH = ch + BOX_LABEL + 34;
+        inner.push('<rect x="' + clusterStart + '" y="' + (rowTop + BOX_LABEL) + '" width="' + clusterW + '" height="' + clusterH + '" rx="10" style="fill:color-mix(in srgb,var(--purple) 4%,transparent);stroke:var(--purple)" stroke-dasharray="6,4" opacity="0.9"/>' +
+          '<text class="zone-label" x="' + (clusterStart + 10) + '" y="' + (rowTop + BOX_LABEL + 16) + '" style="fill:var(--purple)">☸ Kubernetes 集群</text>');
+        nsInner.forEach(({ ns, flow, startX }) => {
+          inner.push('<rect x="' + (startX) + '" y="' + (rowTop + BOX_LABEL + 22) + '" width="' + (flow.w + 16) + '" height="' + (flow.h + 10) + '" rx="6" style="fill:transparent;stroke:var(--border)"/>' +
+            '<text class="subzone-label" x="' + (startX + 6) + '" y="' + (rowTop + BOX_LABEL + 34) + '">ns: ' + esc(ns) + '</text>');
+          inner.push(flow.html);
+          flow.positions.forEach(p => { nodePos[p.name] = { x: p.x, y: p.y, w: NW, h: NH }; rowPositions.push(p); });
+        });
+        x = clusterStart + clusterW + 20;
+        maxRight = Math.max(maxRight, x);
+      } else {
+        const all = g.items;
+        const flow = flowNodes(all, x + BOX_PAD, rowTop + BOX_LABEL, 7);
+        const boxW = flow.w + BOX_PAD * 2, boxH = flow.h + BOX_LABEL + 10;
+        inner.push('<rect x="' + x + '" y="' + (rowTop + BOX_LABEL) + '" width="' + boxW + '" height="' + boxH + '" rx="10" style="fill:color-mix(in srgb,var(--blue) 3%,transparent);stroke:var(--border)"/>' +
+          '<text class="zone-label" x="' + (x + 10) + '" y="' + (rowTop + BOX_LABEL + 16) + '" style="fill:var(--blue)">🐳 Docker 宿主机</text>');
+        inner.push(flow.html);
+        flow.positions.forEach(p => { nodePos[p.name] = { x: p.x, y: p.y, w: NW, h: NH }; rowPositions.push(p); });
+        x += boxW + 20;
+        maxRight = Math.max(maxRight, x);
+      }
+    }
+    // 数据层中间件直接并入 docker 框后追加
+    if (mwItems.length) {
+      const flow = flowNodes(mwItems, x + BOX_PAD, rowTop + BOX_LABEL, 6);
+      inner.push(flow.html);
+      flow.positions.forEach(p => { nodePos[p.name] = { x: p.x, y: p.y, w: NW, h: NH }; rowPositions.push(p); });
+      x += flow.w + BOX_PAD + 16;
+      maxRight = Math.max(maxRight, x);
+    }
+    const rowH = rowPositions.length
+      ? Math.max(...rowPositions.map(p => p.y)) + NH + 12 - rowTop
+      : NH;
+    html += '<text class="zone-label" x="16" y="' + (rowTop + 14) + '" style="fill:var(--fg-dim)">' + esc(LAYER_LABELS[layer] || layer) + '</text>' +
+      '<line x1="16" y1="' + (rowTop + 22) + '" x2="' + (maxRight - 10) + '" y2="' + (rowTop + 22) + '" style="stroke:var(--border)"/>' + inner.join('');
+    y = rowTop + Math.max(rowH, NH) + ROW_GAP;
+  });
+  const totalW = maxRight + 40, totalH = y + 20;
+  // 边渲染
+  let edges = '';
+  A.routeEdges.concat(A.depEdges).forEach(e => { edges += edgeHtml(e, nodePos); });
+  // 外部用户 → edge 层网关
+  if (A.hasNginx || A.hasIngress) {
+    services.filter(s => s.layer === 'edge').slice(0, 4).forEach(s => {
+      const p = nodePos[s.name];
+      if (p) edges += '<path class="cedge" d="M120,50 C120,' + (p.y - 30) + ' ' + (p.x + NW / 2) + ',' + (p.y - 30) + ' ' + (p.x + NW / 2) + ',' + p.y + '" style="stroke:var(--fg-faint)" stroke-width="1.4" fill="none" marker-end="url(#arrow)"/>';
+    });
+  }
+  return {
+    html: '<defs><marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" style="fill:var(--fg-faint)"/></marker></defs>' +
+      '<g transform="translate(0,0)">' + html + edges + '</g>',
+    w: totalW, h: totalH,
+  };
+}
+
+// ────────────────── Canvas B: K8s 集群图 ──────────────────
+function layoutK8sCanvas(m) {
+  const res = m.k8sResources || [];
+  const wls = res.filter(r => K8S_WL.has(r.kind));
+  const svcs = res.filter(r => r.kind === 'Service');
+  const ings = res.filter(r => r.kind === 'Ingress');
+  const cfgs = res.filter(r => r.kind === 'ConfigMap' || r.kind === 'Secret');
+  const pvcs = res.filter(r => r.kind === 'PersistentVolumeClaim');
+  const others = res.filter(r => !K8S_WL.has(r.kind) && !['Service', 'Ingress', 'ConfigMap', 'Secret', 'PersistentVolumeClaim'].includes(r.kind));
+  const nsList = [...new Set(res.map(r => r.namespace || 'default'))].sort();
+  const nodePos = {};
+  const SEG = { workload: '工作负载', service: 'Service 服务发现', config: '配置与存储' };
+  let html = '', x = 24;
+  nsList.forEach(ns => {
+    const colItems = { workload: [], service: [], config: [] };
+    wls.filter(w => (w.namespace || 'default') === ns).forEach(w => colItems.workload.push(w));
+    svcs.filter(s => (s.namespace || 'default') === ns).forEach(s => colItems.service.push(s));
+    [...cfgs, ...pvcs].filter(c => (c.namespace || 'default') === ns).forEach(c => colItems.config.push(c));
+    if (ings.some(i => (i.namespace || 'default') === ns)) colItems.ingress = ings.filter(i => (i.namespace || 'default') === ns);
+    const segNode = (r) => {
+      const c = r.kind === 'Deployment' ? '#4ade80' : r.kind === 'StatefulSet' ? '#22d3ee' : r.kind === 'Service' ? '#60a5fa'
+        : r.kind === 'Ingress' ? '#fb923c' : r.kind === 'Secret' ? '#f0b429' : r.kind === 'ConfigMap' ? '#94a3b8'
+        : r.kind === 'PersistentVolumeClaim' ? '#a78bfa' : '#fbbf24';
+      const sub = K8S_WL.has(r.kind)
+        ? (r.containers || []).map(ct => ct.image || ct.name).join(' | ') || '—'
+        : r.kind === 'Service' ? (r.ports || []).map(p => p.port + '→' + p.targetPort).join(' ')
+        : r.kind === 'Ingress' ? (r.paths || []).map(p => (p.host || '*') + (p.path || '/') + ' → ' + p.serviceName).join(' ')
+        : r.kind === 'PersistentVolumeClaim' ? (r.storage || '?') + ' · ' + (r.accessModes || []).join('/')
+        : r.kind === 'Secret' ? r.dataKeyCount + ' 个键（已隐藏）'
+        : (r.dataKeys || []).slice(0, 3).join(', ');
+      const id = r.kind + '/' + r.name;
+      return '<g class="cnode" data-id="' + esc(id) + '" transform="translate({X},{Y})">' +
+        '<rect class="n-body" width="' + NW + '" height="52" rx="6" style="fill:var(--panel2);stroke:' + c + ';stroke-width:1.2"/>' +
+        '<text x="10" y="18" style="fill:' + c + '" font-size="11" font-weight="600" font-family="Menlo,monospace">' +
+          esc(r.name.length > 20 ? r.name.slice(0, 19) + '…' : r.name) + '</text>' +
+        '<text x="10" y="32" style="fill:var(--fg-faint)" font-size="9">' + esc(r.kind) +
+          (r.replicas != null ? ' ×' + r.replicas : '') + '</text>' +
+        '<text x="10" y="45" style="fill:var(--fg-dim)" font-size="8.5" font-family="Menlo,monospace">' +
+          esc(String(sub).slice(0, 30)) + '</text></g>';
+    };
+    let colW = 0, yy = 60;
+    const colInner = [];
+    [['workload', '工作负载', colItems.workload], ['service', 'Service 服务发现', colItems.service], ['config', '配置与存储', colItems.config]].forEach(([key, label, list]) => {
+      if (!list || list.length === 0) return;
+      colInner.push('<text class="subzone-label" x="' + (x + 4) + '" y="' + yy + '">' + esc(label) + ' (' + list.length + ')</text>');
+      yy += 14;
+      let row = 0;
+      list.forEach((r, i) => {
+        const ix = x + 8 + (i % 2) * (NW + 10), iy = yy + Math.floor(i / 2) * 62;
+        colInner.push(segNode(r).replace('{X}', ix).replace('{Y}', iy));
+        nodePos[r.kind + '/' + r.name] = { x: ix, y: iy, w: NW, h: 52 };
+      });
+      yy += Math.ceil(list.length / 2) * 62 + 14;
+      colW = Math.max(colW, 2 * NW + 40);
+    });
+    if (colItems.ingress) {
+      colItems.ingress.forEach((r, i) => {
+        const ix = x + 8, iy = yy + i * 62;
+        colInner.push(segNode(r).replace('{X}', ix).replace('{Y}', iy));
+        nodePos['Ingress/' + r.name] = { x: ix, y: iy, w: NW, h: 52 };
+      });
+      yy += colItems.ingress.length * 62;
+    }
+    const colH = Math.max(yy + 20, 220);
+    html += '<rect x="' + x + '" y="24" width="' + (colW + 8) + '" height="' + colH + '" rx="10" style="fill:color-mix(in srgb,var(--purple) 3%,transparent);stroke:var(--purple)" stroke-dasharray="6,4"/>' +
+      '<text class="zone-label" x="' + (x + 10) + '" y="44" style="fill:var(--purple)">☸ ns: ' + esc(ns) + '</text>' + colInner.join('');
+    x += colW + 34;
+    if (others.length) { /* 其他资源附加到最后一列下方 */ }
+  });
+  if (others.length) {
+    html += '<text class="subzone-label" x="24" y="14" style="fill:var(--fg-faint)">其他资源: ' +
+      others.map(o => esc(o.kind + '/' + (o.name || ''))).join(' · ') + '</text>';
+  }
+  // 边：Ingress → Service → Workload（启发式 selector 匹配）
+  let edges = '';
+  svcs.forEach(s => {
+    const svcId = 'Service/' + s.name;
+    const selVals = Object.values(s.selector || {});
+    const target = wls.find(w => selVals.includes(w.name) || (w.containers || []).some(c => selVals.includes(c.name)));
+    if (target) {
+      edges += edgeHtml({ from: svcId, to: target.kind + '/' + target.name, type: 'selector' }, nodePos);
+    }
+    (s._ingressFrom || []).forEach(ingName => {
+      edges += edgeHtml({ from: 'Ingress/' + ingName, to: svcId, type: 'ingress' }, nodePos);
+    });
+  });
+  ings.forEach(i => (i.paths || []).forEach(p => {
+    if (p.serviceName) edges += edgeHtml({ from: 'Ingress/' + i.name, to: 'Service/' + p.serviceName, type: 'ingress' }, nodePos);
+  }));
+  return { html: '<defs><marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" style="fill:var(--fg-faint)"/></marker></defs>' + html + edges, w: x + 40, h: 700 };
+}
+
+// ────────────────── 交互 ──────────────────
+const scales = {}, origins = {};
+function applyView(svgId) {
+  const svg = document.getElementById(svgId);
+  const s = scales[svgId] || 1;
+  svg.setAttribute('viewBox', (origins[svgId] || { x: 0, y: 0 }).x + ' ' + (origins[svgId] || { x: 0, y: 0 }).y + ' ' + (svg._vb ? svg._vb[2] / s : 1000) + ' ' + (svg._vb ? svg._vb[3] / s : 700));
+}
+function cvZoom(svgId, delta) {
+  scales[svgId] = Math.max(0.3, Math.min(3, (scales[svgId] || 1) + delta));
+  applyView(svgId);
+}
+function cvReset(svgId) {
+  scales[svgId] = 1; origins[svgId] = { x: 0, y: 0 };
+  applyView(svgId);
+}
+function initCanvas(svgId, w, h) {
+  const svg = document.getElementById(svgId);
+  svg._vb = [0, 0, w, h];
+  svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+  svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+  svg.addEventListener('wheel', e => { e.preventDefault(); cvZoom(svgId, e.deltaY > 0 ? -0.1 : 0.1); });
+  let drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  svg.addEventListener('mousedown', e => {
+    if (e.target.closest('.cnode')) return;
+    drag = true; sx = e.clientX; sy = e.clientY;
+    origins[svgId] = origins[svgId] || { x: 0, y: 0 };
+    ox = origins[svgId].x; oy = origins[svgId].y;
+  });
+  document.addEventListener('mousemove', e => {
+    if (!drag) return;
+    const svg2 = document.getElementById(svgId);
+    const rect = svg2.getBoundingClientRect();
+    const scale = (scales[svgId] || 1) * (rect.width / (svg2._vb ? svg2._vb[2] : w));
+    origins[svgId].x = ox - (e.clientX - sx) / scale;
+    origins[svgId].y = oy - (e.clientY - sy) / scale;
+    applyView(svgId);
+  });
+  document.addEventListener('mouseup', () => { drag = false; });
+  svg.addEventListener('click', e => {
+    const g = e.target.closest('.cnode');
+    if (!g) return;
+    const id = g.dataset.id;
+    showDetail(id, svgId);
+  });
+}
+function showDetail(id, svgId) {
+  const body = document.getElementById('detail-body');
+  let svc = (M.services || []).find(s => s.name === id);
+  let k8sRes = null;
+  if (svgId === 'svg-k8s' && id.includes('/')) {
+    const [kind, ...rest] = id.split('/');
+    k8sRes = (M.k8sResources || []).find(r => r.kind === kind && r.name === rest.join('/'));
+  }
+  const rows = (obj) => Object.entries(obj).filter(([, v]) => v != null && (typeof v !== 'object' || JSON.stringify(v) !== '[]'))
+    .map(([k, v]) => '<div class="kv"><span class="k">' + esc(k) + '</span><span class="v">' + esc(typeof v === 'object' ? JSON.stringify(v) : v) + '</span></div>').join('');
+  if (svc) {
+    body.innerHTML = '<h3 style="color:' + (TYPE_COLORS[svc.type] || '#64748b') + '">' + esc(svc.name) + '</h3>' +
+      '<div class="dp-sub">' + esc(TYPE_LABELS[svc.type] || svc.type) + ' · ' + esc(LAYER_LABELS[svc.layer] || svc.layer) + ' · ' + (svc._dom === 'k8s' ? '☸ ' + esc(svc.kind) : '🐳 Docker') + '</div>' +
+      rows({ 镜像: svc.image, 版本: svc.imageVersion, 仓库: svc.registry, 命名空间: svc.namespace, 副本: svc.replicas, 端口: (svc.containerPorts || []).join(', ') || null, 健康检查: (svc.healthcheck || svc.readinessProbe || svc.livenessProbe) ? '已配置' : null, 资源限额: svc.resources && svc.resources.limits ? '已配置' : null, 依赖: (svc.dependsOn || []).join(', ') || null, 环境变量数: svc.envCount || (svc.env ? Object.keys(svc.env).length : 0), 来源: (svc.sources || []).map(s => s.file).join(', ') }) +
+      (svc._risks && svc._risks.length ? '<div style="margin-top:8px;color:var(--amber);font-size:12px;">⚠ 风险: ' + svc._risks.map(r => esc(r.t)).join(' / ') + '</div>' : '');
+  } else if (k8sRes) {
+    body.innerHTML = '<h3>' + esc(k8sRes.name) + '</h3><div class="dp-sub">' + esc(k8sRes.kind) + ' · ns ' + esc(k8sRes.namespace || 'default') + '</div>' +
+      rows({ 副本: k8sRes.replicas, 类型: k8sRes.serviceType, 端口: JSON.stringify(k8sRes.ports || null), selector: JSON.stringify(k8sRes.selector || null), 存储: k8sRes.storage, 键数: k8sRes.dataKeyCount, Hosts: JSON.stringify(k8sRes.hosts || null), 来源: k8sRes.source });
+  } else {
+    const mw = (M.middleware || []).find(w => w.name === id);
+    if (mw) body.innerHTML = '<h3>' + esc(mw.label) + '</h3><div class="dp-sub">中间件</div>' + rows({ 镜像: mw.image, 版本: mw.version, 端口: (mw.ports || []).join(', '), 消费方: (mw.consumers || []).join(', ') || '无', 来源: mw.source });
+  }
+  document.getElementById('detail-panel').classList.add('open');
+}
+
+// ────────────────── 启动 ──────────────────
+(function main() {
+  // 占位符检测：未注入时（裸模板被直接打开）展示使用提示
+  if (!M) {
+    document.body.innerHTML = '<div class="placeholder-warn">⚠ 画布数据块未注入。<br>请使用 <code>nice-aos deploy export --format canvas --output canvas.html</code> 由 CLI 自动生成，<br>或用 <code>nice-aos deploy export --format json</code> 的输出整体替换 <code>&lt;script id="canvas-data"&gt;</code> 数据块。</div>';
+    return;
+  }
+  const A = analyze(M);
+  const meta = M._meta || {};
+  const projectName = (meta.sourceDir || '').split('/').filter(Boolean).pop() || '项目';
+  document.getElementById('cv-title').textContent = projectName + ' · 部署架构画布';
+  // 风险徽标计数（标题栏右侧）
+  const rA = A.riskAgg || {};
+  const riskTags = [];
+  if (rA.latest) riskTags.push('latest × ' + rA.latest);
+  if (rA.single) riskTags.push('单副本 × ' + rA.single);
+  if (rA.nohc) riskTags.push('无 HC × ' + rA.nohc);
+  if (rA.nolimit) riskTags.push('未限额 × ' + rA.nolimit);
+  if (rA.envlots) riskTags.push('env 多 × ' + rA.envlots);
+  if (rA.envfallback) riskTags.push('env 兜底 × ' + rA.envfallback);
+  if (rA.orphan) riskTags.push('孤儿 × ' + rA.orphan);
+  if (rA.unresolved) riskTags.push('路由未解析 × ' + rA.unresolved);
+  if (rA.mwNoConsumer) riskTags.push('中间件无消费 × ' + rA.mwNoConsumer);
+  document.getElementById('cv-sub').innerHTML = esc(meta.sourceDir || '') + ' · 扫描于 ' + esc(String(meta.scannedAt || '').replace('T', ' ').slice(0, 19)) +
+    ' · ' + (meta.serviceCount || (M.services || []).length) + ' 服务 / ' + (meta.routeCount || (M.routes || []).length) + ' 路由 / ' + (meta.dependencyCount || (M.dependencies || []).length) + ' 依赖' +
+    ' <span class="shape-tags">' + A.shapeLabel.split('、').map(t => '<span>' + esc(t) + '</span>').join('') + '</span>' +
+    (riskTags.length ? ' <span class="shape-tags">' + riskTags.map(t => '<span style="color:var(--amber);border-color:var(--amber);">' + esc(t) + '</span>').join('') + '</span>' : '');
+  document.getElementById('stack-chips').innerHTML = A.stack.map(c => '<span class="chip ' + (c.c || '') + '">' + esc(c.t) + '</span>').join('');
+  // 环境条
+  const envs = [...new Map((M.environments || []).map(e => [e.name, e])).values()];
+  document.getElementById('env-strip').innerHTML =
+    '<span>环境配置:</span>' + envs.map(e => '<span class="env-tag">' + esc(e.name) + (e.secretCount ? ' · 🔒' + e.secretCount : '') + '</span>').join('') +
+    '<span style="margin-left:auto;">nice-aos canvas · 数据源 deploy-snapshot · 生成于 ' + esc(new Date().toISOString().replace('T', ' ').slice(0, 19)) + '</span>';
+  // Canvas A
+  const dep = layoutDeployCanvas(A, M);
+  document.getElementById('svg-deploy').innerHTML = dep.html;
+  initCanvas('svg-deploy', dep.w, dep.h);
+  // Canvas B（条件显示）
+  if (A.hasK8s && (M.k8sResources || []).length) {
+    document.getElementById('tab-k8s').style.display = '';
+    const k8 = layoutK8sCanvas(M);
+    document.getElementById('svg-k8s').innerHTML = k8.html;
+    initCanvas('svg-k8s', k8.w, k8.h);
+  }
+  // 图例
+  const legend = document.getElementById('legend');
+  const typeItems = Object.entries(TYPE_COLORS).filter(([k]) => (M.services || []).some(s => s.type === k))
+    .map(([k, c]) => '<div class="item" data-filter="type:' + k + '"><span class="dot" style="background:' + c + '"></span>' + esc(TYPE_LABELS[k] || k) + '</div>').join('');
+  const edgeItems = [
+    ['route', 'route 网关流量', ''], ['env_ref', 'env_ref 运行时调用', ''],
+    ['depends_on', 'depends_on 启动依赖', 'dashed'], ['selector', 'K8s selector 匹配', 'dotted'],
+    ['ingress', 'Ingress 规则', ''],
+  ].filter(([t]) => document.querySelectorAll('.edge-' + t).length > 0)
+    .map(([t, label, style]) => '<div class="item" data-filter="edge:' + t + '"><span class="line ' + style + '" style="border-color:' + EDGE_COLORS[t] + '"></span>' + label + '</div>').join('');
+  // 风险徽标：动态列示当前快照实际命中的徽标
+  const RISK_META = {
+    latest: 'latest 镜像（生产禁用）', single: '单副本（无 HA）', nohc: '无健康检查',
+    nolimit: '未设资源限额', envlots: '环境变量过多', envfallback: '镜像含环境兜底',
+    orphan: '孤儿服务（无依赖/无被调）',
+  };
+  const riskItems = Object.entries(RISK_META)
+    .filter(([k]) => (rA[k] || 0) > 0)
+    .map(([k, t]) => '<div class="item" data-filter="risk:' + k + '"><span class="dot" style="background:var(--amber);border-radius:50%;"></span>' + esc(t) + ' × ' + rA[k] + '</div>').join('');
+  legend.innerHTML = '<div class="lg-title">图例（点击高亮 / 再点取消）</div>' + typeItems + edgeItems + riskItems +
+    '<div class="item"><span style="color:var(--fg-faint);">🐳 Docker 宿主机域 · ☸ Kubernetes 集群域（虚线框）· ns: Namespace 子框</span></div>';
+  legend.querySelectorAll('.item[data-filter]').forEach(item => {
+    item.addEventListener('click', () => {
+      const [kind, key] = item.dataset.filter.split(':');
+      const active = item.classList.contains('active');
+      legend.querySelectorAll('.item').forEach(i => { i.style.opacity = ''; i.classList.remove('active'); });
+      document.querySelectorAll('.cnode, .cedge').forEach(el => el.classList.remove('dim'));
+      if (!active) {
+        item.classList.add('active');
+        if (kind === 'type') {
+          document.querySelectorAll('.cnode').forEach(n => {
+            const svc = (M.services || []).find(s => s.name === n.dataset.id);
+            if (!svc || svc.type !== key) n.classList.add('dim');
+          });
+          document.querySelectorAll('.cedge').forEach(e2 => e2.classList.add('dim'));
+        } else if (kind === 'edge') {
+          document.querySelectorAll('.cedge').forEach(e2 => { if (e2.dataset.type !== key) e2.classList.add('dim'); });
+        } else if (kind === 'risk') {
+          // 高亮带有对应 _risks 条目的节点
+          document.querySelectorAll('.cnode').forEach(n => {
+            const svc = (M.services || []).find(s => s.name === n.dataset.id);
+            if (!svc || !svc._risks || !svc._risks.some(r => r.k === key)) n.classList.add('dim');
+          });
+        }
+      } else {
+        item.classList.remove('active');
+      }
+    });
+  });
+  // Tabs
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.canvas-view').forEach(v => v.classList.remove('active'));
+      document.getElementById('view-' + btn.dataset.canvas).classList.add('active');
+    });
+  });
+})();
+</script>
+</body>
+</html>

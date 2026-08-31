@@ -1,14 +1,16 @@
 // 部署蓝图 deployoverview HTML 生成器
 // 数据流：deploy-snapshot.json（DeployModel）→ buildDeployViewerModel()（视图模型）→ renderDeployOverviewHtml()（HTML）
-// 八个视图：
+// 九个视图：
 //   1. 部署拓扑：分层架构图（接入层 → 前端层 → 应用服务层 → … → 数据层），层间箭头标注流量语义
-//   2. 服务清单：搜索 + 分层过滤 + 服务卡片（镜像/端口/探针/环境变量展开）
-//   3. 网关路由：nginx location → proxy_pass 解析结果 + upstream 后端表
-//   4. 依赖关系：SVG 依赖图（depends_on / env_ref / route 三色边）+ 依赖矩阵
-//   5. 中间件：基础设施卡片（版本/端口/消费方）
-//   6. 环境配置：.env 文件变量表（敏感值脱敏）+ 服务引用
-//   7. 部署文件：按类型分组的源文件清单（compose/k8s/nginx/dockerfile/env/shell/ci）
-//   8. 健康审计：评分环 + 四维得分 + 问题清单
+//   2. K8s 架构（条件显示）：仅当扫描数据含 K8s manifest 时展示——概览指标 + 命名空间筛选 +
+//      工作负载 / Service 服务发现 / Ingress 入口路由 / 配置与存储四张清单表
+//   3. 服务清单：搜索 + 分层过滤 + 服务卡片（镜像/端口/探针/环境变量展开）
+//   4. 网关路由：nginx location → proxy_pass 解析结果 + upstream 后端表
+//   5. 依赖关系：SVG 依赖图（depends_on / env_ref / route 三色边）+ 依赖矩阵
+//   6. 中间件：基础设施卡片（版本/端口/消费方）
+//   7. 环境配置：.env 文件变量表（敏感值脱敏）+ 服务引用
+//   8. 部署文件：按类型分组的源文件清单（compose/k8s/nginx/dockerfile/env/shell/ci）
+//   9. 健康审计：评分环 + 四维得分 + 问题清单
 
 import {
   auditSecurity, auditResilience, auditConfigConsistency, auditDependency, auditHealth,
@@ -134,6 +136,25 @@ export function buildDeployViewerModel(model) {
     (fileGroups[f.type] = fileGroups[f.type] || []).push(f);
   }
 
+  // K8s 部署架构视图（仅扫描数据含 K8s manifest 时展示独立标签页）
+  const K8S_WORKLOAD_KINDS_SET = new Set(['Deployment', 'StatefulSet', 'DaemonSet', 'Job', 'CronJob', 'ReplicaSet']);
+  const K8S_CLASSIFIED_KINDS_SET = new Set([
+    ...K8S_WORKLOAD_KINDS_SET, 'Service', 'Ingress', 'ConfigMap', 'Secret', 'PersistentVolumeClaim',
+  ]);
+  const k8sResources = model.k8sResources || [];
+  const k8s = {
+    present: k8sResources.length > 0,
+    total: k8sResources.length,
+    namespaces: [...new Set(k8sResources.map((r) => r.namespace || 'default'))].sort(),
+    kindCounts: model.k8sResourceCounts || {},
+    workloads: k8sResources.filter((r) => K8S_WORKLOAD_KINDS_SET.has(r.kind)),
+    services: k8sResources.filter((r) => r.kind === 'Service'),
+    ingresses: k8sResources.filter((r) => r.kind === 'Ingress'),
+    configs: k8sResources.filter((r) => r.kind === 'ConfigMap' || r.kind === 'Secret'),
+    storage: k8sResources.filter((r) => r.kind === 'PersistentVolumeClaim'),
+    others: k8sResources.filter((r) => !K8S_CLASSIFIED_KINDS_SET.has(r.kind)),
+  };
+
   // 审计
   const securityAudit = auditSecurity(model);
   const resilienceAudit = auditResilience(model);
@@ -158,6 +179,7 @@ export function buildDeployViewerModel(model) {
       middlewareCount: meta.middlewareCount || (model.middleware || []).length,
       environmentCount: meta.environmentCount || (model.environments || []).length,
       layerCount: meta.layerCount || (model.layers || []).length,
+      k8sResourceCount: meta.k8sResourceCount || k8sResources.length,
       parseErrors: meta.parseErrors || 0,
     },
     typeDist,
@@ -172,6 +194,7 @@ export function buildDeployViewerModel(model) {
     environments,
     files,
     fileGroups,
+    k8s,
     k8sResourceCounts: model.k8sResourceCounts || {},
     audits: {
       health: healthAudit,
@@ -250,6 +273,7 @@ ${SHARED_CSS}
   <div class="stats" id="stats"></div>
   <div class="tabs">
     <button class="tab-btn active" data-tab="topology">部署拓扑</button>
+    ${model.k8s?.present ? '<button class="tab-btn" data-tab="k8s">K8s 架构</button>' : ''}
     <button class="tab-btn" data-tab="services">服务清单</button>
     <button class="tab-btn" data-tab="routes">网关路由</button>
     <button class="tab-btn" data-tab="deps">依赖关系</button>
@@ -263,6 +287,22 @@ ${SHARED_CSS}
 <section class="view active" id="view-topology">
   <div id="topology"></div>
 </section>
+${model.k8s?.present ? `
+<section class="view" id="view-k8s">
+  <div class="metric-row" id="k8s-metrics"></div>
+  <div class="search-bar">
+    <input type="text" id="k8s-search" placeholder="搜索 K8s 资源名 / 镜像 / kind..." oninput="renderK8s()">
+    <div class="chip-filters" id="k8s-ns-filters"></div>
+  </div>
+  <h2 style="font-size:16px;margin-bottom:12px;">工作负载 <span style="color:var(--fg-dim);font-weight:400;font-size:12px;">(Deployment / StatefulSet / DaemonSet / Job / CronJob / ReplicaSet)</span></h2>
+  <div class="panel" id="k8s-workloads"></div>
+  <h2 style="font-size:16px;margin:16px 0 12px;">Service 服务发现 <span style="color:var(--fg-dim);font-weight:400;font-size:12px;">(ClusterIP / NodePort / LoadBalancer → selector 工作负载)</span></h2>
+  <div class="panel" id="k8s-services"></div>
+  <h2 style="font-size:16px;margin:16px 0 12px;">Ingress 入口路由 <span style="color:var(--fg-dim);font-weight:400;font-size:12px;">(host / path → 后端 Service)</span></h2>
+  <div class="panel" id="k8s-ingresses"></div>
+  <h2 style="font-size:16px;margin:16px 0 12px;">配置与存储 <span style="color:var(--fg-dim);font-weight:400;font-size:12px;">(ConfigMap / Secret / PersistentVolumeClaim)</span></h2>
+  <div class="panel" id="k8s-configs"></div>
+</section>` : ''}
 <section class="view" id="view-services">
   <div class="search-bar">
     <input type="text" id="svc-search" placeholder="搜索服务名 / 镜像..." oninput="renderServices()">
@@ -763,7 +803,172 @@ function depReset() {
     ).join('') + '</div></div>' : '');
 })();
 
-// ---- 8. 健康审计 ----
+// ---- 8. K8s 架构（仅扫描数据含 K8s manifest 时渲染） ----
+let k8sNs = 'all';
+
+function k8sMatch(r, query) {
+  if (k8sNs !== 'all' && (r.namespace || 'default') !== k8sNs) return false;
+  if (!query) return true;
+  if ((r.name || '').toLowerCase().includes(query) || (r.kind || '').toLowerCase().includes(query)) return true;
+  return (r.containers || []).some(c => (c.image || '').toLowerCase().includes(query) || (c.name || '').toLowerCase().includes(query));
+}
+
+function k8sProbeBadges(w) {
+  const hasReady = (w.containers || []).some(c => c.readinessProbe);
+  const hasLive = (w.containers || []).some(c => c.livenessProbe);
+  const out = [];
+  if (hasReady) out.push('<span class="badge" style="color:var(--green);border-color:rgba(74,222,128,.4);">readiness</span>');
+  if (hasLive) out.push('<span class="badge" style="color:var(--green);border-color:rgba(74,222,128,.4);">liveness</span>');
+  if (!out.length) out.push('<span class="badge" style="color:var(--amber);border-color:rgba(210,153,34,.4);">无探针</span>');
+  return out.join(' ');
+}
+
+function k8sResourceLimits(w) {
+  const parts = [];
+  (w.containers || []).forEach(c => {
+    if (c.resources && c.resources.limits) {
+      const s = Object.entries(c.resources.limits).map(([rk, rv]) => rk + '=' + rv).join(' ');
+      if (s) parts.push(((w.containers || []).length > 1 ? (c.name || '?') + ': ' : '') + s);
+    }
+  });
+  return parts.join(' | ');
+}
+
+function k8sConfigRefTags(w) {
+  const refs = [];
+  (w.containers || []).forEach(c => {
+    (c.envRefs || []).forEach(r => refs.push(r.type + ':' + r.ref));
+    (c.envFrom || []).forEach(r => refs.push(r.type + ':' + r.ref));
+  });
+  return [...new Set(refs)].map(t => '<span class="consumer-tag">' + esc(t) + '</span>').join('');
+}
+
+function renderK8s() {
+  const k = MODEL.k8s;
+  if (!k || !k.present) return;
+  const query = (document.getElementById('k8s-search')?.value || '').toLowerCase();
+  const wl = k.workloads.filter(r => k8sMatch(r, query));
+  const svcs = k.services.filter(r => k8sMatch(r, query));
+  const cfgs = k.configs.filter(r => k8sMatch(r, query));
+  const pvcs = k.storage.filter(r => k8sMatch(r, query));
+  const ings = k.ingresses.filter(r => {
+    if (k8sNs !== 'all' && (r.namespace || 'default') !== k8sNs) return false;
+    if (!query) return true;
+    if ((r.name || '').toLowerCase().includes(query)) return true;
+    return (r.paths || []).some(p => ((p.path || '') + ' ' + (p.serviceName || '') + ' ' + (p.host || '')).toLowerCase().includes(query));
+  });
+
+  document.getElementById('k8s-metrics').innerHTML = [
+    { v: k.total, l: 'K8s 资源' },
+    { v: k.workloads.length, l: '工作负载' },
+    { v: k.services.length, l: 'Service' },
+    { v: k.ingresses.reduce((s, i) => s + (i.paths || []).length, 0), l: 'Ingress 路由' },
+    { v: k.configs.length, l: 'ConfigMap/Secret' },
+    { v: k.storage.length, l: 'PVC' },
+    { v: k.namespaces.length, l: '命名空间' },
+  ].map(m => '<div class="metric-card"><div class="metric-val">' + m.v + '</div><div class="metric-label">' + m.l + '</div></div>').join('');
+
+  const wlEl = document.getElementById('k8s-workloads');
+  if (wl.length === 0) wlEl.innerHTML = '<div class="empty">无匹配的工作负载</div>';
+  else wlEl.innerHTML = '<table><thead><tr><th>名称</th><th>Kind</th><th>命名空间</th><th>副本</th><th>镜像</th><th>探针</th><th>资源限额</th><th>配置引用</th><th>来源</th></tr></thead><tbody>' +
+    wl.map(w => {
+      const images = (w.containers || []).map(c => '<div class="mono" style="font-size:11px;word-break:break-all;">' + esc(c.image || c.name || '') + '</div>').join('');
+      const limits = k8sResourceLimits(w);
+      const cfgTags = k8sConfigRefTags(w);
+      return '<tr>' +
+        '<td class="mono">' + esc(w.name) + '</td>' +
+        '<td><span class="badge">' + esc(w.kind) + '</span></td>' +
+        '<td class="mono">' + esc(w.namespace || 'default') + '</td>' +
+        '<td>' + (w.replicas != null ? '×' + w.replicas : '—') + '</td>' +
+        '<td>' + (images || '—') + '</td>' +
+        '<td>' + k8sProbeBadges(w) + '</td>' +
+        '<td class="mono" style="font-size:11px;">' + (limits ? esc(limits) : '<span style="color:var(--amber);">未限额</span>') + '</td>' +
+        '<td>' + (cfgTags || '—') + '</td>' +
+        '<td class="mono" style="font-size:11px;color:var(--fg-faint);">' + esc(w.source) + '</td>' +
+      '</tr>';
+    }).join('') +
+  '</tbody></table>';
+
+  const svcEl = document.getElementById('k8s-services');
+  if (svcs.length === 0) svcEl.innerHTML = '<div class="empty">无匹配的 Service</div>';
+  else svcEl.innerHTML = '<table><thead><tr><th>名称</th><th>类型</th><th>命名空间</th><th>端口映射</th><th>selector</th><th>来源</th></tr></thead><tbody>' +
+    svcs.map(s => {
+      const ports = (s.ports || []).map(p => esc(p.port) + (p.targetPort !== p.port ? '→' + esc(p.targetPort) : '') + (p.name ? ' (' + esc(p.name) + ')' : '')).join('<br>');
+      const selector = Object.entries(s.selector || {}).map(([sk, sv]) => '<span class="consumer-tag">' + esc(sk) + '=' + esc(sv) + '</span>').join('');
+      return '<tr>' +
+        '<td class="mono">' + esc(s.name) + '</td>' +
+        '<td><span class="badge">' + esc(s.serviceType || 'ClusterIP') + '</span></td>' +
+        '<td class="mono">' + esc(s.namespace || 'default') + '</td>' +
+        '<td class="mono">' + (ports || '—') + '</td>' +
+        '<td>' + (selector || '<span style="color:var(--fg-faint);">—</span>') + '</td>' +
+        '<td class="mono" style="font-size:11px;color:var(--fg-faint);">' + esc(s.source) + '</td>' +
+      '</tr>';
+    }).join('') +
+  '</tbody></table>';
+
+  const ingEl = document.getElementById('k8s-ingresses');
+  if (ings.length === 0) ingEl.innerHTML = '<div class="empty">' + (k.ingresses.length === 0 ? '未发现 K8s Ingress 资源（入口流量可能由 nginx 网关 / Service NodePort 承担）' : '无匹配的 Ingress') + '</div>';
+  else ingEl.innerHTML = '<table><thead><tr><th>Ingress</th><th>命名空间</th><th>Host</th><th>路径</th><th>后端 Service</th><th>来源</th></tr></thead><tbody>' +
+    ings.map(i => (i.paths || []).map(p =>
+      '<tr>' +
+        '<td class="mono">' + esc(i.name) + '</td>' +
+        '<td class="mono">' + esc(i.namespace || 'default') + '</td>' +
+        '<td class="mono">' + esc(p.host || i.hosts?.[0] || '*') + '</td>' +
+        '<td class="mono">' + esc(p.path || '/') + '</td>' +
+        '<td class="mono" style="color:var(--green);">' + esc(p.serviceName || '?') + (p.servicePort != null ? ':' + esc(p.servicePort) : '') + '</td>' +
+        '<td class="mono" style="font-size:11px;color:var(--fg-faint);">' + esc(i.source) + '</td>' +
+      '</tr>'
+    ).join('') || '<tr><td class="mono">' + esc(i.name) + '</td><td colspan="5" style="color:var(--fg-faint);">无规则</td></tr>').join('') +
+  '</tbody></table>';
+
+  const cfgEl = document.getElementById('k8s-configs');
+  const cfgList = [...cfgs, ...pvcs];
+  if (cfgList.length === 0) cfgEl.innerHTML = '<div class="empty">无匹配的 ConfigMap / Secret / PVC</div>';
+  else cfgEl.innerHTML = '<table><thead><tr><th>Kind</th><th>名称</th><th>命名空间</th><th>详情</th><th>键 / 模式</th><th>来源</th></tr></thead><tbody>' +
+    cfgList.map(c => {
+      let detail = '';
+      let keys = '';
+      if (c.kind === 'PersistentVolumeClaim') {
+        detail = esc(c.storage || '?') + ' · ' + esc((c.accessModes || []).join(', '));
+        keys = '<span class="consumer-tag">' + esc((c.accessModes || []).join(' / ')) + '</span>';
+      } else if (c.kind === 'Secret') {
+        detail = c.dataKeyCount + ' 个键 · ' + (c.dataSize > 1024 ? (c.dataSize / 1024).toFixed(1) + ' KB' : c.dataSize + ' B');
+        keys = '<span style="color:var(--fg-faint);">键名已隐藏</span>';
+      } else {
+        detail = (c.dataKeyCount || 0) + ' 个键 · ' + ((c.dataSize || 0) > 1024 ? (c.dataSize / 1024).toFixed(1) + ' KB' : (c.dataSize || 0) + ' B');
+        keys = (c.dataKeys || []).slice(0, 10).map(kk => '<span class="consumer-tag">' + esc(kk) + '</span>').join('') +
+          ((c.dataKeys || []).length > 10 ? '<span style="color:var(--fg-faint);font-size:11px;"> +' + ((c.dataKeys || []).length - 10) + '</span>' : '');
+      }
+      return '<tr>' +
+        '<td><span class="badge">' + esc(c.kind) + '</span></td>' +
+        '<td class="mono">' + esc(c.name) + '</td>' +
+        '<td class="mono">' + esc(c.namespace || 'default') + '</td>' +
+        '<td>' + esc(detail) + '</td>' +
+        '<td>' + keys + '</td>' +
+        '<td class="mono" style="font-size:11px;color:var(--fg-faint);">' + esc(c.source) + '</td>' +
+      '</tr>';
+    }).join('') +
+  '</tbody></table>' + ((k.others || []).length ?
+    '<div style="margin-top:10px;font-size:12px;color:var(--fg-dim);">其他资源：' + k.others.map(o => '<span class="consumer-tag">' + esc(o.kind + ' ' + (o.name || '')) + '</span>').join('') + '</div>' : '');
+}
+
+(function() {
+  const k = MODEL.k8s;
+  if (!k || !k.present) return;
+  document.getElementById('k8s-ns-filters').innerHTML =
+    '<div class="chip active" data-ns="all" onclick="setK8sNs(this,\\'all\\')">全部</div>' +
+    k.namespaces.map(ns => '<div class="chip" data-ns="' + esc(ns) + '" onclick="setK8sNs(this,\\'' + esc(ns) + '\\')">' + esc(ns) + '</div>').join('');
+  renderK8s();
+})();
+
+function setK8sNs(chip, ns) {
+  document.querySelectorAll('#k8s-ns-filters .chip').forEach(f => f.classList.remove('active'));
+  chip.classList.add('active');
+  k8sNs = ns;
+  renderK8s();
+}
+
+// ---- 9. 健康审计 ----
 (function() {
   const h = MODEL.audits?.health;
   if (!h) return;
