@@ -272,3 +272,130 @@ test('RPC 链 v0.42.1：linkRouteToEndpoint 双向字段一致（ep ↔ route �
     assert.equal(typeof ep.apiMatch.endpointMethod, 'string');
   }
 });
+
+// ---- v0.44.0（ADR 0012 D3/D4）：method 消解 + 人工规则层 ----
+
+// 同 path 不同 method 的多路由：POST 端点应命中 POST 路由（而非声明顺序在前的 GET）
+const SERVER_PY_DUP_PATH = [
+  'from fastapi import FastAPI',
+  'app = FastAPI()',
+  '',
+  '@app.get("/api/users")',
+  'def list_users():',
+  '    return []',
+  '',
+  '@app.post("/api/users")',
+  'def create_user():',
+  '    return {}',
+].join('\n');
+
+const CLIENT_PY_DUP_PATH = [
+  'import requests',
+  '',
+  'def load():',
+  '    requests.get("http://localhost:8000/api/users")',
+  '',
+  'def save():',
+  '    requests.post("http://localhost:8000/api/users")',
+].join('\n');
+
+test('RPC 链 v0.44.0：同路径多路由按 method 消解（POST 端点命中 POST 路由）', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-rpc-method-'));
+  fs.writeFileSync(path.join(dir, 'server.py'), SERVER_PY_DUP_PATH);
+  fs.writeFileSync(path.join(dir, 'client.py'), CLIENT_PY_DUP_PATH);
+  try {
+    const dm = await buildOntologyData(dir);
+    const nets = dm.NetworkEndpoint ?? [];
+    const getEp = nets.find((n) => n.methods[0] === 'GET');
+    const postEp = nets.find((n) => n.methods[0] === 'POST');
+    const getRoute = (dm.Route ?? []).find((r) => r.routePath === '/api/users' && (r.apiMethods ?? []).includes('GET'));
+    const postRoute = (dm.Route ?? []).find((r) => r.routePath === '/api/users' && (r.apiMethods ?? []).includes('POST'));
+
+    assert.equal(getEp.serverRouteId, getRoute.id, `GET 端点应命中 GET 路由，实际 ${getEp.serverRouteId}`);
+    assert.equal(postEp.serverRouteId, postRoute.id, `POST 端点应命中 POST 路由（而非声明顺序在前的 GET），实际 ${postEp.serverRouteId}`);
+    assert.equal(postEp.apiMatch.methodMatches, true);
+    assert.deepEqual(postEp.apiMatch.routeMethods, ['POST']);
+    assert.equal(postEp.apiMatch.matchedVia, undefined, '自动命中无 matchedVia');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('RPC 链 v0.44.0：无规则文件时 ruleMatched=0 且 rulesCount=0（行为与 v0.43 一致）', async () => {
+  const { dataMap } = await buildPyFixture();
+  const st = dataMap._meta.rpcChain;
+  assert.equal(st.ruleMatched, 0);
+  assert.equal(st.rulesCount, 0);
+  assert.equal(st.rulesWarnings, undefined);
+});
+
+test('RPC 链 v0.44.0：人工规则命中（网关前缀改写）+ matchedVia 回执 + 统计', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-rpc-rule-'));
+  fs.writeFileSync(path.join(dir, 'server.py'), [
+    'from fastapi import FastAPI',
+    'app = FastAPI()',
+    '',
+    '@app.get("/v2/api/users")',
+    'def list_users():',
+    '    return []',
+  ].join('\n'));
+  // 客户端经网关前缀 /gw-api 访问，自动匹配不命中 → 规则改写后命中
+  fs.writeFileSync(path.join(dir, 'client.py'), [
+    'import requests',
+    '',
+    'def load():',
+    '    requests.get("http://gateway.internal/gw-api/users")',
+  ].join('\n'));
+  fs.mkdirSync(path.join(dir, '.nice-aos'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.nice-aos', 'api-routes.json'), JSON.stringify({
+    rules: [{ from: '/gw-api', to: '/v2/api', comment: '网关前缀改写' }],
+  }));
+  try {
+    const dm = await buildOntologyData(dir);
+    const ep = (dm.NetworkEndpoint ?? []).find((n) => n.url.includes('/gw-api/users'));
+    assert.ok(ep?.serverRouteId, `规则改写后应命中，实际 ${JSON.stringify(ep?.apiMatch)}`);
+    assert.equal(ep.serverRoutePath, '/v2/api/users');
+    assert.equal(ep.apiMatch.matchedVia, 'rule:/gw-api→/v2/api');
+    const st = dm._meta.rpcChain;
+    assert.equal(st.matched, 1);
+    assert.equal(st.ruleMatched, 1);
+    assert.equal(st.rulesCount, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('RPC 链 v0.44.0：规则不劫持自动命中 + 非法规则条目记 warning 不阻断', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-rpc-rule2-'));
+  fs.writeFileSync(path.join(dir, 'server.py'), [
+    'from fastapi import FastAPI',
+    'app = FastAPI()',
+    '',
+    '@app.get("/api/users")',
+    'def list_users():',
+    '    return []',
+  ].join('\n'));
+  fs.writeFileSync(path.join(dir, 'client.py'), [
+    'import requests',
+    '',
+    'def load():',
+    '    requests.get("http://localhost:8000/api/users")',
+  ].join('\n'));
+  fs.mkdirSync(path.join(dir, '.nice-aos'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.nice-aos', 'api-routes.json'), JSON.stringify([
+    { from: '/api', to: '/v2/api' },   // 若被前置劫持，会把 /api/users 错改写到 /v2/api/users
+    { from: 'bad', to: '/x' },         // 非法条目：跳过并记 warning
+  ]));
+  try {
+    const dm = await buildOntologyData(dir);
+    const ep = (dm.NetworkEndpoint ?? []).find((n) => n.url.includes('/api/users'));
+    assert.equal(ep.serverRouteId, 'route:/api/users');
+    assert.equal(ep.apiMatch.matchedVia, undefined, '自动命中不应带 matchedVia');
+    const st = dm._meta.rpcChain;
+    assert.equal(st.ruleMatched, 0);
+    assert.equal(st.rulesCount, 1);
+    assert.equal(st.rulesWarnings?.length, 1, JSON.stringify(st.rulesWarnings));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

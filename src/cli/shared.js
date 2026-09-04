@@ -64,6 +64,28 @@ export function matchesWhere(obj, conditions) {
   });
 }
 
+// --field 字段投影（ADR 0012 D1，借鉴 asdm-aos）：
+//   'id,name,filePath' → ['id','name','filePath']；逗号分隔、trim、去空；空/undefined → null
+export function parseFields(spec) {
+  if (!spec) return null;
+  const fields = spec.split(',').map((f) => f.trim()).filter(Boolean);
+  return fields.length ? fields : null;
+}
+
+// 字段白名单投影：id 恒保留（agent 定位锚点）；对象上不存在的请求字段不产生键，
+// 投影结果 = 该对象实际拥有的白名单子集（不产生 undefined 键，JSON 序列化稳定）
+export function projectObjects(objects, fields) {
+  if (!fields || !Array.isArray(objects)) return objects;
+  return objects.map((o) => {
+    const out = {};
+    for (const f of fields) {
+      if (f === 'id' || Object.prototype.hasOwnProperty.call(o, f)) out[f] = o[f];
+    }
+    if (!('id' in out) && Object.prototype.hasOwnProperty.call(o, 'id')) out.id = o.id;
+    return out;
+  });
+}
+
 export function outputJson(objects) {
   console.log(JSON.stringify(objects, null, 2));
 }

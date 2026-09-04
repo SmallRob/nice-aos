@@ -12,6 +12,7 @@ import { setOverviewSnapshotDir } from '../overview/overviewSnapshot.js';
 import { setStorageMode, setSqlitePath, setBlueprint, closeDb } from '../storage/index.js';
 import { OBJECT_TYPES, LINK_TYPES } from '../ontology/blueprint.js';
 import { queryCommand } from './commands/query.js';
+import { countCommand } from './commands/count.js';
 import { linkCommand } from './commands/link.js';
 import { actionCommand } from './commands/action.js';
 import { exportCommand } from './commands/export.js';
@@ -80,6 +81,7 @@ program
   });
 
 program.addCommand(queryCommand);
+program.addCommand(countCommand); // ADR 0012 D2：按类型计数（单行 JSON，agent 聚合用）
 program.addCommand(linkCommand);
 program.addCommand(actionCommand);
 program.addCommand(exportCommand);

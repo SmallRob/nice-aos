@@ -2,6 +2,43 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.44.0] - 2026-09-04
+
+### 借鉴 asdm-aos：查询投影/计数、RPC 匹配强化、SKILL 行为契约
+
+对上游 @leansoftx/asdm-aos v0.0.24 的第二轮定向借鉴（第一轮见 ADR 0001/0002），
+吸收三个经对方实战验证的点。详见 `docs/adr/0012-aos-borrow-query-projection-rpc-rules-skill-contract.md`。
+
+#### 查询投影与计数（agent 上下文友好）
+
+- **`query --field id,name,filePath`** — 字段白名单投影（`id` 恒保留），在 where/limit 之后应用；
+  同一公共件（`parseFields`/`projectObjects`）接入三处消费方：CLI query、serve `/api/objects?fields=`、
+  MCP `query_objects.fields`
+- **新命令 `count <type> [--where]`** — 单行紧凑 JSON `{"ok":true,"type":...,"total":N}`，
+  供 agent 判断数量级后再决定 query 是否 `--all`（顶层命令 18 → 19）
+
+#### RPC 匹配强化（method 消解 + 人工规则层，不改 ADR 0010 D3 软校验哲学）
+
+- **`matchApiRouteEx`**：method 作同路径多路由的**消解优先级**（1 字面量+method → 2 字面量 →
+  3 通配+method → 4 通配；`MIXED` 视为未定跳过 method 阶梯）；不做硬门——路径唯一命中时
+  method 不一致仍建链，`methodMatches` 照旧如实记录；`matchApiRoute` 变薄包装，既有调用方行为零变化
+- **人工路由规则文件 `<root>/.nice-aos/api-routes.json`**：段级前缀改写（`{"rules":[{"from":"/gw-api","to":"/v2/api"}]}`，
+  裸数组亦接受），仅在自动阶梯全部未命中后重试（不劫持自动命中）；文件缺失零警告，非法条目跳过记
+  `rulesWarnings` 不阻断构建（借鉴 asdm-aos 阶梯 5 / matchedVia 可审计设计）
+- 数据形态：`NetworkEndpoint.apiMatch.matchedVia`（仅规则命中，`rule:/gw-api→/v2/api`）、
+  `_meta.rpcChain.ruleMatched` / `rulesCount`（/`rulesWarnings`）
+
+#### SKILL 行为契约（nice-aos-skill 试点）
+
+- 新增**查询纪律**（先样本后过滤 / 投影降 token / 大输出先缩小）与**停止条件表**
+  （importedBy 递归不假设层数、callsApi 未命中 ≠ 链路不存在、methodMatches=false 是如实记录、
+  网关改写走规则文件等），命令参考补 `--field` 与 `count` 用法
+
+#### 其他
+
+- `test/hubContracts.test.mjs` 的 cli/shared.js 导出冻结清单登记 `parseFields`/`projectObjects`
+- 新增测试：`test/queryProjection.test.mjs`（13 例）+ `test/rpcChain.test.mjs` +4 例
+
 ## [0.43.0] - 2026-08-31
 
 ### 画布作为 output 的第六种格式：架构图与蓝图产出的同构

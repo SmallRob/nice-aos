@@ -236,6 +236,8 @@ query Dependency --where "source=undeclared"      # 未声明依赖（治理点�
 query Store --where "hasPersist=true"             # 持久化 store（核对 storageKey 命名）
 query Module --where "archLayer=state" --pretty   # 按语义架构层过滤模块
 query Component --where "domainIds=dom:health"    # 按功能域过滤成员
+query Method --where "name~login" --field id,name,ownerName   # 字段投影：只取需要的列（id 恒保留），大幅省 token
+query SourceFile --limit 3 --field id,name        # 防呆：先看 3 条真实样本的字段与取值，再写 --where
 
 # ---- 类型实体（接口/类/方法）----
 query Method --where "name~createinterface" --all   # 按名找方法：一次命中接口签名/类实现/模块函数
@@ -252,6 +254,18 @@ query UserScript --where "riskLevel=high"        # 高风险脚本（请求劫�
 ```
 
 `--where` 语法：逗号分隔多条件 AND；`k=v`（或 `k:v`）精确相等，`k~v` 模糊匹配（子串包含，忽略大小写）；值为数组时精确做成员包含、模糊做任一成员包含（如 `hooksUsed=useEffect`）。
+
+`--field` 投影（v0.44.0）：逗号分隔字段白名单，`id` 恒保留；对象上不存在的字段不产生键。与 serve `/api/objects?fields=` 和 MCP `query_objects.fields` 同语义。
+
+### count — 计数（v0.44.0）
+
+```bash
+count Component                            # 单行 JSON：{"ok":true,"type":"Component","total":176}
+count Method --where "ownerKind=interface" # 带过滤计数
+count UserScript --where "riskLevel=high"  # 高风险脚本数量
+```
+
+输出为单行紧凑 JSON（无缩进），供 agent 聚合判断与 jq 管道；判断"数量级"时先 count 再决定 query 是否 --all，避免大输出。
 
 ### link — 遍历关系
 
@@ -472,6 +486,25 @@ link implements --src "class:src/impl/localStorage.ts#LocalStorage"  # 实现了
 | 用户想让 codebuddy/opencode 等外部 AI CLI 理解本项目 | `ask "<问题>"`（快照上下文自动注入；`--serve` 附带 HTTP 深查端点；未装 AI CLI 时报错并提示安装） |
 | ask 时快照缺失或为空项目（fileCount=0） | ask 自动执行 refreshRepo 重建快照后作答，无需手动先跑；仅 CI 等显式控制场景用 `--no-auto-refresh` |
 | markReviewed/addNote | 执行 review 类任务后主动回写，下次会话可恢复上下文（JSON 与 SQLite 镜像双写） |
+
+### 查询纪律（防呆三则）
+
+| 纪律 | 做法 |
+|------|------|
+| 先样本后过滤 | 首次查询不熟悉的对象类型，先 `query <Type> --limit 3 --field id,name` 看真实字段与取值，再写 `--where`——**不要凭猜测写字段名或取值**（字段拼写错误不会报错，只会静默返回空） |
+| 投影降 token | 已知要什么列就用 `--field id,name,...`；全字段输出只在首次探查时用 |
+| 大输出先缩小 | 判断数量级先 `count <Type> [--where]`；`--all` 输出数万行时会撑爆上下文，必须先 `--where`/`--limit` 缩小，确需全量时落临时文件再分段读，**不要直接管道** |
+
+### 停止条件（何时停止追溯，不要无限调试）
+
+| 现象 | 判断 | 动作 |
+|------|------|------|
+| `link importedBy` 递归影响面 | 不要假设层数 | 每层结果数趋近 0 即到叶子；影响面大时汇总 top 层而非穷举 |
+| `link callsApi` 端点未命中任何路由 | ≠ 链路不存在 | PHP（zentaopms）与 next-api 路由不在匹配范围（SERVER_API_ROUTE_TYPES 仅 go/python）；网关/nginx 前缀改写需人工规则文件 `<root>/.nice-aos/api-routes.json` |
+| `apiMatch.methodMatches=false` | 如实记录，不是 bug | method 软校验：路径命中即建链；跨语言 API diff 场景这正是要报告的差异 |
+| 网关改写需建模 | 人工输入规则 | 写 `.nice-aos/api-routes.json`：`{"rules":[{"from":"/gw-api","to":"/v2/api"}]}` 后重新 refreshRepo；规则命中会带 `apiMatch.matchedVia` 可审计 |
+| `~` 模糊匹配返回多条 | 先看候选再下结论 | MCP 侧自动带歧义候选（epistemic envelope）；CLI 侧用 `--field id,name` 自查同名对象 |
+| 同一查询连续两种写法都查不到 | 停止试错 | 回到 `query <Type> --limit 3` 看真实数据形态；仍无 → 该实体类型在本仓库不存在（可能是正常现象，如无 Store 的项目），向用户说明而不是继续猜测 |
 
 ## 输出格式
 

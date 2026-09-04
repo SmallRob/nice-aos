@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { Command } from 'commander';
-import { fail, parseWhere, matchesWhere, resolveSnapshotDirs } from '../shared.js';
+import { fail, parseWhere, matchesWhere, parseFields, projectObjects, resolveSnapshotDirs } from '../shared.js';
 import { checkAuth, parseTokens, authorizeRole, minRoleFor, ROLES } from './serveAuth.js';
 import { createRateLimiter, clientKeyOf } from './rateLimiter.js';
 import { buildOpenApiSpec, ENDPOINTS } from './serveOpenApi.js';
@@ -115,7 +115,7 @@ ${row('本体元模型', true, `<a href="/api/schema">/api/schema</a> — ${OBJE
 <li><code>GET /api/status</code> — 服务状态与端点清单</li>
 <li><code>GET /api/stats</code> — 快照对象统计摘要</li>
 <li><code>GET /api/schema</code> — 本体元模型（对象/链接/动作 schema,借鉴 asdm-aos）</li>
-<li><code>GET /api/objects/:type</code> — 对象级查询（?where=k=v,k2~v2&amp;limit=200；SQLite 优先，回退 JSON）</li>
+<li><code>GET /api/objects/:type</code> — 对象级查询（?where=k=v,k2~v2&amp;limit=200&amp;fields=id,name；SQLite 优先，回退 JSON）</li>
 <li><code>GET /api/ask/context</code> — ask 上下文（?q=问题；4 次 SQL 预过滤，回退 JSON）</li>
 <li><code>GET /</code> — 本页</li>
 </ul>
@@ -322,8 +322,9 @@ export const serveCommand = new Command('serve')
         }, null, 2), { 'Content-Type': 'application/json; charset=utf-8' });
         return;
       }
-      // 对象级查询：GET /api/objects/:type?where=k=v,k2~v2&limit=200
+      // 对象级查询：GET /api/objects/:type?where=k=v,k2~v2&limit=200&fields=id,name
       // 取数走 SQL（loadType 毫秒级），SQLite 不可用/无快照时回退 JSON；过滤统一内存（两路 where 语义一致）
+      // fields（ADR 0012 D1）：字段白名单投影，id 恒保留
       const objMatch = url.match(/^\/api\/objects\/([A-Za-z]+)$/);
       if (objMatch) {
         const type = objMatch[1];
@@ -354,14 +355,17 @@ export const serveCommand = new Command('serve')
         const filtered = conditions ? objects.filter((o) => matchesWhere(o, conditions)) : objects;
         const total = filtered.length;
         const truncated = limit > 0 && total > limit;
+        let result = truncated ? filtered.slice(0, limit) : filtered;
+        const fields = parseFields(query.get('fields'));
+        if (fields) result = projectObjects(result, fields);
         respond(res, 200, JSON.stringify({
           ok: true,
           type,
           source,
-          count: truncated ? limit : total,
+          count: result.length,
           total,
           truncated,
-          objects: truncated ? filtered.slice(0, limit) : filtered,
+          objects: result,
         }));
         return;
       }

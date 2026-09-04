@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import { analyzeOverlayRoutes, analyzeJsxRoutes, analyzeDataRouterRoutes } from '../analyzers/overlayAnalyzer.js';
 import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { uniqueId } from './builderUtils.js';
-import { SERVER_API_ROUTE_TYPES, apiPathSegments, matchApiRoute, linkRouteToEndpoint } from './rpcMatch.js';
+import { SERVER_API_ROUTE_TYPES, apiPathSegments, matchApiRoute, matchApiRouteEx, linkRouteToEndpoint } from './rpcMatch.js';
+import { loadApiRouteRules } from './apiRouteRules.js';
 
 export function builderRoutesPhase(ctx) {
   const {
@@ -690,27 +691,36 @@ export function builderRoutesPhase(ctx) {
   // 目标侧扩到 go + python 两类服务端路由。
   // method 仍为软校验：路径命中即建链，method 是否一致记在 apiMatch.methodMatches
   // （与 7c-d 的"method 不一致仍记录"同哲学，并为候选 3 的跨语言 API diff 留数据）。
+  // v0.44.0（ADR 0012 D3/D4）：method 升级为同路径多路由的消解优先级（matchApiRouteEx 阶梯，
+  // 不做硬门）；自动未命中后重试人工规则（.nice-aos/api-routes.json），规则命中记 apiMatch.matchedVia。
   let rpcChainStats = null;
   {
     const serverRoutes = routes.filter((r) => SERVER_API_ROUTE_TYPES.includes(r.routeType));
     const pyEndpoints = networkEndpoints.filter((n) => n.direction === 'outbound' && n.lang === 'python');
     if (serverRoutes.length > 0 && pyEndpoints.length > 0) {
+      const { rules, warnings: rulesWarnings } = loadApiRouteRules(projectRoot);
       const routeSegsList = serverRoutes.map((r) => ({ r, segs: apiPathSegments(r.routePath) ?? [] }));
       let matched = 0;
       let methodMismatch = 0;
+      let ruleMatched = 0;
       for (const ep of pyEndpoints) {
         const segs = apiPathSegments(ep.url);
         if (!segs) continue; // 纯变量 URL，静态不可解析
-        const route = matchApiRoute(segs, routeSegsList);
-        if (!route) continue;
+        const hit = matchApiRouteEx(segs, routeSegsList, { method: ep.methods[0], rules });
+        if (!hit) continue;
+        const route = hit.route;
         // apiMethods 口径不统一：Go 路由是数组 [method]，Python 路由是裸字符串。
         // 归一为数组，否则字符串上的 includes 会退化成子串匹配（如 'POST'.includes('OST') 误为 true）
         const rawMethods = route.apiMethods ?? [];
         const routeMethods = Array.isArray(rawMethods) ? rawMethods : (rawMethods ? [rawMethods] : []);
         const methodMatches = routeMethods.length === 0 || routeMethods.includes('*') || routeMethods.includes(ep.methods[0]);
         // v0.42.1: 双向字段集中到 helper，避免单边赋值失败导致反向查询失配
-        linkRouteToEndpoint(route, ep, { methodMatches, routeMethods, endpointMethod: ep.methods[0] });
+        // v0.44.0: 规则命中附 matchedVia 回执（自动命中无该字段）
+        const apiMatch = { methodMatches, routeMethods, endpointMethod: ep.methods[0] };
+        if (hit.via) apiMatch.matchedVia = hit.via;
+        linkRouteToEndpoint(route, ep, apiMatch);
         matched += 1;
+        if (hit.via) ruleMatched += 1;
         if (!methodMatches) methodMismatch += 1;
       }
       rpcChainStats = {
@@ -719,6 +729,9 @@ export function builderRoutesPhase(ctx) {
         matched,
         methodMismatch,
         unresolved: pyEndpoints.length - matched,
+        ruleMatched,
+        rulesCount: rules.length,
+        ...(rulesWarnings.length ? { rulesWarnings } : {}),
       };
     }
   }

@@ -19,7 +19,8 @@ const sortedKeys = (ns) => Object.keys(ns).sort();
 test('cli/shared.js：导出名清单冻结', () => {
   assert.deepEqual(sortedKeys(cliShared), [
     'fail', 'loadSnapshotFile', 'matchesWhere', 'outputJson',
-    'outputPretty', 'parseWhere', 'resolveSnapshotDirs', 'succeed',
+    'outputPretty', 'parseFields', 'parseWhere', 'projectObjects',
+    'resolveSnapshotDirs', 'succeed',
   ]);
 });
 

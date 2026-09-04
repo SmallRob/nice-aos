@@ -27,6 +27,7 @@
 
 import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META } from './blueprint.js';
 import { linkWithMeta2, linkBfsWithMeta } from './linkMeta.js';
+import { projectObjects } from '../cli/shared.js'; // ADR 0012 D1：字段白名单投影（与 CLI query --field 同语义）
 
 /**
  * 解析 where 条件字符串 "k=v,k2~v2" 为 [{key, op, value}] 数组。
@@ -152,7 +153,7 @@ export function createToolRegistry({ snap }) {
 
     {
       name: 'query_objects',
-      description: '按类型与条件查询对象。type 必填（必为 20 种对象类型之一）；where 形如 "k=v,k2~v2"（= 全等、~ 包含）；limit 默认 200。返回 {ok, type, source, count, total, truncated, objects: [...]}',
+      description: '按类型与条件查询对象。type 必填（必为 20 种对象类型之一）；where 形如 "k=v,k2~v2"（= 全等、~ 包含）；limit 默认 200；fields 为字段白名单投影（id 恒保留）。返回 {ok, type, source, count, total, truncated, objects: [...]}',
       inputSchema: {
         type: 'object',
         properties: {
@@ -171,10 +172,15 @@ export function createToolRegistry({ snap }) {
             default: 200,
             minimum: 0,
           },
+          fields: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '字段白名单投影，如 ["id","name"]；id 恒保留，对象上不存在的字段不产生键',
+          },
         },
         required: ['type'],
       },
-      handler: async ({ type, where, limit = 200 }) => {
+      handler: async ({ type, where, limit = 200, fields }) => {
         if (!OBJECT_TYPES.some((t) => t.type === type)) {
           return {
             ok: false,
@@ -213,7 +219,7 @@ export function createToolRegistry({ snap }) {
           count: truncated ? limit : total,
           total,
           truncated,
-          objects: truncated ? filtered.slice(0, limit) : filtered,
+          objects: projectObjects(truncated ? filtered.slice(0, limit) : filtered, Array.isArray(fields) && fields.length ? fields : null),
           ...(Object.keys(meta).length ? { _meta: meta } : {}),
         };
       },
