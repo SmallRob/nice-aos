@@ -213,13 +213,23 @@ export function createToolRegistry({ snap }) {
             meta.ambiguity = { queriedName: nameCond.value, distinctNames: groups.size, candidates };
           }
         }
+        // v0.44.1 审核 S4：MCP fields 数组入口归一（trim/去空/去重，稳定保序），
+        // 与 CLI --field / HTTP fields 的 parseFields 语义对齐
+        const normFields = Array.isArray(fields)
+          ? [...new Set(fields.map((f) => (typeof f === 'string' ? f.trim() : '')).filter(Boolean))]
+          : null;
+        const projected = projectObjects(
+          truncated ? filtered.slice(0, limit) : filtered,
+          normFields && normFields.length ? normFields : null,
+        );
         return {
           ok: true,
           type,
-          count: truncated ? limit : total,
+          // v0.44.1 审核 S2：count 口径与 serve /api/objects 对齐 = 实际返回条数 objects.length
+          count: projected.length,
           total,
           truncated,
-          objects: projectObjects(truncated ? filtered.slice(0, limit) : filtered, Array.isArray(fields) && fields.length ? fields : null),
+          objects: projected,
           ...(Object.keys(meta).length ? { _meta: meta } : {}),
         };
       },

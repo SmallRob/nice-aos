@@ -79,8 +79,11 @@ export function projectObjects(objects, fields) {
   return objects.map((o) => {
     const out = {};
     for (const f of fields) {
-      if (f === 'id' || Object.prototype.hasOwnProperty.call(o, f)) out[f] = o[f];
+      // v0.44.1 审核 S3：id 与其它字段一致仅 hasOwn 才写——
+      // 请求了不存在的 id 不产生键（原实现会写入 id: undefined 且阻止补写）
+      if (Object.prototype.hasOwnProperty.call(o, f)) out[f] = o[f];
     }
+    // id 恒保留：请求未显式带 id 且对象有 id 时补到末尾（键序稳定）
     if (!('id' in out) && Object.prototype.hasOwnProperty.call(o, 'id')) out.id = o.id;
     return out;
   });

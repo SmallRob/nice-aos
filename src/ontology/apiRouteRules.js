@@ -37,10 +37,17 @@ export function loadApiRouteRules(projectRoot) {
       warnings.push(`规则 #${i} 缺少以 / 开头的 from/to，已跳过: ${JSON.stringify(r)}`);
       continue;
     }
+    // v0.44.1 审核 B1：from 归一后必须非空 —— from: "/" 得空段数组，
+    // rewriteByRule 空前缀循环 0 次 → 隐式改写所有未自动命中的路径
+    const fromSegs = toSegs(from);
+    if (fromSegs.length === 0) {
+      warnings.push(`规则 #${i} from 归一后为空（from: "${from}"），已跳过: ${JSON.stringify(r)}`);
+      continue;
+    }
     rules.push({
       from,
       to,
-      fromSegs: toSegs(from),
+      fromSegs,
       toSegs: toSegs(to),
       comment: typeof r?.comment === 'string' ? r.comment : null,
     });

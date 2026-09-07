@@ -40,8 +40,9 @@ const isLiteralHit = (segs, reqSegs) =>
   segs.length === reqSegs.length && segs.every((s) => !isParamSeg(s)) && segs.every((s, i) => s === reqSegs[i]);
 const isWildHit = (segs, reqSegs) => {
   if (segs.length === reqSegs.length) return segs.every((s, i) => (isParamSeg(s) || s === reqSegs[i]));
-  // 后端尾段 *wildcard 可吞掉请求剩余段
-  if (segs.length < reqSegs.length && segs.some((s) => s.startsWith('*'))) {
+  // 后端尾段 *wildcard 可吞掉请求剩余段（v0.44.1 审核 S1：仅限尾段 *；
+  // 中间段 * 走等长 isParamSeg 语义、不吞段，防 /api/*x/users 式误配）
+  if (segs.length < reqSegs.length && segs.at(-1)?.startsWith('*')) {
     const prefix = segs.slice(0, -1);
     return prefix.length <= reqSegs.length && prefix.every((s, i) => (isParamSeg(s) || s === reqSegs[i]));
   }

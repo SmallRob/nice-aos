@@ -243,6 +243,18 @@ test('serve SQL 端点（JSON 回退）：--sqlite off 时两个端点走 JSON',
   assert.equal(fuzzy.json.total, 1);
   assert.equal(fuzzy.json.objects[0].id, 'file:src/b.ts');
 
+  // v0.44.1（S5）：HTTP fields 投影 + count=result.length 契约
+  const projected = await get(port, '/api/objects/Component?fields=name');
+  assert.equal(projected.json.ok, true);
+  assert.deepEqual(projected.json.objects, [{ name: 'A', id: 'comp:A' }]);
+  assert.equal(projected.json.count, projected.json.objects.length);
+
+  const sliced = await get(port, '/api/objects/SourceFile?limit=1&fields=id');
+  assert.equal(sliced.json.truncated, true);
+  assert.equal(sliced.json.total, 2);
+  assert.equal(sliced.json.count, 1);
+  assert.deepEqual(sliced.json.objects, [{ id: 'file:src/a.ts' }]);
+
   const ctx = await get(port, '/api/ask/context');
   assert.equal(ctx.status, 200);
   assert.equal(ctx.json.source, 'json');

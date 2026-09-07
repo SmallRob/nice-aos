@@ -128,6 +128,24 @@ test('query_objects where= 全等过滤', async () => {
   assert.equal(r.objects[0].id, 'comp:Card');
 });
 
+test('query_objects fields 投影：入口归一（trim/去空/去重）+ count=objects.length（S2/S4）', async () => {
+  const reg = createToolRegistry({ snap: FIXTURE });
+  const r = await reg.call('query_objects', { type: 'Component', fields: [' name ', '', 'name', 'ghost'] });
+  assert.equal(r.ok, true);
+  assert.equal(r.count, 2);
+  assert.equal(r.count, r.objects.length);
+  for (const o of r.objects) {
+    assert.deepEqual(Object.keys(o), ['name', 'id'], JSON.stringify(o));
+  }
+  // limit 截断时 count 仍 = 实际返回条数
+  const cut = await reg.call('query_objects', { type: 'Method', limit: 1, fields: ['name'] });
+  assert.equal(cut.truncated, true);
+  assert.equal(cut.total, 3);
+  assert.equal(cut.count, 1);
+  assert.equal(cut.objects.length, 1);
+  assert.deepEqual(Object.keys(cut.objects[0]), ['name', 'id']);
+});
+
 test('query_objects where~ 包含过滤', async () => {
   const reg = createToolRegistry({ snap: FIXTURE });
   const r = await reg.call('query_objects', { type: 'Component', where: 'name~utton' });

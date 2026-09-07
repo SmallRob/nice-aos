@@ -219,3 +219,57 @@ test('D1 CLI query --field：投影 + where + limit 联用', () => {
     cleanup();
   }
 });
+
+// ---- v0.44.1 审核回归（B1/S1/S3/S5）----
+
+test('D1 projectObjects：请求 id 但对象无 id 时不产生键（S3）', () => {
+  const objects = [{ name: 'a' }, { id: 'mtd:2', name: 'b' }];
+  const out = projectObjects(objects, ['id', 'name']);
+  assert.deepEqual(out, [{ name: 'a' }, { id: 'mtd:2', name: 'b' }], JSON.stringify(out));
+  // 请求显式带 id 且对象有 id：位置按请求顺序
+  const out2 = projectObjects([{ id: 'mtd:1', name: 'a' }], ['id', 'name']);
+  assert.deepEqual(out2, [{ id: 'mtd:1', name: 'a' }]);
+});
+
+test('D3 尾段 *wildcard 吞多段；中间 * 不吞段（S1 回归）', () => {
+  const list = routes([
+    { id: 'route:GET /api/files/*path', routePath: '/api/files/*path', apiMethods: ['GET'] },
+    { id: 'route:GET /api/*x/users', routePath: '/api/*x/users', apiMethods: ['GET'] },
+  ]);
+  // 尾段 *：可吞掉请求剩余段
+  assert.equal(matchApiRouteEx(['api', 'files', 'a', 'b', 'c'], list, {}).route.id, 'route:GET /api/files/*path');
+  // 中间 * + 请求更长：不吞段、整体不命中（v0.44.1 收紧）
+  assert.equal(matchApiRouteEx(['api', 'a', 'b', 'c', 'users'], list, {}), null);
+  // 等长时中间 * 仍按单段参数匹配（语义保持）
+  assert.equal(matchApiRouteEx(['api', 'a', 'users'], list, {}).route.id, 'route:GET /api/*x/users');
+});
+
+test('D4 规则 from 归一后为空（from: "/"）→ skip + warning（B1 回归）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-rules-'));
+  fs.mkdirSync(path.join(dir, '.nice-aos'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.nice-aos', 'api-routes.json'), JSON.stringify({
+    rules: [
+      { from: '/', to: '/v2/api' },
+      { from: '///', to: '/x' },
+      { from: '/gw-api/', to: '/v2/api' },
+    ],
+  }));
+  const { rules, warnings } = loadApiRouteRules(dir);
+  assert.deepEqual(rules, [{ from: '/gw-api/', to: '/v2/api', fromSegs: ['gw-api'], toSegs: ['v2', 'api'], comment: null }]);
+  assert.equal(warnings.length, 2);
+  assert.ok(warnings.every((w) => w.includes('归一后为空')));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('D1 CLI query --field + --limit 联用：截断后投影保留 id 锚点（S5）', () => {
+  const { tmp, cleanup } = makeTmpSnapshot();
+  try {
+    const r = runCli(['query', 'Method', '--limit', '1', '--field', 'name', '--snapshot-dir', path.join(tmp, '.nice-aos', 'data')], tmp);
+    assert.equal(r.status, 0, r.stderr);
+    const objects = JSON.parse(r.stdout);
+    assert.equal(objects.length, 1);
+    assert.deepEqual(objects, [{ name: 'a', id: 'method:a.ts#a' }], r.stdout);
+  } finally {
+    cleanup();
+  }
+});
