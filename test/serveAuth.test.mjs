@@ -112,7 +112,8 @@ test('启用 --token：Bearer 头带正确 token → 200', async (t) => {
   assert.equal(r.json.auth.enabled, true);
   // v0.34.0：保护范围新增 /internal/broadcast；public 列表新增 /openapi.json；v0.38 新增 /docs（/context/ 前缀豁免不入列表）
   assert.deepEqual(r.json.auth.protected, ['/api/*', '/internal/broadcast', '/ws/snapshot']);
-  assert.deepEqual(r.json.auth.public, ['/', '/snapshot.json', '/blueprint.html', '/openapi.json', '/docs', '/docs/']);
+  // v0.45.0：public 列表新增 overview-snapshot.json / overview.html（与 snapshot.json / blueprint.html 同列公共静态）
+  assert.deepEqual(r.json.auth.public, ['/', '/snapshot.json', '/blueprint.html', '/overview-snapshot.json', '/overview.html', '/openapi.json', '/docs', '/docs/']);
 });
 
 test('启用 --token：?token= query 也能通过', async (t) => {

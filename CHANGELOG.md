@@ -2,6 +2,79 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.45.0] - 2026-09-18
+
+### aos 蓝图交互增强 + serve 强化 + 代码库自动监听
+
+针对全景架构蓝图（aos 蓝图）三条主轴：**交互密度**（原本只有 Tab 切换，落后于 service/db/deploy 蓝图）、
+**serve 暴露**（overview 文件未被监听，serve 与 overview watch 是两段独立链路）、
+**自动化**（手动跑 `export` 才能触发通知）一次性补齐。
+
+#### 1. `overview watch` —— 代码库变更后自动重扫 + 导出 + 通知 serve
+
+新增子命令 `nice-aos overview watch --projects-dir <root>`：
+- **文件监听核心** `src/overview/fileWatcher.js`：纯 Node 内置 `fs.watch` + `fs.watchFile`（项目保持零三方依赖），递归监听目录树，跳过 `node_modules / .git / dist / build / target` 等
+- **防抖 + burst 检测**：默认 1500ms 窗口吸收 IDE / git pull 短时高频事件；burst 时延后 2× interval，避免连击
+- **settling window**：start 后 `interval` 毫秒内忽略 fs.watch 伪事件（macOS kqueue 挂监听后立即 fire 一次的副作用）
+- **baseline 去重**：start 时扫一遍目标 (mtime, size) 指纹，fire 时 statSync 对比，只把真变化的路径交给 onChange
+- **优雅退出**：SIGINT / SIGTERM / SIGHUP 触发 watcher.close() 清 timer + 关闭所有 fs.watch handle + 关闭 SQLite
+- **触发回调**：scanOverview → saveOverviewSnapshot → 导出（默认 html，可选 html / viewmodel / canvas / json 任意组合）→ notifyServe({ event: 'overview:changed', paths })
+- **重入保护**：回调尚未 settle 时新事件只标记 dirty，结束后再补跑一次（避免扫描期间又被新事件打断）
+- **一次性模式 `--once`**：CI 冒烟测试用，跑一次就退出不进入监听循环
+
+CLI 用例：
+
+```bash
+nice-aos overview watch --projects-dir ../multi-projects \
+  --interval 1500 \
+  --export-formats html,canvas \
+  --output-dir ../docs/overview
+# 终端 Ctrl+C 退出，stderr 打印每次触发结果与累计统计
+```
+
+#### 2. serve 把 overview 也纳入监听与广播
+
+- **`serveWebSocket.js` 重构为多文件监听**：`attachWebSocketUpgrade` 接受 `files: [{path, event}]` 数组，兼容旧 `snapPath + bpPath` 接口（自动转 files）
+- **新增事件 `overview:changed`**：overview-snapshot.json / overview.html 任一 mtime/size 变化即广播，payload 加 `path` 字段方便客户端按路径分发
+- **snapshot:changed 兼容旧 client**：payload 仍带 `kind: 'code'` 字段（v0.33 老 client 兼容）
+- **hello 帧扩展**：除 `snapshot` / `blueprint` 外，新增 `frames: { snapshot, blueprint, overview }` map；老 client 仍能解析 `snapshot` / `blueprint` 字段
+- **`serve.js` 加 overview 公共静态端点**：`/overview-snapshot.json` + `/overview.html`（404 时提示 `nice-aos overview scan + export`）
+- **`PUBLIC_PATHS` 扩 2 个**：overview 端点与 snapshot.json / blueprint.html 同列公共静态（鉴权豁免）
+- **banner + index html + `/api/status`**：overview 行加 '✓/✗' 状态显示，`/api/status` 返回 `overview: { snapReady, bpReady, snapPath, bpPath, wsEvent }`
+
+#### 3. overview 蓝图交互密度对齐 service / db / deploy 蓝图
+
+原 `overviewViewer.js` 仅有 1 处交互（Tab 切换），现在补齐：
+
+- **服务清单（services tab）即时搜索** + Java 服务复选过滤
+- **技术栈（tech tab）**：search 输入 + 框架 chips 多选过滤（chips 实时显示每框架项目数）
+- **部署拓扑（deployment tab）**：search 输入 + 端口范围 min/max 数值过滤
+- **卡片点击展开**：每张服务卡可点击展开查看完整技术栈 / 端口 / 依赖 / 路径
+- **复制按钮 ⧉**：服务名 / 端口一键复制到剪贴板（`navigator.clipboard.writeText` + `execCommand('copy')` 兜底）
+- **URL hash 同步**：Tab 切换写 `location.hash = '#tab=xxx'`，刷新可还原、可分享链接
+- **回到顶部浮动按钮**：滚动 > 400px 显示，圆角按钮 smooth scroll 到顶部
+- **Toast 提示**：复制成功 / 失败瞬时反馈
+- **meta-info 实时统计**：每个 tab 工具栏右侧显示"共 X 项，显示 Y 项"
+
+#### 4. 代码精简（overviewViewer.js）
+
+- `renderTable(headers, rows, opts)` 辅助函数替换 6 处 `<table><thead><tbody>` 字符串模板拷贝（services / tech Java / integration crossMatrix / integration javaCrossDeps / deployment ports / compose / nginx 共 8 个表）
+- `escapeHtml(s)` + `escapeAttr(s)` 两个工具取代原 `escape()` 单函数（属性上下文安全）
+- `cardsHtml` 风格统计行用数组 + map 一次性产出（6 张卡片）
+- JS 交互脚本独立 IIFE，单一 `DOMContentLoaded` 入口，注释分 7 段（tab / settling / search / filter / copy / back-top / toast）
+
+#### 5. 测试
+
+- `test/overviewWatcher.test.mjs`（8 例）：collectFingerprint 跳过规则、start() baseline 计数、防抖合并、settling 窗口过滤伪事件、删除 fireNow 报告、close() 资源清理、state() 字段、interval 下限 200ms、单文件 watchFile 跨平台
+- `test/overviewViewer.test.mjs`（12 例）：buildOverviewViewerModel 字段聚合 + 缺失字段默认值、HTML 骨架 7 Tab + 6 卡片 + 7 panel、3 个 toolbar 属性锚点、交互脚本关键字（hash / copy / debounce / search target / port min-max / back-top / toast）、svc 卡片 data-name + copy-btn、人类知识空 / 满渲染、HTML / 属性转义、crossMatrix 行、nginx / port / compose 都渲染、totals 反映在卡片
+- `test/serveAuth.test.mjs` 更新：`auth.public` 新增 `/overview-snapshot.json` / `/overview.html` 两个公共静态端点
+
+#### 6. 兼容性
+
+- `attachWebSocketUpgrade(server, opts)` 旧调用 `snapPath + bpPath` 仍可用（自动转 files 数组）
+- WS hello 帧保留 `snapshot` / `blueprint` 字段，老 client 不需要升级
+- snapshot:changed payload 保留 `kind: 'code'`，老 client 鉴权 / 路由逻辑零变化
+
 ## [0.44.0] - 2026-09-04
 
 ### 借鉴 asdm-aos：查询投影/计数、RPC 匹配强化、SKILL 行为契约

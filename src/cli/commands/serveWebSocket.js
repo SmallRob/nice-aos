@@ -125,28 +125,44 @@ export function buildCloseFrame(code = 1000, reason = '') {
 // attachWebSocketUpgrade(server, opts) —— 把 WS upgrade handler 整体封装。
 // 让 serve.js 不必再关心 wsClients / 定时器 / 帧解析等内部状态。
 //
+// 支持多文件轮询（v0.45.0 起，overview.html / overview-snapshot.json 一起监听）：
+//   opts.files: [{ path: string, event: 'snapshot:changed'|'blueprint:changed'|'overview:changed' }]
+//   旧 opts.snapPath + opts.bpPath 仍兼容（自动转 files）
+//
 // @param {import('node:http').Server} server
 // @param {{
-//   snapPath: string,
-//   bpPath: string,
-//   intervalMs: number,           // 0 = 关闭轮询
-//   authToken: string|null,       // null = 鉴权关闭
+//   files?: Array<{path: string, event: string}>,
+//   snapPath?: string,             // 兼容旧接口（v0.45.0 前）
+//   bpPath?: string,               // 兼容旧接口
+//   intervalMs: number,            // 0 = 关闭轮询
+//   authToken: string|null,        // null = 鉴权关闭
 //   checkAuth: (req, token) => { ok: boolean, reason?: string },
 // }} opts
 // @returns {{
 //   enabled: boolean,             // intervalMs > 0
 //   intervalMs: number,
 //   clients: Set,                 // 当前 WS 客户端集合（测试与 banner 用）
+//   files: Array<{path, event}>,  // 当前监听的文件清单
 // }}
 //
 // 设计：
 //   - 仅 1 个共享 mtime 轮询定时器（与连接数无关）
+//   - 每个文件独立指纹 + 独立事件类型（多文件支持）
 //   - 客户端连接 / 断开 / 收 ping 都触发帧处理（parseFrame）
 //   - 鉴权：query ?token= 或 Authorization header（用 serve.js 传入的 checkAuth）
-//   - 帧格式 text/json；事件 type ∈ ['hello','snapshot:changed','blueprint:changed','pong']
+//   - 帧格式 text/json；事件 type ∈ ['hello','snapshot:changed','blueprint:changed','overview:changed','pong']
 export function attachWebSocketUpgrade(server, opts) {
-  const { snapPath, bpPath, authToken, checkAuth } = opts;
+  const { authToken, checkAuth } = opts;
   const wsIntervalMs = Math.max(0, opts.intervalMs | 0);
+
+  // 规范化 files 数组：旧接口（snapPath + bpPath）→ 新 files；新接口直接用
+  let files = Array.isArray(opts.files) ? opts.files.filter((f) => f && f.path && f.event) : [];
+  if (files.length === 0 && (opts.snapPath || opts.bpPath)) {
+    if (opts.snapPath) files.push({ path: opts.snapPath, event: 'snapshot:changed' });
+    if (opts.bpPath) files.push({ path: opts.bpPath, event: 'blueprint:changed' });
+  }
+  files = files.map((f) => ({ path: f.path, event: String(f.event) }));
+
   const wsClients = new Set();
 
   // 计算文件指纹（mtime + size；空文件用 0）
@@ -157,12 +173,11 @@ export function attachWebSocketUpgrade(server, opts) {
     } catch { return { mtime: 0, size: 0 }; }
   }
 
-  let lastSnapMtime = 0;
-  let lastSnapSize = 0;
-  let lastBpMtime = 0;
-  let lastBpSize = 0;
-  ({ mtime: lastSnapMtime, size: lastSnapSize } = fileFingerprint(snapPath));
-  ({ mtime: lastBpMtime, size: lastBpSize } = fileFingerprint(bpPath));
+  // 每个文件一个指纹槽
+  const fps = files.map((f) => {
+    const fp = fileFingerprint(f.path);
+    return { ...f, lastMtime: fp.mtime, lastSize: fp.size };
+  });
 
   function broadcastWs(obj) {
     if (wsClients.size === 0) return;
@@ -172,20 +187,20 @@ export function attachWebSocketUpgrade(server, opts) {
     }
   }
 
-  // 单定时器：所有客户端共享
-  if (wsIntervalMs > 0) {
+  // 单定时器：所有客户端共享；多文件一并轮询
+  if (wsIntervalMs > 0 && fps.length > 0) {
     const pollTimer = setInterval(() => {
-      const snapFp = fileFingerprint(snapPath);
-      if (snapFp.mtime !== lastSnapMtime || snapFp.size !== lastSnapSize) {
-        lastSnapMtime = snapFp.mtime;
-        lastSnapSize = snapFp.size;
-        broadcastWs({ type: 'snapshot:changed', kind: 'code', ts: Date.now(), mtime: snapFp.mtime, size: snapFp.size });
-      }
-      const bpFp = fileFingerprint(bpPath);
-      if (bpFp.mtime !== lastBpMtime || bpFp.size !== lastBpSize) {
-        lastBpMtime = bpFp.mtime;
-        lastBpSize = bpFp.size;
-        broadcastWs({ type: 'blueprint:changed', ts: Date.now(), mtime: bpFp.mtime, size: bpFp.size });
+      for (const slot of fps) {
+        const fp = fileFingerprint(slot.path);
+        if (fp.mtime !== slot.lastMtime || fp.size !== slot.lastSize) {
+          slot.lastMtime = fp.mtime;
+          slot.lastSize = fp.size;
+          // broadcast payload: type + ts + path + mtime + size + (可选 kind: 'code' for snapshot)
+          // kind 兼容 v0.33 旧 client：snapshot:changed 携带 kind='code' 表示本体快照
+          const payload = { type: slot.event, ts: Date.now(), path: slot.path, mtime: fp.mtime, size: fp.size };
+          if (slot.event === 'snapshot:changed') payload.kind = 'code';
+          broadcastWs(payload);
+        }
       }
     }, wsIntervalMs);
     pollTimer.unref?.(); // 不阻止进程退出
@@ -224,12 +239,24 @@ export function attachWebSocketUpgrade(server, opts) {
     socket.write(buildHandshakeResponse(acceptKey));
 
     wsClients.add(socket);
+    // 构造 hello 帧：把所有文件的初始指纹一起下发给客户端（向前兼容老 client：snapshot/blueprint 字段保留）
+    const helloFiles = {};
+    for (const slot of fps) {
+      helloFiles[slot.event.replace(':changed', '')] = {
+        mtime: slot.lastMtime,
+        size: slot.lastSize,
+        ready: slot.lastMtime > 0,
+        path: slot.path,
+      };
+    }
     try {
       socket.write(buildTextFrame(JSON.stringify({
         type: 'hello',
         ts: Date.now(),
-        snapshot: { mtime: lastSnapMtime, size: lastSnapSize, ready: lastSnapMtime > 0 },
-        blueprint: { mtime: lastBpMtime, size: lastBpSize, ready: lastBpMtime > 0 },
+        files: helloFiles,
+        // 兼容老 client 字段名
+        snapshot: helloFiles.snapshot,
+        blueprint: helloFiles.blueprint,
         wsIntervalMs,
         auth: { enabled: !!authToken },
       })));
@@ -264,5 +291,5 @@ export function attachWebSocketUpgrade(server, opts) {
     socket.on('error', () => { wsClients.delete(socket); });
   });
 
-  return { enabled: wsIntervalMs > 0, intervalMs: wsIntervalMs, clients: wsClients, broadcast: broadcastWs };
+  return { enabled: wsIntervalMs > 0, intervalMs: wsIntervalMs, clients: wsClients, broadcast: broadcastWs, files: fps };
 }

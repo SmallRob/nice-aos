@@ -89,7 +89,7 @@ function probeSnapshot(snapPath) {
   return { state: 'ok', snap };
 }
 
-function buildIndexHtml({ root, dataDir, docsDir, snapReady, bpReady, docsReady }) {
+function buildIndexHtml({ root, dataDir, docsDir, snapReady, bpReady, docsReady, overviewSnapReady, overviewBpReady }) {
   const row = (label, ok, extra) =>
     `<tr><td style="padding:6px 12px;border-bottom:1px solid #eee">${label}</td><td style="padding:6px 12px;border-bottom:1px solid #eee;color:${ok ? '#15803d' : '#b91c1c'}">${ok ? '就绪' : '缺失'}</td><td style="padding:6px 12px;border-bottom:1px solid #eee;color:#64748b;font-size:12px">${extra || ''}</td></tr>`;
   return `<!doctype html>
@@ -104,6 +104,8 @@ ${row('项目根目录', true, root)}
 ${row('快照目录', snapReady !== 'none', dataDir)}
 ${row('快照 snapshot.json', snapReady === 'ok', `<a href="/snapshot.json">/snapshot.json</a>`)}
 ${row('蓝图 blueprint.html', bpReady, bpReady ? '<a href="/blueprint.html">/blueprint.html</a>' : '' )}
+${row('全景架构 overview-snapshot.json', overviewSnapReady, overviewSnapReady ? `<a href="/overview-snapshot.json">/overview-snapshot.json</a>` : `<code>nice-aos overview scan</code> 生成`)}
+${row('全景架构 overview.html', overviewBpReady, overviewBpReady ? '<a href="/overview.html">/overview.html</a>' : `<code>nice-aos overview export --format html</code> 生成`)}
 ${row('项目文档（output docs）', docsReady, docsReady ? '<a href="/docs">/docs</a> · <a href="/context/index.md">/context/index.md</a>' : `<code>nice-aos output docs</code> 生成（${docsDir}）`)}
 ${row('本体元模型', true, `<a href="/api/schema">/api/schema</a> — ${OBJECT_TYPES.length} 对象 / ${LINK_TYPES.length} 链接`)}
 </table>
@@ -111,6 +113,8 @@ ${row('本体元模型', true, `<a href="/api/schema">/api/schema</a> — ${OBJE
 <ul style="line-height:2">
 <li><code>GET /snapshot.json</code> — 本体快照 JSON（供 AI agent 拉取）</li>
 <li><code>GET /blueprint.html</code> — ${bpReady ? '蓝图页面' : '（未生成）'}</li>
+<li><code>GET /overview-snapshot.json</code> — ${overviewSnapReady ? '全景架构快照 JSON' : '（未生成，先 nice-aos overview scan）'}</li>
+<li><code>GET /overview.html</code> — ${overviewBpReady ? '全景架构蓝图页面' : '（未生成）'}</li>
 <li><code>GET /docs</code> — ${docsReady ? '项目文档浏览页' : '（未生成，先 output docs）'}；<code>GET /context/&lt;path&gt;</code> — 文档 md/json 静态资源</li>
 <li><code>GET /api/status</code> — 服务状态与端点清单</li>
 <li><code>GET /api/stats</code> — 快照对象统计摘要</li>
@@ -119,7 +123,7 @@ ${row('本体元模型', true, `<a href="/api/schema">/api/schema</a> — ${OBJE
 <li><code>GET /api/ask/context</code> — ask 上下文（?q=问题；4 次 SQL 预过滤，回退 JSON）</li>
 <li><code>GET /</code> — 本页</li>
 </ul>
-<p style="color:#64748b;font-size:12px;margin-top:24px">提示：若快照缺失请先执行 <code>nice-aos action refreshRepo</code>；蓝图为 <code>nice-aos export --format html</code>；文档为 <code>nice-aos output docs</code>。</p>
+<p style="color:#64748b;font-size:12px;margin-top:24px">提示：若快照缺失请先执行 <code>nice-aos action refreshRepo</code>；蓝图为 <code>nice-aos export --format html</code>；全景架构蓝图 <code>nice-aos overview scan + overview export --format html</code>；文档为 <code>nice-aos output docs</code>。<br>启用自动监听：<code>nice-aos overview watch --projects-dir &lt;root&gt;</code>（v0.45+）</p>
 </body></html>`;
 }
 
@@ -138,6 +142,10 @@ export const serveCommand = new Command('serve')
     const { root, dataDir } = resolveSnapshotDirs(opts);
     const snapPath = path.join(dataDir, 'snapshot.json');
     const bpPath = path.join(root, 'blueprint.html');
+    // v0.45：overview（全景架构）—— 与 snapshot.json / blueprint.html 同列公共静态资源
+    // 监听 file-mtime 触发 overview:changed WebSocket 广播，配合 `nice-aos overview watch` 形成自动化
+    const overviewSnapPath = path.join(dataDir, 'overview-snapshot.json');
+    const overviewBpPath = path.join(dataDir, 'overview.html');
     // v0.38：docs 文档目录（output docs 产物）；/docs 浏览器入口 + /context/* 静态资源
     const docsDir = path.resolve(opts.docsDir || path.join(root, '.nice-aos', 'context'));
     const docsViewerPath = path.join(docsDir, 'docs.html');
@@ -179,7 +187,8 @@ export const serveCommand = new Command('serve')
 
       // 鉴权 + 端点分级（srv-6）：静态端点豁免；其余按 minRoleFor(method,url) 校验角色
       // v0.38：/docs/ 与 /context/ 为 output docs 产物（md/json/浏览器），与 blueprint.html 同为公共静态端点
-      const PUBLIC_PATHS = new Set(['/', '/snapshot.json', '/blueprint.html', '/openapi.json', '/docs', '/docs/']);
+      // v0.45：overview 蓝图与 snapshot 同列公共静态（只读 HTML/JSON，与 blueprint.html 同等待遇）
+      const PUBLIC_PATHS = new Set(['/', '/snapshot.json', '/blueprint.html', '/overview-snapshot.json', '/overview.html', '/openapi.json', '/docs', '/docs/']);
       const isPublicStatic = PUBLIC_PATHS.has(url) || url.startsWith('/docs/') || url.startsWith('/context/');
       if (authTokens.length > 0 && !isPublicStatic) {
         const verdict = authorizeRole(req, authTokens, minRoleFor(req.method, url));
@@ -195,9 +204,11 @@ export const serveCommand = new Command('serve')
       const { state: snapState, snap } = probeSnapshot(snapPath);
       const bpReady = fs.existsSync(bpPath);
       const docsReady = fs.existsSync(docsViewerPath);
+      const overviewSnapReady = fs.existsSync(overviewSnapPath);
+      const overviewBpReady = fs.existsSync(overviewBpPath);
 
       if (url === '/') {
-        respond(res, 200, buildIndexHtml({ root, dataDir, docsDir, snapReady: snapState, bpReady, docsReady }), { 'Content-Type': 'text/html; charset=utf-8' });
+        respond(res, 200, buildIndexHtml({ root, dataDir, docsDir, snapReady: snapState, bpReady, docsReady, overviewSnapReady, overviewBpReady }), { 'Content-Type': 'text/html; charset=utf-8' });
         return;
       }
       if (url === '/snapshot.json') {
@@ -209,6 +220,17 @@ export const serveCommand = new Command('serve')
       if (url === '/blueprint.html') {
         if (!bpReady) return respond(res, 404, JSON.stringify({ ok: false, error: '未找到 blueprint.html，请先执行 nice-aos export --format html', root }));
         respond(res, 200, fs.readFileSync(bpPath), { 'Content-Type': 'text/html; charset=utf-8' });
+        return;
+      }
+      // v0.45：overview 蓝图公共静态端点（与 /blueprint.html 同等待遇，仅 GET 公开读）
+      if (url === '/overview-snapshot.json') {
+        if (!overviewSnapReady) return respond(res, 404, JSON.stringify({ ok: false, error: '未找到 overview-snapshot.json，请先执行 nice-aos overview scan', snapshotDir: dataDir }));
+        respond(res, 200, fs.readFileSync(overviewSnapPath), { 'Content-Type': 'application/json; charset=utf-8' });
+        return;
+      }
+      if (url === '/overview.html') {
+        if (!overviewBpReady) return respond(res, 404, JSON.stringify({ ok: false, error: '未找到 overview.html，请先执行 nice-aos overview export --format html', snapshotDir: dataDir }));
+        respond(res, 200, fs.readFileSync(overviewBpPath), { 'Content-Type': 'text/html; charset=utf-8' });
         return;
       }
       // v0.38：/docs/ —— output docs 生成的自包含文档浏览器（运行时按需 fetch ./tree.json 与 ./<path>.md）。
@@ -277,6 +299,7 @@ export const serveCommand = new Command('serve')
           root, snapshotDir: dataDir,
           snapshot: { ready: snapState === 'ok', path: snapPath, state: snapState },
           blueprint: { ready: bpReady, path: bpPath },
+          overview: { snapReady: overviewSnapReady, bpReady: overviewBpReady, snapPath: overviewSnapPath, bpPath: overviewBpPath, wsEvent: 'overview:changed' },
           docs: { ready: docsReady, dir: docsDir, viewer: '/docs', context: '/context/<path>' },
           endpoints: [...ENDPOINTS.map((e) => e.path), '/ws/snapshot'].filter((v, i, a) => a.indexOf(v) === i),
           cors: '*',
@@ -585,13 +608,18 @@ export const serveCommand = new Command('serve')
       else fail(`服务启动失败: ${err.message}`);
     });
 
-    // ---- WebSocket：/ws/snapshot 推送（mtime 轮询）----
+    // ---- WebSocket：/ws/snapshot 推送（mtime 轮询，多文件）----
     // 整段 upgrade handler + 轮询定时器抽到 serveWebSocket.js 的 attachWebSocketUpgrade
     // （v0.33.0 精简：serve.js 不再混合 WS 实现细节，只传 authToken / 路径给模块）
+    // v0.45：files 数组取代旧 snapPath/bpPath；overview-snapshot.json + overview.html 一并纳入轮询
     const wsIntervalMs = Math.max(0, parseInt(opts.wsInterval, 10) || 0);
     const wsState = attachWebSocketUpgrade(server, {
-      snapPath,
-      bpPath,
+      files: [
+        { path: snapPath, event: 'snapshot:changed' },
+        { path: bpPath, event: 'blueprint:changed' },
+        { path: overviewSnapPath, event: 'overview:changed' },
+        { path: overviewBpPath, event: 'overview:changed' },
+      ],
       intervalMs: wsIntervalMs,
       authToken,
       checkAuth,
@@ -611,9 +639,11 @@ export const serveCommand = new Command('serve')
           process.on(sig, () => { cleanupOnce(); process.exit(0); });
         } catch { /* ignore */ }
       }
-      const line = (label, ok, note) => `  ${ok ? '✓' : '✗'}  ${label.padEnd(18)} ${note || ''}`;
+      const line = (label, ok, note) => `  ${ok ? '✓' : '✗'}  ${label.padEnd(22)} ${note || ''}`;
       const { state: snapState } = probeSnapshot(snapPath);
       const bpReady = fs.existsSync(bpPath);
+      const overviewSnapReady = fs.existsSync(overviewSnapPath);
+      const overviewBpReady = fs.existsSync(overviewBpPath);
       console.log(`\n  AOS 数据源服务已启动  →  http://${host}:${actualPort}\n`);
       console.log('  --- 数据源目录 ---');
       console.log(`  root        ${root}`);
@@ -628,18 +658,24 @@ export const serveCommand = new Command('serve')
         console.log(`  rate-limit  每 IP 窗口内上限 ${rateMax}（${Math.round((parseInt(opts.windowMs, 10) || 60000) / 1000)}s 窗口）`);
       }
       if (wsIntervalMs > 0) {
-        console.log(`  ws          /ws/snapshot 推送启用（mtime 轮询 ${wsIntervalMs}ms）`);
+        const wsFileCount = wsState?.files?.length ?? 2;
+        console.log(`  ws          /ws/snapshot 推送启用（mtime 轮询 ${wsIntervalMs}ms，${wsFileCount} 文件）`);
       } else {
         console.log(`  ws          关闭（--ws-interval 0）`);
       }
       console.log(line('snapshot.json', snapState === 'ok', snapPath));
       console.log(line('blueprint.html', bpReady, bpPath));
+      console.log(line('overview-snapshot.json', overviewSnapReady, overviewSnapPath));
+      console.log(line('overview.html', overviewBpReady, overviewBpPath));
       if (snapState === 'none') console.log('  （未找到快照，可先执行: nice-aos action refreshRepo）');
       if (snapState === 'gone') console.log('  （snapshot.json 存在但解析失败）');
       if (!bpReady) console.log('  （未找到蓝图，可先执行: nice-aos export --format html）');
+      if (!overviewSnapReady || !overviewBpReady) console.log('  （全景架构蓝图未生成，可先执行: nice-aos overview scan + overview export --format html；或 overview watch 自动监听）');
       console.log('\n  --- 端点 ---');
       console.log('    GET /snapshot.json      本体快照（供 AI agent / 油猴脚本跨源拉取）');
       if (bpReady) console.log(`    GET /blueprint.html    蓝图页面 http://${host}:${actualPort}/blueprint.html`);
+      if (overviewSnapReady) console.log(`    GET /overview-snapshot.json 全景架构快照（多项目聚合）`);
+      if (overviewBpReady) console.log(`    GET /overview.html     全景架构蓝图页面 http://${host}:${actualPort}/overview.html`);
       console.log('    GET /api/status         服务状态与端点清单');
       console.log('    GET /api/stats          快照对象统计摘要');
       console.log('    GET /api/schema         本体元模型(对象/链接/动作 schema,借鉴 asdm-aos)');
