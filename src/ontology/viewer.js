@@ -46,6 +46,7 @@ ${BLUEPRINT_CSS}
   <div class="sub" id="v-sub"></div>
   <nav class="tabs">
     <div class="tab active" data-tab="overview">总览</div>
+    <div class="tab" data-tab="ontology">本体概览</div>
     <div class="tab" data-tab="blueprint">领域蓝图</div>
     <div class="tab" data-tab="data">业务数据图</div>
     <div class="tab" data-tab="flow">业务逻辑流向</div>
@@ -60,6 +61,7 @@ ${BLUEPRINT_CSS}
 </header>
 <main>
   <section class="view active" id="view-overview"></section>
+  <section class="view" id="view-ontology"></section>
   <section class="view" id="view-blueprint"></section>
   <section class="view" id="view-data"></section>
   <section class="view" id="view-flow"></section>

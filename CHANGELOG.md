@@ -2,6 +2,70 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.46.0] - 2026-09-22
+
+### 本体蓝图呈现增强：新增「本体概览」Tab + vocabulary 词汇接口
+
+参考 `D:/workspace/asdm-new/asdm-aos-server/src/modules/ontology/ontology.service.ts` 的 `getVocabulary`（objectTypes + linkTypes + actions 三件套）
+与 `modules/graph/graph.gitnexus-types.ts` 的 RelationshipType 双向词汇约定，把 nice-aos 原本藏在「总览」末尾的小段落，升级为独立的本体概览视图。
+
+#### 1. `viewerModel.blueprint.vocabulary` —— Agent 端友好的词汇接口
+
+借鉴 asdm-aos 的 `getVocabulary(graphId)` 返回结构（objectTypes 按 count 倒序 + linkTypes/linksActions 完整列表），
+nice-aos 在 viewerModel 中新增：
+
+- `vocabulary.objectTypes`：所有声明类型按实例数倒序，每项含 `type/prefix/category/level/count/active`
+- `vocabulary.linkTypes` / `reverseLinkTypes`：链接类型 + 反向词汇
+- `vocabulary.actions`：`refreshRepo / analyzeFile / markReviewed / addNote` 四个动作
+- `activeTypeCount` / `totalInstanceCount` / `declaredTypeCount` / `declaredLinkTypeCount`：四个概览指标
+
+数据契约稳定，Agent 可直接通过 `model.blueprint.vocabulary` 一次性发现全部可用类型与链接，
+无需遍历 `model.dataMap` 各键再聚合。
+
+#### 2. 「本体概览」Tab —— 把声明 vs 真实数据摆到一起
+
+新增 Tab「本体概览」（位置：总览 与 领域蓝图 之间），四大区块：
+
+1. **概览指标**：6 张 KPI 卡片（声明类型 / 活跃类型 / 范畴 / 层级 / 链接 / 实例总数）
+2. **抽象层级条带**：L3 架构 → L2 结构 → L1 单元 → L0 事实，自顶向下展示；每行含活跃度进度条 + 实例总数
+3. **概念范畴矩阵**：按 7 个概念范畴（Container / CodeUnit / EntryPoint / Script / Builtin / Environment / AuditFact）排成网格，
+   每张卡片展示该范畴下所有类型（含 L3→L0 各层），按实例数倒序；类型行的活跃度（active = 当前快照有实例）一眼可辨
+4. **链接词汇表**：正反向成对展示（如 `contains ↔ containedBy` / `calls ↔ calledBy`），三种状态点：
+   - 🟢 绿点：已声明为正反向一对（双语义）
+   - ⚪ 灰点：仅声明正向（反查靠所属字段）
+   - 🟡 黄点：反向声明但未与正向配对
+
+#### 3. 类型详情面板（v0.46.0 联动）
+
+点击「概念范畴矩阵」中的任意类型行 → 下方出现详情面板：
+- 类型名 / 层级标签 / 范畴标签 / 实例数 / id 前缀
+- 类型描述
+- 样本实例预览（前 5 个，含 name + id）
+
+#### 4. 顶部「总览」Tab 引导
+
+原总览末尾的「本体蓝图（概念分类体系）」小段落保留，并在末尾追加跳转提示，引导读者去专门的「本体概览」Tab。
+
+#### 5. 实现要点（借鉴 asdm-aos）
+
+| 维度 | asdm-aos 参考 | nice-aos 实现 |
+| --- | --- | --- |
+| vocabulary 接口 | `ontology.service.ts:getVocabulary` | `viewerModel.blueprint.vocabulary` |
+| 链接正反向词汇 | `graph.gitnexus-types.ts` RelationshipType + `graph.types.ts` LINK_DEFS | `viewerModel.blueprint.linkTypePairs`（仅保留既有 LINK_TYPES 实际存在的双向对） |
+| 双维组织（范畴×层级） | `graph.slice.ts` level 三档切分 | `viewerModel.blueprint.categoryMatrix` + `levelCards` |
+| 视图层 | `graph.controller.ts` HTTP 端点 | 蓝图 HTML 内嵌 `renderOntology()` + 客户端 JS |
+
+#### 6. 测试
+
+新增 `test/ontologyView.test.mjs`（6 例）：
+- vocabulary 暴露字段 + 倒序
+- categoryMatrix / levelCards 结构 + 自洽
+- linkTypePairs 验证 forward/reverse 都在 LINK_TYPES
+- renderViewerHtml 嵌入新 Tab + renderOntology 渲染脚本
+- activeTypeCount / totalInstanceCount 自洽校验
+
+既有 178 个相关测试全部回归通过（`viewer / blueprintEngine / blueprintActions / viewerInteractive / hubContracts / dartEntities / goAnalyzer / goFrontendMap / vuePropsChain / propsChain / semantics / typeEntities / userScriptAnalyzer / themes`）。
+
 ## [0.45.0] - 2026-09-18
 
 ### aos 蓝图交互增强 + serve 强化 + 代码库自动监听

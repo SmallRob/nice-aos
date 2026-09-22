@@ -1,4 +1,4 @@
-// 蓝图专属 CSS（viewerStyles.js）：viewer.js renderViewerHtml 中 <style> 块的「布局骨架固定/以下为代码蓝图专属样式」段
+﻿// 蓝图专属 CSS（viewerStyles.js）：viewer.js renderViewerHtml 中 <style> 块的「布局骨架固定/以下为代码蓝图专属样式」段
 // 原为 viewer.js renderViewerHtml 内联 ${BLUEPRINT_CSS} 嵌入；与 buildThemeCss / SHARED_CSS 拼接构成完整 <style>。
 // 与 themes/index.js 的 buildThemeCss / themes/sharedCss.js 的 SHARED_CSS 保持解耦：基础主题变量由前两者提供，本文件只放代码蓝图专属规则。
 export const BLUEPRINT_CSS = `
@@ -163,4 +163,67 @@ svg.focus .cge { opacity: .06; }
 svg.focus .cge.hl { opacity: 1; stroke-width: 2.4; filter: drop-shadow(0 0 3px currentColor); }
 #cg-info { margin-top: 10px; min-height: 20px; font-size: 13px; }
 #cg-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--blue); }
-.bp-obj-truncated { padding: 8px 12px; font-size: 12px; color: var(--fg-faint); text-align: center; border-top: 1px dashed var(--border); }`;
+.ont-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.ont-kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; text-align: center; }
+.ont-kpi .v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--fg); }
+.ont-kpi .k { font-size: 11px; color: var(--fg-dim); margin-top: 4px; letter-spacing: 0.5px; }
+.ont-kpi.emph .v { color: var(--cyan); }
+.ont-cat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+.ont-cat-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; transition: border-color .15s; }
+.ont-cat-card:hover { border-color: color-mix(in srgb, var(--cyan) 40%, var(--border)); }
+.ont-cat-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; gap: 8px; }
+.ont-cat-head .cat-label { font-size: 14px; font-weight: 600; color: var(--fg); }
+.ont-cat-head .cat-desc { font-size: 11px; color: var(--fg-faint); margin-top: 3px; line-height: 1.5; }
+.ont-cat-progress { height: 6px; background: var(--panel2); border-radius: 3px; margin-bottom: 12px; }
+.ont-cat-progress .fill { height: 100%; background: linear-gradient(90deg, var(--cyan), var(--purple)); border-radius: 3px; transition: width .3s; }
+.ont-cat-types { display: flex; flex-direction: column; gap: 4px; }
+.ont-type-row { display: grid; grid-template-columns: 56px 1fr auto; gap: 8px; padding: 5px 8px; border-radius: 6px; align-items: center; font-size: 12px; cursor: pointer; transition: background .12s; border: 1px solid transparent; }
+.ont-type-row:hover { background: var(--panel2); border-color: var(--border); }
+.ont-type-row.selected { background: color-mix(in srgb, var(--cyan) 14%, var(--panel2)); border-color: color-mix(in srgb, var(--cyan) 50%, var(--border)); }
+.ont-type-row.idle { opacity: 0.55; }
+.ont-type-row .lvl-tag { font-family: 'SF Mono', Menlo, monospace; font-size: 10px; color: var(--fg-faint); text-align: center; padding: 1px 0; border: 1px solid var(--border); border-radius: 3px; }
+.ont-type-row .lvl-tag.L0 { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+.ont-type-row .lvl-tag.L1 { color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 40%, var(--border)); }
+.ont-type-row .lvl-tag.L2 { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 40%, var(--border)); }
+.ont-type-row .lvl-tag.L3 { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, var(--border)); }
+.ont-type-row .t-meta { display: flex; flex-direction: column; min-width: 0; }
+.ont-type-row .t-name { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; color: var(--blue); font-weight: 500; }
+.ont-type-row .t-name .prefix-tag { font-size: 10px; color: var(--fg-faint); margin-left: 6px; font-weight: 400; }
+.ont-type-row .t-desc { font-size: 11px; color: var(--fg-faint); margin-top: 1px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ont-type-row .t-cnt { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--fg-dim); padding: 2px 8px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--border); white-space: nowrap; }
+.ont-type-row.active .t-cnt { color: var(--cyan); border-color: color-mix(in srgb, var(--cyan) 50%, var(--border)); }
+.ont-type-row.idle .t-cnt { color: var(--fg-faint); }
+.ont-level-strip { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.ont-level-row { display: grid; grid-template-columns: 80px 1fr 160px; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.ont-level-row .lvl-mark { font-family: 'SF Mono', Menlo, monospace; font-size: 14px; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-align: center; }
+.ont-level-row.L0 .lvl-mark { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+.ont-level-row.L1 .lvl-mark { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 14%, transparent); }
+.ont-level-row.L2 .lvl-mark { color: var(--purple); background: color-mix(in srgb, var(--purple) 14%, transparent); }
+.ont-level-row.L3 .lvl-mark { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+.ont-level-row .lvl-name { font-size: 13px; font-weight: 600; }
+.ont-level-row .lvl-desc { font-size: 11px; color: var(--fg-dim); margin-top: 2px; }
+.ont-level-row .lvl-stats { display: flex; gap: 12px; justify-content: flex-end; font-size: 12px; color: var(--fg-dim); }
+.ont-level-row .lvl-stats b { color: var(--fg); font-variant-numeric: tabular-nums; }
+.ont-link-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.ont-link-table th { text-align: left; padding: 7px 10px; font-weight: 600; font-size: 11px; letter-spacing: 0.5px; color: var(--fg-dim); border-bottom: 1px solid var(--border); background: var(--panel2); position: sticky; top: 0; }
+.ont-link-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); }
+.ont-link-table tr:hover td { background: color-mix(in srgb, var(--cyan) 6%, transparent); }
+.ont-link-pair { display: inline-flex; align-items: center; gap: 6px; font-family: 'SF Mono', Menlo, monospace; }
+.ont-link-pair .arrow { color: var(--fg-faint); font-size: 11px; }
+.ont-link-pair .link-name { padding: 1px 6px; border-radius: 4px; background: color-mix(in srgb, var(--blue) 14%, transparent); color: var(--blue); font-size: 11px; }
+.ont-link-pair .link-name.rev { background: color-mix(in srgb, var(--purple) 14%, transparent); color: var(--purple); }
+.ont-link-status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.ont-link-status.live { background: var(--green); box-shadow: 0 0 4px color-mix(in srgb, var(--green) 60%, transparent); }
+.ont-link-status.decl { background: var(--fg-faint); }
+.ont-link-status.unknown { background: var(--amber); }
+#ont-type-detail { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-top: 12px; min-height: 80px; }
+#ont-type-detail .d-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+#ont-type-detail .d-head .d-name { font-family: 'SF Mono', Menlo, monospace; font-size: 16px; color: var(--cyan); font-weight: 600; }
+#ont-type-detail .d-head .d-meta { display: flex; gap: 8px; font-size: 12px; color: var(--fg-dim); }
+#ont-type-detail .d-desc { font-size: 13px; color: var(--fg); line-height: 1.7; margin-bottom: 10px; }
+#ont-type-detail .d-sample h4 { font-size: 11px; color: var(--fg-dim); margin-bottom: 4px; letter-spacing: 0.5px; }
+#ont-type-detail .d-sample-item { padding: 4px 8px; border-radius: 4px; font-family: 'SF Mono', Menlo, monospace; font-size: 11.5px; color: var(--fg-dim); background: var(--panel2); margin-bottom: 2px; }
+#ont-type-detail .d-empty { color: var(--fg-faint); font-size: 12px; padding: 16px 0; text-align: center; }
+@media (max-width: 760px) { .ont-level-row { grid-template-columns: 60px 1fr; } .ont-level-row .lvl-stats { grid-column: 2; justify-content: flex-start; } }
+};
+`;

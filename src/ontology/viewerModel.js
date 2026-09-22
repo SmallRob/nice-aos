@@ -89,6 +89,89 @@ export function buildViewerModel(dataMap) {
 
   // ---- 1. 本体蓝图（schema 展示：概念分类体系 + 对象/链接类型 + 实例计数）----
   const objectCounts = meta.objectCounts ?? {};
+  const activeTypeCount = OBJECT_TYPES.filter((t) => (objectCounts[t.type] ?? 0) > 0).length;
+  const totalInstanceCount = Object.values(objectCounts).reduce((a, n) => a + n, 0);
+
+  // 类别 × 层级 矩阵（供本体概览 Tab 的热力图 / 分类卡片用）
+  // 借鉴 asdm-aos getVocabulary（ontology.service.ts:178-194）：objectTypes + count + 排序 + 列表渲染
+  const categoryIndexByName = new Map(ONTOLOGY_META.categories.map((c) => [c.category, c]));
+  const categoryMatrix = ONTOLOGY_META.categories.map((c) => {
+    const typesInCat = OBJECT_TYPES.filter((t) => t.category === c.category);
+    const byLevel = {};
+    for (const t of typesInCat) {
+      const lv = t.level ?? 'shared';
+      byLevel[lv] = (byLevel[lv] ?? 0) + 1;
+      byLevel[`${lv}_count`] = (byLevel[`${lv}_count`] ?? 0) + (objectCounts[t.type] ?? 0);
+    }
+    const typeRows = typesInCat.map((t) => ({
+      type: t.type,
+      prefix: t.prefix,
+      level: t.level,
+      description: t.description,
+      declared: true,
+      count: objectCounts[t.type] ?? 0,
+      active: (objectCounts[t.type] ?? 0) > 0,
+    }));
+    return {
+      category: c.category,
+      label: c.label,
+      description: c.description,
+      declaredCount: typesInCat.length,
+      activeCount: typeRows.filter((r) => r.active).length,
+      instanceTotal: typeRows.reduce((a, r) => a + r.count, 0),
+      byLevel,
+      types: typeRows,
+    };
+  });
+
+  // 抽象层级卡片数据（L3 → L0 自顶向下，便于理解从架构到事实的层次收敛）
+  const levelCards = ONTOLOGY_META.abstractionLevels.map((l) => {
+    const typesInLevel = OBJECT_TYPES.filter((t) => t.level === l.level);
+    return {
+      level: l.level,
+      name: l.name,
+      description: l.description,
+      types: l.types,
+      declaredCount: typesInLevel.length,
+      activeCount: typesInLevel.filter((t) => (objectCounts[t.type] ?? 0) > 0).length,
+      instanceTotal: typesInLevel.reduce((a, t) => a + (objectCounts[t.type] ?? 0), 0),
+    };
+  });
+
+  // 链接类型词汇（借鉴 asdm-aos ontology.service.ts getVocabulary / graph.types LINK_DEFS）：
+  // 区分正向 / 反向 边（base / reverse 双形态），供蓝图 UI 按方向展示 + 错误诊断。
+  // nice-aos 既有 LINK_TYPES 同时包含正向与反向名（同名异向），因此 LINK_TYPE_PAIRS 显式标记
+  // 「哪两个是一对」，未列入 PAIRS 的视为单向（如 usesGmApi 只描述 us:→gm:，反方向仅靠所属字段反查）。
+  const LINK_TYPE_PAIRS = {
+    contains: 'containedBy',
+    imports: 'importedBy',
+    renders: 'renderedBy',
+    passesProps: 'propsFrom',
+    navigatesTo: 'navigatedFrom',
+    registers: 'registeredBy',
+    usesStore: 'usedByStore',
+    usesHook: 'usedByHook',
+    implements: 'implementedBy',
+    extends: 'extendedBy',
+    overrides: 'overriddenBy',
+    usesGmApi: 'gmApiUsedBy',
+    injectsInto: 'injectedBy',
+    requestsTo: 'requestedBy',
+    calls: 'calledBy',
+    belongsTo: 'contains',
+    usesTrait: 'usedByTrait',
+    callsApi: 'apiCalledBy',
+    mapsToTable: 'mappedFromCode',
+  };
+  // 仅保留当前 LINK_TYPES 里实际存在的反向名（避免与既有实现脱钩）
+  const linkTypePairs = Object.fromEntries(
+    Object.entries(LINK_TYPE_PAIRS).filter(([fwd, rev]) =>
+      LINK_TYPES.includes(fwd) && LINK_TYPES.includes(rev),
+    ),
+  );
+  const forwardLinkTypes = LINK_TYPES.slice();
+  const reverseLinkTypes = [...new Set(Object.values(linkTypePairs))].filter((v) => LINK_TYPES.includes(v));
+
   const blueprint = {
     version: ONTOLOGY_META.version,
     abstractionLevels: ONTOLOGY_META.abstractionLevels,
@@ -96,9 +179,38 @@ export function buildViewerModel(dataMap) {
     objectTypes: OBJECT_TYPES.map((t) => ({
       type: t.type, prefix: t.prefix, category: t.category, level: t.level,
       description: t.description, count: objectCounts[t.type] ?? 0,
+      declared: true,
+      active: (objectCounts[t.type] ?? 0) > 0,
     })),
     linkTypes: LINK_TYPES,
+    reverseLinkTypes,
+    linkTypePairs,
     objectCounts,
+    activeTypeCount,
+    totalInstanceCount,
+    declaredTypeCount: OBJECT_TYPES.length,
+    declaredLinkTypeCount: LINK_TYPES.length,
+    // 顶层 vocabulary（借鉴 asdm-aos ontology.service.ts getVocabulary 接口）：
+    // objectTypes 按 count 倒序；linkTypes / reverseLinkTypes 仅展示出现过的
+    vocabulary: {
+      objectTypes: OBJECT_TYPES
+        .map((t) => ({
+          type: t.type,
+          prefix: t.prefix,
+          category: t.category,
+          level: t.level,
+          count: objectCounts[t.type] ?? 0,
+          active: (objectCounts[t.type] ?? 0) > 0,
+        }))
+        .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type)),
+      linkTypes: forwardLinkTypes,
+      reverseLinkTypes,
+      actions: ['refreshRepo', 'analyzeFile', 'markReviewed', 'addNote'],
+    },
+    // v0.46.0：本体概览专用视图模型（范畴矩阵 / 层级卡片 / 类型 6 项列表）
+    categoryMatrix,
+    levelCards,
+    categoryIndexByName: Object.fromEntries(categoryIndexByName),
   };
 
   // ---- 2. 领域蓝图：每个功能域的层级构成 / 代码组织 / 单元清单 ----
