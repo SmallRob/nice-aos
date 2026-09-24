@@ -2,6 +2,85 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.47.0] - 2026-09-23
+
+### 借鉴 asdm-aos 第二批能力：RPC 匹配增强、facts 解析缓存、跨仓补链、引用完整性、迁移校验和、查询谓词与分析器注册表
+
+对照 asdm-ontology-research/aos 的系统性差距分析（ADR 0013），落地六个经上游实战验证的机制。
+全程坚持"只借模式不借重量"：零构建、单管线、JSON-first 不变。
+
+#### 1. RPC 匹配占位符归一 + tier 回执（P0）
+
+- `apiPathSegments` 双侧归一：printf `%s`/`%1$s`、FastAPI `{id}`、Next `[id]`/`[...slug]`/`[[...slug]]`、
+  `<id>`、模板表达式 `${expr}` 统一为 `:param`/`*all` 规范形（ADR 0009 遗留的 iDRAC
+  `%s` 端点永不匹配从此可匹配）；参数名不参与匹配（aos toSegments 思想）
+- 全大写环境变量模板前缀剥离（`${API_BASE_URL}/users` → `/users`），前缀差异仍交人工规则解释
+- 尾段吞剩余扩展到 Next `:slug*` / `:slug?` catch-all
+- 命中阶梯 tier（1 字面量+method → 4 通配）记入 `apiMatch.tier`、`frontendCalls[].tier`、
+  `_meta.rpcChain.tierCounts`——命中可归因（matchedVia 同思路）
+- **next-api 纳入服务端候选池**：7e 段前移至匹配点之前，Next `route.ts` 可被前端 httpCall /
+  Python outbound 端点命中；7c-d（TS httpCalls）同步升级 matchApiRouteEx（method 消解 + 规则重试）
+- php 仍默认排除，可经 `.nice-aos/api-routes.json` 的 `{"serverRouteTypes":["php"]}` 显式开启
+- 未命中调用无条件进 `unmatchedFrontendCalls`（纯前端仓不再缺席——跨仓补链的原料）
+- pythonAnalyzer：拼接表达式（`base + "/api/x" % id`）取首个含 `/` 的字符串字面量
+
+#### 2. facts 内容寻址缓存（P0，二次构建 3.2× 提速）
+
+- 新增 `analyzers/factsCache.js`：`<dataDir>/facts-cache.json` 按
+  `relPath → { h: sha256 前 16, f: facts }` 缓存解析结果；**内容哈希为权威判定**，
+  命中即跳过逐文件 parse（TS Compiler API / 状态机），后续相位照常全量运行——正确性等价
+- 序列化：Set/Map 显式编码；`resolved`（import 解析每次重跑）、TS AST 节点（`node`/`statementNode`）
+  与一切类实例不落盘；version / projectRoot / JSON 损坏任一不符 → 整体弃用回全量
+- `refreshRepo` 默认启用（`nice-aos action refreshRepo --no-incremental` 关闭；
+  params.incremental=false 同效）；缓存与快照同目录，跟随 `--snapshot-dir` 覆盖链
+- `_meta.fileManifest`（relPath → `{s,m,h}`，aos snapshot manifest 的 nice-aos 版）+
+  `_meta.factsCache`（hit/miss）随快照发布
+- 自扫描实测：143 文件 1942ms → 598ms，产物对象计数一致
+
+#### 3. 合并后跨仓 RPC 补链（P0）
+
+- `output --merge` 合并后在总路由池上重跑阶梯匹配，补上"构建期因跨仓不可见而未命中"的
+  前后端链路（unmatchedFrontendCalls / 未建链 outbound 端点 ↔ 他仓服务端路由）；
+  命中记 `crossRepo: true` + tier/matchedVia，统计进 `_meta.merged.rpcChain`，stderr 汇报
+- fileId 按合并 SourceFile path 重定位（rename 策略下原 fileId 可能已前缀化）
+
+#### 4. 引用完整性审计（P0，实抓 2 个真 bug）
+
+- 新增 `ontology/refIntegrity.js`：组装末尾全局 id 索引 → 批量存在性判定 → 悬空
+  `*Id/*Ids` 摘除（宁摘除不悬挂），`_meta.refIntegrity` 上报计数与样本
+- **修复 scriptObjects.js 同名函数 id 漂移**：`fnIdMap` 按名覆盖导致
+  UserScript.functionIds 悬空 + ScriptFunction 重复对象 id（自扫描 19 处清零）
+- **修复 PHP/Kotlin 外部导入不建 Dependency 对象**：`use Guzzle\Http\Client` 现在产出
+  `dep:Guzzle` 对象（与 npm/Go 未声明依赖同路径），`query Dependency` 可查
+
+#### 5. 迁移校验和（P1）
+
+- migrate.js 新口径 `sha256(version:up源码)` 绑定实际执行的迁移实现；
+  已应用迁移的 up 被改过 → 硬错并提示 `storage rebuild`（Flyway checksum 语义）；
+  v0.31–v0.46 旧账本一次性采纳新口径（等价 repair）；导出
+  `checksumOf/legacyChecksumOf/MIGRATIONS` 供核验
+
+#### 6. --where 扩展（P1）
+
+- 数值比较 `k>N` / `k>=N` / `k<N` / `k<=N`（两侧可数值化才参与，否则不命中）
+- 点路径嵌套字段（`health.complexity.cyclomatic>5`、`apiMatch.methodMatches=true`）
+- 既有 `=`/`:`/`~` 与数组语义零变化；CLI query / serve /api/objects / MCP query_objects 生效
+
+#### 7. 分析器注册表（P1）
+
+- 新增 `analyzers/analyzerRegistry.js`：分发链从 builderScan 与 buildSingleFileOntology
+  两份重复实现收敛为单一注册表（顺序与拆分前逐一对应，行为零变化）
+- `registerAnalyzer({name, match, fromDisk, single})` 进程内扩展点，返回注销函数——
+  新增语言从"改 5 处核心"降为"注册 1 条"
+
+#### 测试与修复
+
+- 新增 7 个测试文件 33 个用例（rpcMatchV2 / factsCache / mergeCrossRepo / refIntegrity /
+  migrateChecksum / whereClause / analyzerRegistry），全量 984 用例
+- 与基线对比**零新增失败**；顺手修复存量 Windows bug：exportMerge.test.mjs 的
+  `import(D:\...)` 裸路径（`pathToFileURL` 化），3 个存量失败转绿
+- 存量 69 个失败均为环境项（better-sqlite3 未安装 + Windows ESM 动态导入路径类），与本次变更无关
+
 ## [0.46.0] - 2026-09-22
 
 ### 本体蓝图呈现增强：新增「本体概览」Tab + vocabulary 词汇接口

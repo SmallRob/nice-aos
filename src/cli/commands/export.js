@@ -94,6 +94,11 @@ export const exportCommand = new Command('export')
       if (merged.meta.conflicts > 0) {
         console.error(`   id 冲突 ${merged.meta.conflicts} 处（策略=${opts.mergeStrategy}${opts.mergeStrategy === 'rename' ? `，重命名 ${merged.meta.renamedCount} 个对象` : '，first-wins 丢弃后者'}）`);
       }
+      // v0.47 跨仓 RPC 匹配结果（前端未命中调用 / 未建链 outbound 端点 ↔ 合并后服务端路由）
+      const rpc = dataMap._meta?.merged?.rpcChain;
+      if (rpc) {
+        console.error(`   跨仓 RPC 补链: 端点 ${rpc.endpointMatched} + 前端调用 ${rpc.frontendCallMatched}（规则命中 ${rpc.ruleMatched}，服务端路由池 ${rpc.serverRouteCount}）`);
+      }
     } else {
       dataMap = loadSnapshot();
     }
@@ -231,6 +236,8 @@ function mergeSnapshotFiles(paths, strategy) {
   return mergeSnapshots(snapshots, {
     strategy,
     sources: paths.map((p, i) => ({ name: inferSourceName(p, i), path: p })),
+    // v0.47 跨仓 RPC 匹配：api-routes.json 从 cwd 解析（export 命令的运行根）
+    projectRoot: process.cwd(),
   });
 }
 

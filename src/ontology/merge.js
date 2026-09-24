@@ -12,12 +12,23 @@
 //               引用字段泛键回填（字段名以 Id/Ids 结尾的值级替换）——无类型耦合，
 //               新增链接类型无需改本模块
 //   - _meta 合成：objectCounts 重算 + merged 元信息段
+//
+// v0.47 跨仓 RPC 匹配（借鉴 asdm-aos multiRepoMerge.crossRepoApiMatch）：
+//   合并后在总对象池上重跑阶梯匹配，把"构建期因跨仓不可见而未命中"的前后端链路补上：
+//   - 各源 _meta.unmatchedFrontendCalls（TS httpCalls 未命中清单）↔ 合并后服务端路由
+//   - 未建链的 outbound NetworkEndpoint（python）↔ 合并后服务端路由
+//   命中记 crossRepo: true + tier/matchedVia 回执，统计进 _meta.merged.rpcChain。
+
+import { SERVER_API_ROUTE_TYPES, apiPathSegments, matchApiRouteEx, linkRouteToEndpoint } from './rpcMatch.js';
+import { loadApiRouteRules } from './apiRouteRules.js';
 
 /**
  * @param {Object[]} snapshots 各源完整 dataMap（含 _meta）
  * @param {{
  *   strategy?: 'first-wins'|'rename',
  *   sources?: { name?: string, path?: string }[],
+ *   crossRepoRpc?: boolean,
+ *   projectRoot?: string,
  * }} opts
  * @returns {{ dataMap: Object, meta: {
  *   strategy: string,
@@ -52,9 +63,13 @@ export function mergeSnapshots(snapshots, opts = {}) {
   let renamedCount = 0;
   const droppedProjects = [];
   const conflictSamples = [];
+  // v0.47: 收集各源未命中的前端调用（合并后跨仓重匹配的原料）
+  const unmatchedBySource = new Map(); // sourceLabel → _meta.unmatchedFrontendCalls
 
   const collectFromSource = (dataMap, srcIdx) => {
     const sourceLabel = sources[srcIdx]?.name ?? `snap-${srcIdx}`;
+    const unmatched = dataMap?._meta?.unmatchedFrontendCalls;
+    if (Array.isArray(unmatched) && unmatched.length > 0) unmatchedBySource.set(sourceLabel, unmatched);
     const renames = new Map(); // oldId → newId（跨源累计；收录任何对象前先按其回填）
     const applyRenames = (obj) => {
       let cur = obj;
@@ -111,6 +126,12 @@ export function mergeSnapshots(snapshots, opts = {}) {
   }
   newMeta.objectCounts = counts;
 
+  // v0.47: 合并后跨仓 RPC 匹配（默认开启；opts.crossRepoRpc === false 关闭）
+  if (opts.crossRepoRpc !== false) {
+    const rpcChain = matchCrossRepoRpc(out, unmatchedBySource, opts);
+    if (rpcChain) newMeta.merged.rpcChain = rpcChain;
+  }
+
   return {
     dataMap: out,
     meta: {
@@ -121,6 +142,83 @@ export function mergeSnapshots(snapshots, opts = {}) {
       droppedProjects,
       sources,
     },
+  };
+}
+
+// 跨仓 RPC 匹配：在合并后的总路由池上重跑阶梯（与构建期同一 matchApiRouteEx），
+// 只补"构建期未命中"的调用（unmatchedFrontendCalls / 无 serverRouteId 的 outbound 端点），
+// 不动已建链的边 —— 单仓内已匹配的链路保持原样，统计口径互不重叠。
+function matchCrossRepoRpc(dataMap, unmatchedBySource, opts = {}) {
+  const projectRoot = opts.projectRoot ?? process.cwd();
+  const { rules, extraServerRouteTypes } = loadApiRouteRules(projectRoot);
+  const serverRouteTypes = extraServerRouteTypes.length > 0
+    ? [...SERVER_API_ROUTE_TYPES, ...extraServerRouteTypes.filter((t) => !SERVER_API_ROUTE_TYPES.includes(t))]
+    : SERVER_API_ROUTE_TYPES;
+  const routes = (dataMap.Route ?? []).filter((r) => serverRouteTypes.includes(r.routeType));
+  const fileByPath = new Map((dataMap.SourceFile ?? []).map((f) => [f.path, f.id]));
+  if (routes.length === 0) return null;
+
+  let endpointMatched = 0;
+  let frontendCallMatched = 0;
+  let ruleMatched = 0;
+
+  // 1. 未建链的 outbound NetworkEndpoint（python 客户端）
+  const routeSegsList = routes.map((r) => ({ r, segs: apiPathSegments(r.routePath) ?? [] }));
+  for (const ep of dataMap.NetworkEndpoint ?? []) {
+    if (ep.direction !== 'outbound' || ep.serverRouteId) continue;
+    const segs = apiPathSegments(ep.url);
+    if (!segs) continue;
+    const hit = matchApiRouteEx(segs, routeSegsList, { method: ep.methods?.[0], rules });
+    if (!hit) continue;
+    const rawMethods = hit.route.apiMethods ?? [];
+    const routeMethods = Array.isArray(rawMethods) ? rawMethods : (rawMethods ? [rawMethods] : []);
+    const method = ep.methods?.[0];
+    const apiMatch = {
+      methodMatches: !method || routeMethods.length === 0 || routeMethods.includes('*') || routeMethods.includes(method),
+      routeMethods,
+      endpointMethod: method ?? null,
+      tier: hit.tier,
+      crossRepo: true,
+    };
+    if (hit.via) apiMatch.matchedVia = hit.via;
+    linkRouteToEndpoint(hit.route, ep, apiMatch);
+    endpointMatched += 1;
+    if (hit.via) ruleMatched += 1;
+  }
+
+  // 2. 各源构建期未命中的 TS httpCalls（_meta.unmatchedFrontendCalls）
+  for (const [, calls] of unmatchedBySource) {
+    for (const c of calls) {
+      if (!c || typeof c.path !== 'string') continue;
+      const segs = apiPathSegments(c.path);
+      if (!segs) continue;
+      const hit = matchApiRouteEx(segs, routeSegsList, { method: c.method, rules });
+      if (!hit) continue;
+      const route = hit.route;
+      route.frontendCalls ??= [];
+      if (!route.frontendCalls.some((e) => e.filePath === c.filePath && e.line === c.line)) {
+        route.frontendCalls.push({
+          fileId: fileByPath.get(c.filePath) ?? c.fileId ?? null, // rename 策略下原 fileId 可能已前缀化，按 path 重定位
+          filePath: c.filePath,
+          line: c.line,
+          method: c.method ?? null,
+          tier: hit.tier,
+          crossRepo: true,
+          ...(hit.via ? { matchedVia: hit.via } : {}),
+        });
+        frontendCallMatched += 1;
+        if (hit.via) ruleMatched += 1;
+      }
+    }
+  }
+
+  if (endpointMatched + frontendCallMatched === 0) return null;
+  return {
+    serverRouteCount: routes.length,
+    endpointMatched,
+    frontendCallMatched,
+    ruleMatched,
+    rulesCount: rules.length,
   };
 }
 

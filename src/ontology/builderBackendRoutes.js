@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { analyzeOverlayRoutes, analyzeJsxRoutes, analyzeDataRouterRoutes } from '../analyzers/overlayAnalyzer.js';
 import { analyzeNextAppRoutes } from '../analyzers/nextAppAnalyzer.js';
 import { uniqueId } from './builderUtils.js';
-import { SERVER_API_ROUTE_TYPES, apiPathSegments, matchApiRoute, matchApiRouteEx, linkRouteToEndpoint } from './rpcMatch.js';
+import { SERVER_API_ROUTE_TYPES, apiPathSegments, matchApiRouteEx, linkRouteToEndpoint } from './rpcMatch.js';
 import { loadApiRouteRules } from './apiRouteRules.js';
 
 export function builderRoutesPhase(ctx) {
@@ -656,88 +656,17 @@ export function builderRoutesPhase(ctx) {
     }
   }
 
-  // 7c-d. 前后端逻辑映射：tsAnalyzer httpCalls（前端 API.get / axios.x / fetch）↔ go 路由路径匹配
-  // :param / *wildcard 通配前端任意段；去 query、尾斜杠归一；method 不一致仍记录（详情可见）
-  const unmatchedFrontendCalls = [];
-  {
-    const goApiRoutes = routes.filter((r) => r.routeType === 'go');
-    if (goApiRoutes.length > 0) {
-      // v0.42.0: 匹配逻辑上提为公共函数（apiPathSegments / matchApiRoute），供 Python 端点复用
-      const routeSegs = goApiRoutes.map((r) => ({ r, segs: apiPathSegments(r.routePath) ?? [] }));
-      for (const [relPath, facts] of factsMap) {
-        if (/\.(go|rs|dart)$/.test(relPath)) continue;
-        for (const call of facts.httpCalls ?? []) {
-          const feSegs = apiPathSegments(call.path);
-          const route = feSegs ? matchApiRoute(feSegs, routeSegs) : null;
-          const fileObj = fileObjectByPath.get(relPath);
-          const entry = { fileId: fileObj?.id ?? `file:${relPath}`, filePath: relPath, line: call.line, method: call.method };
-          if (route) {
-            if (!route.frontendCalls) route.frontendCalls = [];
-            if (!route.frontendCalls.some((c) => c.filePath === relPath && c.line === call.line)) {
-              route.frontendCalls.push(entry);
-            }
-            resolutionStats.matchedRouteCount += 1;
-          } else {
-            unmatchedFrontendCalls.push({ ...entry, path: call.path });
-            resolutionStats.unmatchedFrontendCallsCount += 1;
-          }
-        }
-      }
-    }
-  }
-
-  // 7c-d2. v0.42.0: Python outbound 端点 ↔ 服务端 API 路由 —— 双向 RPC 链
-  // 与 7c-d 同源的匹配逻辑，但源侧是 NetworkEndpoint（跨文件聚合后的端点），
-  // 目标侧扩到 go + python 两类服务端路由。
-  // method 仍为软校验：路径命中即建链，method 是否一致记在 apiMatch.methodMatches
-  // （与 7c-d 的"method 不一致仍记录"同哲学，并为候选 3 的跨语言 API diff 留数据）。
-  // v0.44.0（ADR 0012 D3/D4）：method 升级为同路径多路由的消解优先级（matchApiRouteEx 阶梯，
-  // 不做硬门）；自动未命中后重试人工规则（.nice-aos/api-routes.json），规则命中记 apiMatch.matchedVia。
-  let rpcChainStats = null;
-  {
-    const serverRoutes = routes.filter((r) => SERVER_API_ROUTE_TYPES.includes(r.routeType));
-    const pyEndpoints = networkEndpoints.filter((n) => n.direction === 'outbound' && n.lang === 'python');
-    if (serverRoutes.length > 0 && pyEndpoints.length > 0) {
-      const { rules, warnings: rulesWarnings } = loadApiRouteRules(projectRoot);
-      const routeSegsList = serverRoutes.map((r) => ({ r, segs: apiPathSegments(r.routePath) ?? [] }));
-      let matched = 0;
-      let methodMismatch = 0;
-      let ruleMatched = 0;
-      for (const ep of pyEndpoints) {
-        const segs = apiPathSegments(ep.url);
-        if (!segs) continue; // 纯变量 URL，静态不可解析
-        const hit = matchApiRouteEx(segs, routeSegsList, { method: ep.methods[0], rules });
-        if (!hit) continue;
-        const route = hit.route;
-        // apiMethods 口径不统一：Go 路由是数组 [method]，Python 路由是裸字符串。
-        // 归一为数组，否则字符串上的 includes 会退化成子串匹配（如 'POST'.includes('OST') 误为 true）
-        const rawMethods = route.apiMethods ?? [];
-        const routeMethods = Array.isArray(rawMethods) ? rawMethods : (rawMethods ? [rawMethods] : []);
-        const methodMatches = routeMethods.length === 0 || routeMethods.includes('*') || routeMethods.includes(ep.methods[0]);
-        // v0.42.1: 双向字段集中到 helper，避免单边赋值失败导致反向查询失配
-        // v0.44.0: 规则命中附 matchedVia 回执（自动命中无该字段）
-        const apiMatch = { methodMatches, routeMethods, endpointMethod: ep.methods[0] };
-        if (hit.via) apiMatch.matchedVia = hit.via;
-        linkRouteToEndpoint(route, ep, apiMatch);
-        matched += 1;
-        if (hit.via) ruleMatched += 1;
-        if (!methodMatches) methodMismatch += 1;
-      }
-      rpcChainStats = {
-        serverRouteCount: serverRoutes.length,
-        endpointCount: pyEndpoints.length,
-        matched,
-        methodMismatch,
-        unresolved: pyEndpoints.length - matched,
-        ruleMatched,
-        rulesCount: rules.length,
-        ...(rulesWarnings.length ? { rulesWarnings } : {}),
-      };
-    }
-  }
+  // v0.47: 人工规则 + 服务端路由候选池上提（7c-d 与 7c-d2 共用）。
+  // 候选池 = SERVER_API_ROUTE_TYPES（go/python/next-api）+ api-routes.json 的 serverRouteTypes 显式扩展（如 php）。
+  const { rules: apiRules, warnings: apiRulesWarnings, extraServerRouteTypes } = loadApiRouteRules(projectRoot);
+  const serverRouteTypes = extraServerRouteTypes.length > 0
+    ? [...SERVER_API_ROUTE_TYPES, ...extraServerRouteTypes.filter((t) => !SERVER_API_ROUTE_TYPES.includes(t))]
+    : SERVER_API_ROUTE_TYPES;
 
   // 7e. Next.js App Router 路由（文件约定式：page/route/layout）
   //     导航边仅归属 page 文件内的 Link href / router.push（layout/共享组件文件不归属，避免边爆炸）
+  //     v0.47: 从匹配点之后前移至此 —— next-api 路由（route.ts）需参与 7c-d/7c-d2 的 RPC 匹配，
+  //     相位顺序不再约束匹配能力（借鉴 asdm-aos pending-refs 的"顺序无感"思想，此处用重排实现）
   if (scan.framework === 'next') {
     const nextRawRoutes = analyzeNextAppRoutes(projectRoot, scan, resolver, factsMap);
     const nextRouteIds = new Set(routes.map((r) => r.id));
@@ -794,6 +723,96 @@ export function builderRoutesPhase(ctx) {
         if (!toId || toId === routeObj.id) continue;
         if (!routeObj.navigatesToIds.includes(toId)) routeObj.navigatesToIds.push(toId);
       }
+    }
+  }
+
+  // 7c-d. 前后端逻辑映射：tsAnalyzer httpCalls（前端 API.get / axios.x / fetch）↔ 服务端路由
+  // v0.47: 候选池从 go 扩到 serverRouteTypes（go/python/next-api + 显式扩展），
+  //        并升级 matchApiRouteEx（method 阶梯消解 + 人工规则重试 + tier 回执）。
+  // :param / *wildcard / {param} / %s / [id] 等占位形态经 apiPathSegments 双侧归一后通配匹配；
+  // 去 query、尾斜杠归一；method 不一致仍记录（详情可见）
+  const unmatchedFrontendCalls = [];
+  {
+    const serverApiRoutes = routes.filter((r) => serverRouteTypes.includes(r.routeType));
+    const routeSegs = serverApiRoutes.map((r) => ({ r, segs: apiPathSegments(r.routePath) ?? [] }));
+    // v0.47: 未命中清单无条件收集（本仓无服务端路由时全部进 unmatched）——
+    // 跨仓合并（merge.crossRepoRpc）以该清单为原料补链，纯前端仓不能缺席
+    for (const [relPath, facts] of factsMap) {
+      if (/\.(go|rs|dart)$/.test(relPath)) continue;
+      for (const call of facts.httpCalls ?? []) {
+        const feSegs = apiPathSegments(call.path);
+        const hit = feSegs && routeSegs.length > 0
+          ? matchApiRouteEx(feSegs, routeSegs, { method: call.method, rules: apiRules })
+          : null;
+        const fileObj = fileObjectByPath.get(relPath);
+        const entry = { fileId: fileObj?.id ?? `file:${relPath}`, filePath: relPath, line: call.line, method: call.method };
+        if (hit) {
+          const route = hit.route;
+          if (!route.frontendCalls) route.frontendCalls = [];
+          if (!route.frontendCalls.some((c) => c.filePath === relPath && c.line === call.line)) {
+            entry.tier = hit.tier;
+            if (hit.via) entry.matchedVia = hit.via;
+            route.frontendCalls.push(entry);
+          }
+          resolutionStats.matchedRouteCount += 1;
+        } else {
+          unmatchedFrontendCalls.push({ ...entry, path: call.path });
+          resolutionStats.unmatchedFrontendCallsCount += 1;
+        }
+      }
+    }
+  }
+
+  // 7c-d2. v0.42.0: Python outbound 端点 ↔ 服务端 API 路由 —— 双向 RPC 链
+  // 与 7c-d 同源的匹配逻辑，但源侧是 NetworkEndpoint（跨文件聚合后的端点）。
+  // method 仍为软校验：路径命中即建链，method 是否一致记在 apiMatch.methodMatches
+  // （与 7c-d 的"method 不一致仍记录"同哲学，并为候选 3 的跨语言 API diff 留数据）。
+  // v0.44.0（ADR 0012 D3/D4）：method 升级为同路径多路由的消解优先级（matchApiRouteEx 阶梯，
+  // 不做硬门）；自动未命中后重试人工规则（.nice-aos/api-routes.json），规则命中记 apiMatch.matchedVia。
+  // v0.47: tier 记入 apiMatch；候选池与 7c-d 共用 serverRouteTypes。
+  let rpcChainStats = null;
+  {
+    const serverRoutes = routes.filter((r) => serverRouteTypes.includes(r.routeType));
+    const pyEndpoints = networkEndpoints.filter((n) => n.direction === 'outbound' && n.lang === 'python');
+    if (serverRoutes.length > 0 && pyEndpoints.length > 0) {
+      const routeSegsList = serverRoutes.map((r) => ({ r, segs: apiPathSegments(r.routePath) ?? [] }));
+      let matched = 0;
+      let methodMismatch = 0;
+      let ruleMatched = 0;
+      const tierCounts = { 1: 0, 2: 0, 3: 0, 4: 0 };
+      for (const ep of pyEndpoints) {
+        const segs = apiPathSegments(ep.url);
+        if (!segs) continue; // 纯变量 URL，静态不可解析
+        const hit = matchApiRouteEx(segs, routeSegsList, { method: ep.methods[0], rules: apiRules });
+        if (!hit) continue;
+        const route = hit.route;
+        // apiMethods 口径不统一：Go 路由是数组 [method]，Python 路由是裸字符串。
+        // 归一为数组，否则字符串上的 includes 会退化成子串匹配（如 'POST'.includes('OST') 误为 true）
+        const rawMethods = route.apiMethods ?? [];
+        const routeMethods = Array.isArray(rawMethods) ? rawMethods : (rawMethods ? [rawMethods] : []);
+        const methodMatches = routeMethods.length === 0 || routeMethods.includes('*') || routeMethods.includes(ep.methods[0]);
+        // v0.42.1: 双向字段集中到 helper，避免单边赋值失败导致反向查询失配
+        // v0.44.0: 规则命中附 matchedVia 回执（自动命中无该字段）
+        // v0.47: tier 回执（1 字面量+method / 2 字面量 / 3 通配+method / 4 通配）
+        const apiMatch = { methodMatches, routeMethods, endpointMethod: ep.methods[0], tier: hit.tier };
+        if (hit.via) apiMatch.matchedVia = hit.via;
+        linkRouteToEndpoint(route, ep, apiMatch);
+        matched += 1;
+        tierCounts[hit.tier] += 1;
+        if (hit.via) ruleMatched += 1;
+        if (!methodMatches) methodMismatch += 1;
+      }
+      rpcChainStats = {
+        serverRouteCount: serverRoutes.length,
+        endpointCount: pyEndpoints.length,
+        matched,
+        methodMismatch,
+        unresolved: pyEndpoints.length - matched,
+        tierCounts,
+        ruleMatched,
+        rulesCount: apiRules.length,
+        ...(apiRulesWarnings.length ? { rulesWarnings: apiRulesWarnings } : {}),
+      };
     }
   }
 

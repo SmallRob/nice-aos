@@ -1,7 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { Command } from 'commander';
-import { loadSnapshot, saveSnapshot } from '../../ontology/snapshot.js';
+import { loadSnapshot, saveSnapshot, getSnapshotDir } from '../../ontology/snapshot.js';
 import { createBlueprint, ACTION_NAMES } from '../../ontology/blueprint.js';
 import { buildOntologyData, buildSingleFileOntology } from '../../ontology/builder.js';
 import { detectProjectRoot } from '../../analyzers/projectRootDetector.js';
@@ -13,6 +13,7 @@ export const actionCommand = new Command('action')
   .description('执行受控动作（' + ACTION_NAMES.join('/') + '）')
   .argument('<name>', '动作名称')
   .option('--params <json>', '动作参数 JSON', '{}')
+  .option('--no-incremental', 'refreshRepo 禁用 facts 解析缓存（facts-cache.json），强制全量重解析')
   .action(async (name, opts) => {
     let params = {};
     try {
@@ -78,8 +79,12 @@ export const actionCommand = new Command('action')
       // silent=true（默认）时只输出最终 JSON；silent=false 时输出每步耗时。
       const silent = params.silent !== false; // 默认 silent（保持 JSON 单一输出，向后兼容）
       const stepLog = [];
+      // v0.47 facts 解析缓存：默认启用（--no-incremental 或 params.incremental===false 关闭），
+      // 缓存与快照同目录（跟随 --snapshot-dir 覆盖链）。正确性等价，收益 = 未变文件的解析成本。
+      const cacheOn = opts.incremental !== false && params.incremental !== false;
       const dataMap = await buildOntologyData(projectPath, {
         ...params,
+        ...(cacheOn ? { factsCachePath: path.join(getSnapshotDir(), 'facts-cache.json') } : {}),
         onProgress: silent ? null : (step, payload) => {
           const ms = payload?.at ?? 0;
           const line = `[${step}] ${ms}ms${payload?.fileCount != null ? ` files=${payload.fileCount}` : ''}${payload?.errorCount != null ? ` err=${payload.errorCount}` : ''}`;

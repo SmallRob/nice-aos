@@ -253,7 +253,7 @@ query UserScript --where "hostFramework=vue"     # 跑在 Vue 页面上的脚本
 query UserScript --where "riskLevel=high"        # 高风险脚本（请求劫持/eval/cookie 写）
 ```
 
-`--where` 语法：逗号分隔多条件 AND；`k=v`（或 `k:v`）精确相等，`k~v` 模糊匹配（子串包含，忽略大小写）；值为数组时精确做成员包含、模糊做任一成员包含（如 `hooksUsed=useEffect`）。
+`--where` 语法：逗号分隔多条件 AND；`k=v`（或 `k:v`）精确相等，`k~v` 模糊匹配（子串包含，忽略大小写）；v0.47 起支持数值比较 `k>N` / `k>=N` / `k<N` / `k<=N`（字段与值均可数值化才参与比较，否则该条件不命中）与点路径嵌套字段（如 `health.complexity.cyclomatic>5`、`apiMatch.methodMatches=true`，缺失路径视同字段不存在）；值为数组时精确做成员包含、模糊做任一成员包含（如 `hooksUsed=useEffect`）。
 
 `--field` 投影（v0.44.0）：逗号分隔字段白名单，`id` 恒保留；对象上不存在的字段不产生键。与 serve `/api/objects?fields=` 和 MCP `query_objects.fields` 同语义。
 

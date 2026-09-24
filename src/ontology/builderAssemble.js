@@ -1,6 +1,7 @@
 // 相位 7（buildOntologyData 拆分）：汇总（Project 对象 + 项目画像 + dataMap + shell/ROS/跨语言边集合）
 // 原为 builder.js 内联代码段（"9. 汇总" 至 return dataMap），逻辑不变。
 import { buildProjectProfile } from './semantics.js';
+import { auditRefIntegrity } from './refIntegrity.js';
 
 export function builderAssemblePhase(ctx) {
   const {
@@ -12,7 +13,7 @@ export function builderAssemblePhase(ctx) {
     cmakeModules, cmakeTargets, cmakeFunctions, cmakeOptions,
     archPackages, archPackageFunctions, nixFlakes, nixPackages, nixInputs,
     rosNodes, rosChannels, rosLaunches, domains, cycles, orphanCandidates,
-    deadExportCandidates, unmatchedFrontendCalls, rpcChainStats,
+    deadExportCandidates, unmatchedFrontendCalls, rpcChainStats, factsCacheStats, fileManifest,
     callsFunction, usesBuiltin, readsCliParam, subdirIncludes, declaresOption,
     addsDependency, targetsInclude, factsMap,
   } = ctx;
@@ -110,6 +111,10 @@ export function builderAssemblePhase(ctx) {
       unmatchedFrontendCalls,
       // v0.42.0 RPC 链覆盖度：无服务端路由或无 Python 端点时为 null（该维度不适用）
       rpcChain: rpcChainStats,
+      // v0.47 解析缓存命中情况 + 文件内容清单（借鉴 asdm-aos snapshot manifest：
+      // relPath → { s: size, m: mtimeMs, h: hash16 }；仅在启用缓存时存在）
+      ...(factsCacheStats?.enabled ? { factsCache: factsCacheStats } : {}),
+      ...(fileManifest ? { fileManifest } : {}),
       // v0.35.0 解析覆盖度（借鉴 GitNexus resolution-outcome.ts）
       // 关键派生指标：importResolutionRate（解析成功/总尝试）让 agent 一眼看到"图谱完整度"
       resolutionStats: {
@@ -271,6 +276,15 @@ export function builderAssemblePhase(ctx) {
     }
     dataMap._meta.crossLangEdges = crossLangEdges;
   }
+  // v0.47 引用完整性：组装末尾统一校验 *Id/*Ids 字段，悬空引用摘除并上报
+  //（借鉴 asdm-aos pending-refs 的顺序无感思想的最小版——单管线构建无乱序，末尾一次收口）
+  const refIntegrity = auditRefIntegrity(dataMap);
+  dataMap._meta.refIntegrity = {
+    checkedObjects: refIntegrity.checkedObjects,
+    danglingCount: refIntegrity.danglingCount,
+    ...(refIntegrity.samples.length > 0 ? { samples: refIntegrity.samples } : {}),
+  };
+
   report('build:done', {
     methodCount: methods.length,
     interfaceCount: interfaces.length,

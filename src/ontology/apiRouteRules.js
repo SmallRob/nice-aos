@@ -8,24 +8,41 @@ import path from 'node:path';
 
 const RULES_REL = path.join('.nice-aos', 'api-routes.json');
 
+// 可经 serverRouteTypes 显式开启的服务端路由类型（v0.47）。
+// php 默认排除（zentaopms query 式 URL 误命中风险），确信形态的项目可自行开启。
+const OPT_IN_SERVER_ROUTE_TYPES = ['php'];
+
 function toSegs(p) {
   return p.replace(/\/+$/, '').split('/').filter(Boolean);
 }
 
-// 返回 { rules, warnings }；rules 条目含原始 from/to（matchedVia 回执用）与预切段数组
+// 返回 { rules, warnings, extraServerRouteTypes }；rules 条目含原始 from/to（matchedVia 回执用）与预切段数组
 export function loadApiRouteRules(projectRoot) {
   const file = path.join(projectRoot, RULES_REL);
-  if (!fs.existsSync(file)) return { rules: [], warnings: [] };
+  if (!fs.existsSync(file)) return { rules: [], warnings: [], extraServerRouteTypes: [] };
   let raw;
   try {
     raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
   } catch (err) {
-    return { rules: [], warnings: [`api-routes.json 解析失败，已忽略: ${err?.message ?? err}`] };
+    return { rules: [], warnings: [`api-routes.json 解析失败，已忽略: ${err?.message ?? err}`], extraServerRouteTypes: [] };
   }
-  // 顶层裸数组或 { rules: [...] } 两种形态都接受
-  const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.rules) ? raw.rules : null);
+  // serverRouteTypes：显式扩展服务端路由候选池（如 zentaopms 形态确认的项目开启 php）
+  const typeWarnings = [];
+  const extraServerRouteTypes = [];
+  if (Array.isArray(raw?.serverRouteTypes)) {
+    for (const t of raw.serverRouteTypes) {
+      if (OPT_IN_SERVER_ROUTE_TYPES.includes(t)) {
+        if (!extraServerRouteTypes.includes(t)) extraServerRouteTypes.push(t);
+      } else {
+        typeWarnings.push(`serverRouteTypes 不支持 "${t}"（可选: ${OPT_IN_SERVER_ROUTE_TYPES.join('/')}），已忽略`);
+      }
+    }
+  }
+  // 顶层裸数组或 { rules: [...] } 两种形态都接受；对象形态只给 serverRouteTypes 不给 rules 也合法
+  const hasTypeSection = extraServerRouteTypes.length > 0 || typeWarnings.length > 0;
+  const list = Array.isArray(raw) ? raw : (Array.isArray(raw?.rules) ? raw.rules : (hasTypeSection ? [] : null));
   if (!list) {
-    return { rules: [], warnings: ['api-routes.json 格式无效（应为数组或 {"rules":[...]}），已忽略'] };
+    return { rules: [], warnings: ['api-routes.json 格式无效（应为数组或 {"rules":[...]}），已忽略'], extraServerRouteTypes: [] };
   }
   const rules = [];
   const warnings = [];
@@ -52,5 +69,5 @@ export function loadApiRouteRules(projectRoot) {
       comment: typeof r?.comment === 'string' ? r.comment : null,
     });
   }
-  return { rules, warnings };
+  return { rules, warnings: [...typeWarnings, ...warnings], extraServerRouteTypes };
 }

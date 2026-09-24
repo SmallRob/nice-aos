@@ -157,14 +157,44 @@ const MIGRATIONS = [
   },
 ];
 
+// 迁移校验和（v0.47，借鉴 Flyway checksum 语义：已应用的迁移被改过即硬错）：
+//   新口径绑定 up 函数源码（sha256(version:upSource) 前 16 hex）——在代码迁移场景下，
+//   "迁移文件被编辑" 对应 "up 函数实现被编辑"；
+//   旧口径是 sha256(version:description)（v0.31-v0.46 账本行），首次遇到时一次性采纳新口径。
+function checksumOf(mig) {
+  return crypto.createHash('sha256').update(`${mig.version}:${mig.up.toString()}`).digest('hex').slice(0, 16);
+}
+
+function legacyChecksumOf(mig) {
+  return crypto.createHash('sha256').update(`${mig.version}:${mig.description}`).digest('hex').slice(0, 16);
+}
+
 // 应用所有未应用的迁移
 //   - v0.31/v0.36 用户库：账本里只有 v1 → 自动跑 v2
 //   - 已 v2 用户：跳过
 //   - 升级失败：better-sqlite3 自动回滚（事务性 DDL）
+//   - v0.47: 先校验已应用迁移的 checksum（不匹配 = 硬错，提示重建镜像库），
+//     旧口径账本行静默升级到新口径（等价于 Flyway repair 的一次性采纳）
 export function applyPendingMigrations(db) {
   if (!db) return { applied: 0, current: null };
-  const row = db.prepare('SELECT MAX(version) AS v FROM aos_schema_history').get();
-  const current = row?.v ?? 0;
+  const rows = db.prepare('SELECT version, checksum FROM aos_schema_history ORDER BY version').all();
+  const current = rows.length > 0 ? rows[rows.length - 1].version : 0;
+
+  for (const row of rows) {
+    const mig = MIGRATIONS.find((m) => m.version === row.version);
+    if (!mig) continue; // 未知版本（如降级运行）：无从校验，跳过
+    const expect = checksumOf(mig);
+    if (row.checksum === expect) continue;
+    if (row.checksum === legacyChecksumOf(mig)) {
+      db.prepare('UPDATE aos_schema_history SET checksum = ? WHERE version = ?').run(expect, row.version);
+      continue;
+    }
+    throw new Error(
+      `迁移 v${row.version} 校验和不匹配：已应用的迁移代码在应用后被修改过（账本 ${row.checksum} ≠ 期望 ${expect}）。`
+      + '继续执行可能让镜像库结构偏离预期。请回滚代码改动，或执行 nice-aos storage rebuild 重建镜像库。',
+    );
+  }
+
   const pending = MIGRATIONS.filter((m) => m.version > current);
   if (pending.length === 0) return { applied: 0, current };
 
@@ -172,9 +202,8 @@ export function applyPendingMigrations(db) {
     for (const mig of pending) {
       mig.up(db);
       const ts = new Date().toISOString();
-      const checksum = crypto.createHash('sha256').update(`${mig.version}:${mig.description}`).digest('hex').slice(0, 16);
       db.prepare('INSERT INTO aos_schema_history (version, applied_at, description, checksum) VALUES (?, ?, ?, ?)')
-        .run(mig.version, ts, mig.description, checksum);
+        .run(mig.version, ts, mig.description, checksumOf(mig));
     }
   });
   tx();
@@ -182,4 +211,5 @@ export function applyPendingMigrations(db) {
 }
 
 // 导出 hash 计算函数（让 sqliteSnapshot.js 与 seed.js / backfill 共享同一实现）
-export { computeContentHash, computePkHash };
+// checksumOf / legacyChecksumOf / MIGRATIONS 导出供测试与 repair 类工具核验账本
+export { computeContentHash, computePkHash, checksumOf, legacyChecksumOf, MIGRATIONS };

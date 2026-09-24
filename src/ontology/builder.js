@@ -2,20 +2,8 @@
 // builderBackendRoutes/builderLinks/builderAudit/builderAssemble，按 ctx 对象接力，拆分逻辑不变）
 // buildSingleFileOntology：单文件分析（不落盘快照），action analyzeFile 的核心实现。
 import path from 'node:path';
-import fs from 'node:fs';
 import { analyzeFileFromDisk } from '../analyzers/tsAnalyzer.js';
-import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
-import { analyzeUserScriptFromDisk, isUserScriptCandidate } from '../analyzers/userScriptAnalyzer.js';
-import { analyzeRustFile } from '../analyzers/rustAnalyzer.js';
-import { analyzeDartFile } from '../analyzers/dartAnalyzer.js';
-import { analyzeGoFile } from '../analyzers/goAnalyzer.js';
-import { analyzePythonFile } from '../analyzers/pythonAnalyzer.js';
-import { analyzeKotlinFile } from '../analyzers/kotlinAnalyzer.js';
-import { analyzePhpFile } from '../analyzers/phpAnalyzer.js';
-import { analyzeShellScriptFromDisk, isShellScriptCandidate } from '../analyzers/shellScriptAnalyzer.js';
-import { analyzeCMakeFromDisk, isCMakeCandidate } from '../analyzers/cmakeAnalyzer.js';
-import { analyzePkgbuildFromDisk, isPkgbuildCandidate } from '../analyzers/pkgbuildAnalyzer.js';
-import { analyzeNixFromDisk, isNixCandidate } from '../analyzers/nixAnalyzer.js';
+import { resolveAnalyzer } from '../analyzers/analyzerRegistry.js';
 import { ENTRY_BASENAMES } from './builderUtils.js';
 import { collectTypeEntities, linkMethodOverrides } from './typeEntities.js';
 import { SERVER_API_ROUTE_TYPES } from './rpcMatch.js';
@@ -58,38 +46,13 @@ export async function buildSingleFileOntology(absFilePath) {
   const fileName = path.basename(absFilePath);
   const dir = path.dirname(absFilePath);
 
-  // 路由与全仓库扫描一致：.rs → rustAnalyzer；.go → goAnalyzer；.dart → dartAnalyzer；.py → pythonAnalyzer；
-  // .kt/.kts → kotlinAnalyzer；.php → phpAnalyzer；.vue → vueAnalyzer；油猴脚本 → userScriptAnalyzer；
-  // .sh/.bash/.zsh/.ps1/.psm1 → shellScriptAnalyzer；.cmake/CMakeLists.txt → cmakeAnalyzer；
-  // PKGBUILD → pkgbuildAnalyzer；.nix → nixAnalyzer；其余 → tsAnalyzer
-  let facts;
-  if (fileName.endsWith('.rs')) {
-    facts = analyzeRustFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
-  } else if (fileName.endsWith('.go')) {
-    facts = analyzeGoFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
-  } else if (fileName.endsWith('.dart')) {
-    facts = analyzeDartFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
-  } else if (fileName.endsWith('.py')) {
-    facts = analyzePythonFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
-  } else if (fileName.endsWith('.kt') || fileName.endsWith('.kts')) {
-    facts = analyzeKotlinFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
-  } else if (fileName.endsWith('.php')) {
-    facts = analyzePhpFile(fileName, fs.readFileSync(absFilePath, 'utf-8'));
-  } else if (fileName.endsWith('.vue')) {
-    facts = analyzeVueFileFromDisk(fileName, dir);
-  } else if (isUserScriptCandidate(absFilePath)) {
-    facts = analyzeUserScriptFromDisk(fileName, dir);
-  } else if (isShellScriptCandidate(absFilePath)) {
-    facts = analyzeShellScriptFromDisk(fileName, dir);
-  } else if (isCMakeCandidate(absFilePath)) {
-    facts = analyzeCMakeFromDisk(fileName, dir);
-  } else if (isPkgbuildCandidate(absFilePath)) {
-    facts = analyzePkgbuildFromDisk(fileName, dir);
-  } else if (isNixCandidate(absFilePath)) {
-    facts = analyzeNixFromDisk(fileName, dir);
-  } else {
-    facts = analyzeFileFromDisk(fileName, dir);
-  }
+  // 路由分发收敛到 analyzerRegistry（v0.47）：与全仓库扫描共用一条注册表判定链，
+  // 单文件模式走 entry.single（保持 fileName/content 形态，行为与拆分前一致）
+  const ext = path.extname(absFilePath).toLowerCase();
+  const entry = resolveAnalyzer({ diskPath: absFilePath, ext, scan: null });
+  const facts = entry?.single
+    ? entry.single(absFilePath, fileName, dir, ext)
+    : analyzeFileFromDisk(fileName, dir); // 默认路径：tsAnalyzer
 
   const fileObj = {
     id: `file:${fileName}`,

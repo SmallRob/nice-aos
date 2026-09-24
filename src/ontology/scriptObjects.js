@@ -22,9 +22,12 @@ export function buildUserScriptObjects(relPath, facts, fileObj) {
   }
   // 函数级死代码候选：名字在声明范围外零出现（直调 / 回调传值 / 顶层调用均会留下标识符引用）；
   // 调用图零入边兜底（obj['fn']() 字符串键调用不产生标识符引用）；constructor 与事件角色函数豁免
+  // v0.47 修复（refIntegrity 审计发现）：对象 id 用按序号对应的 fnIds[i]，不用 fnIdMap 按名查——
+  // 同名函数（fnIdMap 按名覆盖）会让前几个 id 悬空、末个 id 重复成多个对象；
+  // fnIdMap 仅用于调用边解析（名字→id，重名时末个生效，维持既有语义）
   const topLevelCalled = new Set((facts.topLevelCalls ?? []).map((t) => t.name));
   const scriptFunctions = [];
-  for (const fn of facts.functions ?? []) {
+  (facts.functions ?? []).forEach((fn, i) => {
     const shortName = fn.name.includes('.') ? fn.name.slice(fn.name.lastIndexOf('.') + 1) : fn.name;
     const positions = facts.nameReferences?.get(shortName) ?? [];
     const outside = positions.filter((p) => p < fn.pos || p >= fn.end).length;
@@ -36,7 +39,7 @@ export function buildUserScriptObjects(relPath, facts, fileObj) {
       deadReason = '全文零引用（排除声明与自身函数体）';
     }
     scriptFunctions.push({
-      id: fnIdMap.get(fn.name),
+      id: fnIds[i],
       name: fn.name,
       kind: fn.kind,
       owner: fn.owner ?? null,
@@ -64,7 +67,7 @@ export function buildUserScriptObjects(relPath, facts, fileObj) {
       filePath: relPath,
       reviewed: false, notes: null,
     });
-  }
+  });
   // 调用边回填（from/to 均为已收集函数）
   const fnById = new Map(scriptFunctions.map((f) => [f.id, f]));
   for (const edge of facts.callEdges ?? []) {

@@ -26,34 +26,60 @@ export function loadSnapshotFile(snapPath) {
   }
 }
 
-// --where 过滤语法（与 asdm-aos 对齐，扩展模糊匹配）：
+// --where 过滤语法（与 asdm-aos 对齐，v0.47 扩展）：
 //   "k1=v1,k2=v2" 多条件 AND；等号或冒号 = 精确相等；~ = 模糊匹配（子串包含，忽略大小写）
+//   v0.47（借鉴 asdm-aos whereClause）：>N / >=N / <N / <=N 数值比较（非数值或不存在的字段不命中）；
+//   点路径取嵌套字段（"apiMatch.methodMatches" / "health.cyclomatic"），缺失路径视为字段不存在
 //   数组值：精确为成员包含，模糊为任一成员包含
 export function parseWhere(where) {
   if (!where) return null;
   const conditions = [];
   for (const part of where.split(',')) {
-    // 取最先出现的分隔符：= / : 为精确，~ 为模糊
+    // 取最先出现的分隔符；双字符操作符（>= / <=）优先于单字符判定
     let idx = -1;
-    let op = 'eq';
+    let op = null;
+    let width = 1;
     for (let i = 0; i < part.length; i++) {
       const ch = part[i];
-      if (ch === '=' || ch === ':' || ch === '~') {
-        idx = i;
-        op = ch === '~' ? 'contains' : 'eq';
-        break;
-      }
+      const next = part[i + 1];
+      if ((ch === '>' || ch === '<') && next === '=') { idx = i; op = ch === '>' ? 'gte' : 'lte'; width = 2; break; }
+      if (ch === '=' || ch === ':') { idx = i; op = 'eq'; break; }
+      if (ch === '~') { idx = i; op = 'contains'; break; }
+      if (ch === '>' || ch === '<') { idx = i; op = ch === '>' ? 'gt' : 'lt'; break; }
     }
     if (idx <= 0) continue;
-    conditions.push({ key: part.slice(0, idx).trim(), op, value: part.slice(idx + 1).trim() });
+    conditions.push({ key: part.slice(0, idx).trim(), op, value: part.slice(idx + width).trim() });
   }
   return conditions;
 }
 
+// 点路径取值：'a.b.c' 逐层下钻；中途非对象 / 缺键 → undefined（与顶层缺键同语义）
+function getByPath(obj, key) {
+  if (!key.includes('.')) return obj[key];
+  let cur = obj;
+  for (const seg of key.split('.')) {
+    if (cur === null || typeof cur !== 'object') return undefined;
+    cur = cur[seg];
+  }
+  return cur;
+}
+
+const NUMERIC_OPS = new Set(['gt', 'gte', 'lt', 'lte']);
+
 export function matchesWhere(obj, conditions) {
   if (!conditions) return true;
   return conditions.every(({ key, op, value }) => {
-    const objValue = obj[key];
+    const objValue = getByPath(obj, key);
+    if (NUMERIC_OPS.has(op)) {
+      // 数值比较：两侧均可数值化才参与比较（否则该条件不命中，不做字符串字典序比较）
+      const n = Number(value);
+      const ov = Number(objValue);
+      if (!Number.isFinite(n) || !Number.isFinite(ov)) return false;
+      if (op === 'gt') return ov > n;
+      if (op === 'gte') return ov >= n;
+      if (op === 'lt') return ov < n;
+      return ov <= n;
+    }
     if (op === 'contains') {
       const needle = String(value).toLowerCase();
       if (Array.isArray(objValue)) return objValue.some((v) => String(v).toLowerCase().includes(needle));

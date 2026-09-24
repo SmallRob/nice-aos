@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const MERGE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/ontology/merge.js');
+const MERGE = pathToFileURL(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/ontology/merge.js')).href;
 
 function snapA() {
   return {

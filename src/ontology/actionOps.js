@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { detectProjectRoot } from '../analyzers/projectRootDetector.js';
 import { buildOntologyData, buildSingleFileOntology } from './builder.js';
-import { saveSnapshot } from './snapshot.js';
+import { saveSnapshot, getSnapshotDir } from './snapshot.js';
 
 /**
  * 解析 refreshRepo 动作的项目根。
@@ -61,7 +61,18 @@ function summarizeCounts(dataMap) {
 export async function runRefreshRepo(input = {}, opts = {}) {
   const rootCheck = resolveActionProjectRoot(input);
   if (!rootCheck.ok) return rootCheck;
-  const dataMap = await buildOntologyData(rootCheck.projectPath, { ...input });
+  // v0.47 facts 解析缓存默认启用（input.incremental === false 或 opts.factsCachePath === null 关闭）：
+  // 缓存落在快照同目录（跟随 --snapshot-dir 覆盖链），内容哈希为权威判定，行为与全量等价
+  const cacheDisabled = input.incremental === false || opts.factsCachePath === null;
+  const factsCachePath = cacheDisabled ? undefined
+    : (opts.factsCachePath ?? path.join(
+      opts.saveTo ? path.dirname(opts.saveTo) : getSnapshotDir(),
+      'facts-cache.json',
+    ));
+  const dataMap = await buildOntologyData(rootCheck.projectPath, {
+    ...input,
+    ...(factsCachePath ? { factsCachePath } : {}),
+  });
   let snapFile;
   if (opts.saveTo) {
     fs.mkdirSync(path.dirname(opts.saveTo), { recursive: true });

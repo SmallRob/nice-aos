@@ -1,30 +1,55 @@
 // 相位 1（buildOntologyData 拆分）：项目扫描 + 逐文件解析 + 依赖对象 + 模块树 + SourceFile 对象
 // 原为 builder.js 内联代码段（"1. 逐文件解析" 至 "4. SourceFile 对象"），拆分时收敛于此（逻辑不变）。
 import path from 'node:path';
+import fs from 'node:fs';
 import { scanProject } from '../analyzers/projectScanner.js';
 import { createResolver } from '../analyzers/importResolver.js';
 import { analyzeFileFromDisk } from '../analyzers/tsAnalyzer.js';
-import { analyzeVueFileFromDisk } from '../analyzers/vueAnalyzer.js';
-import { analyzeUserScriptFromDisk } from '../analyzers/userScriptAnalyzer.js';
 import { analyzeRustFileFromDisk, resolveRustUse } from '../analyzers/rustAnalyzer.js';
-import { analyzeDartFileFromDisk } from '../analyzers/dartAnalyzer.js';
-import { analyzeGoFileFromDisk } from '../analyzers/goAnalyzer.js';
-import { analyzePythonFileFromDisk, checkPythonSyntaxBulk } from '../analyzers/pythonAnalyzer.js';
-import { analyzeKotlinFileFromDisk } from '../analyzers/kotlinAnalyzer.js';
-import { analyzePhpFileFromDisk } from '../analyzers/phpAnalyzer.js';
-import { analyzeShellScriptFromDisk } from '../analyzers/shellScriptAnalyzer.js';
-import { analyzeCMakeFromDisk } from '../analyzers/cmakeAnalyzer.js';
-import { analyzePkgbuildFromDisk } from '../analyzers/pkgbuildAnalyzer.js';
-import { analyzeNixFromDisk } from '../analyzers/nixAnalyzer.js';
+import { checkPythonSyntaxBulk } from '../analyzers/pythonAnalyzer.js';
 import { createPhpImportResolver, createKotlinImportResolver } from '../analyzers/phpKotlinImportResolver.js';
-import { analyzeConfigFileFromDisk } from '../analyzers/configAnalyzer.js';
-import { CONFIG_EXTS, isEntryFile, moduleLayerOf, createGoImportResolver, isTestFile } from './builderUtils.js';
+import { resolveAnalyzer } from '../analyzers/analyzerRegistry.js';
+import { loadFactsCache, saveFactsCache, computeContentHash16 } from '../analyzers/factsCache.js';
+import { createGoImportResolver, isEntryFile, moduleLayerOf, isTestFile } from './builderUtils.js';
 
 export function builderScanPhase(ctx) {
   const { projectRoot, options, report } = ctx;
   report('scan:start');
   const scan = scanProject(projectRoot, options);
   report('scan:done', { fileCount: scan.fileCount, rootCount: (scan.roots ?? []).length });
+
+  // v0.47 facts 缓存（借鉴 asdm-aos contentHash/manifest 继承，作用于 facts 粒度）：
+  // options.factsCachePath 提供时启用。预读文件内容算哈希，命中 → 复用缓存 facts 跳过 parse；
+  // 未命中 → 全量解析并写回。正确性等价（facts 是文件内容的纯函数），收益 = 未变文件的解析成本。
+  const cachePath = typeof options.factsCachePath === 'string' && options.factsCachePath ? options.factsCachePath : null;
+  const cacheEntries = cachePath ? loadFactsCache(cachePath, projectRoot) : null; // null = 无可用缓存（全量）
+  const reuseFacts = new Map(); // relPath → facts（缓存命中，直接复用）
+  const newEntries = new Map(); // relPath → { h, facts }（本轮写回条目：命中沿用 + 未命中新解析）
+  const hashByFile = new Map(); // relPath → { h, size, mtimeMs }
+  const fileManifest = cachePath ? {} : null; // relPath → { s, m, h }，暴露在 _meta.fileManifest
+  const factsCacheStats = { enabled: !!cachePath, hit: 0, miss: 0, reused: false };
+  if (cachePath) {
+    for (const relPath of scan.files) {
+      const diskPath = relPath.endsWith('#env') ? relPath.slice(0, -4) : relPath;
+      let h = null; let size = null; let mtimeMs = null;
+      try {
+        const abs = path.join(projectRoot, diskPath);
+        h = computeContentHash16(fs.readFileSync(abs, 'utf-8'));
+        const st = fs.statSync(abs);
+        size = st.size; mtimeMs = st.mtimeMs;
+      } catch { /* 读失败交给分析器的报错路径 */ }
+      hashByFile.set(relPath, { h, size, mtimeMs });
+      const entry = h && cacheEntries?.get(relPath);
+      if (entry && entry.h === h) {
+        reuseFacts.set(relPath, entry.facts);
+        newEntries.set(relPath, entry);
+        factsCacheStats.hit += 1;
+      }
+    }
+    factsCacheStats.miss = scan.files.length - factsCacheStats.hit;
+    factsCacheStats.reused = factsCacheStats.hit > 0;
+  }
+
   // 入口识别使用实际扫描根（显式 roots 或默认 src/）；根级入口名在每个根顶层均有效
   const entryRoots = scan.roots ?? ['src'];
   const htmlEntries = new Set(scan.htmlEntryFiles ?? []);
@@ -67,11 +92,11 @@ export function builderScanPhase(ctx) {
   );
   const factsMap = new Map();
   const analysisErrors = [];
-  // 1-pre. Python 语法批量校验（仅当项目含 .py 文件时执行）
+  // 1-pre. Python 语法批量校验（仅当项目含 .py 文件时执行；缓存命中的文件已校验过，跳过）
   // pythonAnalyzer 是基于缩进的轻量级解析，对 SyntaxError 文件会"静默成功"；
   // 这里一次性调 python3 ast.parse 找出失败文件，让 analyzePythonFileFromDisk
   // 对这些文件 throw，由下方 try/catch 写入 analysisErrors。
-  const pythonFiles = scan.files.filter((f) => f.endsWith('.py') && !f.endsWith('.pyc'));
+  const pythonFiles = scan.files.filter((f) => f.endsWith('.py') && !f.endsWith('.pyc') && !reuseFacts.has(f));
   if (pythonFiles.length > 0) {
     try {
       checkPythonSyntaxBulk(pythonFiles, projectRoot);
@@ -81,40 +106,29 @@ export function builderScanPhase(ctx) {
   }
   const getFacts = (relPath) => {
     if (factsMap.has(relPath)) return factsMap.get(relPath);
+    // v0.47 缓存命中：内容哈希一致的解析结果直接复用，跳过 parse（正确性等价：facts 是纯函数）
+    const reused = reuseFacts.get(relPath);
+    if (reused) {
+      factsMap.set(relPath, reused);
+      return reused;
+    }
     // .env.* 文件被 projectScanner 加了 "#env" 后缀还原真实磁盘路径（ext 从 path.extname 提取）
     const diskPath = relPath.endsWith('#env') ? relPath.slice(0, -4) : relPath;
     const diskExt = path.extname(diskPath).toLowerCase();
     // 配置扩展名按规范化 ext 判定（.env.development 视为 .env）
     const ext = relPath.endsWith('#env') ? '.env' : diskExt;
+    const cacheNew = (facts) => {
+      const hh = hashByFile.get(relPath);
+      if (hh?.h) newEntries.set(relPath, { h: hh.h, facts });
+    };
     try {
-      const facts = diskPath.endsWith('.rs')
-        ? analyzeRustFileFromDisk(diskPath, projectRoot)
-        : diskPath.endsWith('.go')
-          ? analyzeGoFileFromDisk(diskPath, projectRoot)
-          : diskPath.endsWith('.dart')
-            ? analyzeDartFileFromDisk(diskPath, projectRoot)
-            : diskPath.endsWith('.py')
-              ? analyzePythonFileFromDisk(diskPath, projectRoot)
-              : (diskPath.endsWith('.kt') || diskPath.endsWith('.kts'))
-                ? analyzeKotlinFileFromDisk(diskPath, projectRoot)
-                : diskPath.endsWith('.php')
-                  ? analyzePhpFileFromDisk(diskPath, projectRoot)
-                  : diskPath.endsWith('.vue')
-                    ? analyzeVueFileFromDisk(diskPath, projectRoot)
-                    : (scan.userScriptFiles?.has(diskPath)
-                      ? analyzeUserScriptFromDisk(diskPath, projectRoot)
-                      : scan.shellScriptFiles?.has(diskPath)
-                        ? analyzeShellScriptFromDisk(diskPath, projectRoot)
-                        : scan.cmakeFiles?.has(diskPath)
-                          ? analyzeCMakeFromDisk(diskPath, projectRoot)
-                          : scan.pkgbuildFiles?.has(diskPath)
-                            ? analyzePkgbuildFromDisk(diskPath, projectRoot)
-                            : scan.nixFiles?.has(diskPath)
-                              ? analyzeNixFromDisk(diskPath, projectRoot)
-                              : CONFIG_EXTS.has(ext)
-                                ? analyzeConfigFileFromDisk(diskPath, projectRoot, ext)
-                                : analyzeFileFromDisk(diskPath, projectRoot));
+      // v0.47: 分发链收敛到 analyzerRegistry（扩展名/扫描集合 → 分析器，顺序与拆分前逐一对应）
+      const entry = resolveAnalyzer({ diskPath, ext, scan });
+      const facts = entry
+        ? entry.fromDisk(diskPath, projectRoot, ext)
+        : analyzeFileFromDisk(diskPath, projectRoot); // 默认路径：tsAnalyzer
       factsMap.set(relPath, facts);
+      cacheNew(facts);
       return facts;
     } catch (err) {
       analysisErrors.push({ file: relPath, error: String(err.message ?? err) });
@@ -127,11 +141,21 @@ export function builderScanPhase(ctx) {
         interfaces: [], classes: [], traits: [], routes: [], moduleFunctions: [],
       };
       factsMap.set(relPath, empty);
+      cacheNew(empty);
       return empty;
     }
   };
   for (const file of scan.files) getFacts(file);
   report('parse:done', { fileCount: scan.files.length, errorCount: analysisErrors.length });
+
+  // v0.47 缓存写回 + 文件清单（_meta.fileManifest）：条目只含本轮 scan.files（已删文件自然剪枝）
+  if (cachePath) {
+    for (const relPath of scan.files) {
+      const hh = hashByFile.get(relPath);
+      if (hh?.h) fileManifest[relPath] = { s: hh.size, m: hh.mtimeMs, h: hh.h };
+    }
+    saveFactsCache(cachePath, projectRoot, newEntries);
+  }
 
   // Rust use 路径解析器（crate::a::b::Name → 目标 .rs 文件；serde::X → Rust 外部 crate，不进 npm 依赖体系）
   const resolveRustImport = (relPath, specifier) => resolveRustUse(relPath, specifier, rustFiles);
@@ -177,6 +201,14 @@ export function builderScanPhase(ctx) {
       if (isPhp || isKotlin) {
         // v0.36.1：内部（PSR-4 / 包限定名命中）与外部（首段归并，php: foo\bar → foo；kotlin: java.net.Proxy → java）
         imp.resolved = (isPhp ? phpImportResolver : kotlinImportResolver).resolve(imp.specifier);
+        // v0.47：外部归并计成依赖对象（与 npm/Go 未声明依赖同路径）——
+        // 此前只写 dep:x 引用不建对象，refIntegrity 审计会判悬空（query Dependency 也查不到）
+        if (imp.resolved.kind === 'external' && imp.resolved.package) {
+          const pkg = imp.resolved.package;
+          depUsedCount.set(pkg, (depUsedCount.get(pkg) ?? 0) + 1);
+          if (!externalImports.has(pkg)) externalImports.set(pkg, new Set());
+          externalImports.get(pkg).add(imp.specifier);
+        }
         continue;
       }
       const resolved = resolver.resolve(relPath, imp.specifier);
@@ -341,5 +373,6 @@ export function builderScanPhase(ctx) {
     scan, entryRoots, htmlEntries, nodeEntries, testImportedFiles, resolutionStats, testNamedRefs, resolver,
     rustFiles, goFiles, goResolver, factsMap, analysisErrors, getFacts, resolveRustImport, isKtPath,
     phpImportResolver, kotlinImportResolver, dependencies, modules, fileObjects, fileObjectByPath,
+    factsCacheStats, fileManifest,
   });
 }

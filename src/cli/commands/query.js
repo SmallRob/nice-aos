@@ -8,7 +8,7 @@ const DEFAULT_LIMIT = 50;
 export const queryCommand = new Command('query')
   .description('查询本体对象（类型: ' + OBJECT_TYPES.map((t) => t.type).join('/') + '）')
   .argument('<type>', '对象类型')
-  .option('--where <conditions>', '过滤条件，如 "layer=components,kind=page"')
+  .option('--where <conditions>', '过滤条件：k=v 精确 / k~v 模糊 / k>N k>=N k<N k<=N 数值比较，支持点路径嵌套字段如 "health.complexity.cyclomatic>5"；多条件逗号 AND')
   .option('--all', '返回全部（默认仅前 50 条）')
   .option('--limit <n>', '限制返回条数')
   .option('--field <fields>', '字段投影，逗号分隔，如 "id,name,filePath"（id 恒保留；在 where/limit 之后应用）')

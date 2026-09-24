@@ -1046,7 +1046,15 @@ function extractHttpClientCalls(clean, lineStarts) {
       // v0.40.0 用 replace 去首尾引号，会把 `" % idrac_ip` 一并留在 url 里（iDRAC 大量此模式）。
       // 前缀 [a-zA-Z]* 兼容 f"" / rf"" / b"" 字面量。
       const firstStr = /^[a-zA-Z]*(['"])((?:(?!\1).)*)\1/.exec(urlRaw);
-      const url = firstStr ? firstStr[2] : urlRaw.replace(/^['"]|['"]$/g, '');
+      // v0.47: 拼接表达式（base + "/api/x" % id）首字面量不命中时，取首个含 '/' 的字符串字面量，
+      // 让 path 部分参与 RPC 匹配（变量段丢弃——与 apiPathSegments 的占位/前缀归一配套）
+      let url;
+      if (firstStr) {
+        url = firstStr[2];
+      } else {
+        const lit = /(['"])((?:(?!\1).)*\/(?:(?!\1).)*)\1/.exec(urlRaw);
+        url = lit ? lit[2] : urlRaw.replace(/^['"]|['"]$/g, '');
+      }
       // v0.42.1: 推断 method（requests.request / urllib.Request 读 kwarg；urllib.urlopen 视 data 推 POST/GET）
       const method = inferMethod(methodRaw, argsText, args);
       const key = `${pat.lib}|${method}|${url}`;
