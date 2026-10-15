@@ -26,7 +26,7 @@
 // 后续阶段 2 增量加：query_graph（Cypher-like）、search_duplicates、trace_flows 等
 
 import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META } from './blueprint.js';
-import { LINK_TYPE_PAIRS } from './linkDefs.js'; // v0.50.0 单一事实源
+import { getConverter } from './converter.js'; // v0.51.0 converter 钩子（统一遍历语义）
 import { linkWithMeta2, linkBfsWithMeta } from './linkMeta.js';
 import { projectObjects } from '../cli/shared.js'; // ADR 0012 D1：字段白名单投影（与 CLI query --field 同语义）
 
@@ -123,11 +123,13 @@ export function createToolRegistry({ snap }) {
       description: '获取本体元模型：对象类型（带 prefix/category/level 描述）、链接类型（含反向对）、action 名称、抽象层级（L0-L3）、概念范畴。v0.48.0 起额外返回 vocabulary 块（与 viewerModel.blueprint.vocabulary 共享形态：objectTypes 按 count 倒序、含 active 标记；链接按 LINK_TYPE_PAIRS 区分正向/反向），便于 agent 与 viewer 共享同一词汇源',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        // v0.50.0 vocabulary 块：从 linkDefs 派生 linkTypePairs / reverseLinkTypes（单一事实源）
-        // v0.48.0 时这里手写了 11 条 LINK_TYPE_PAIRS，与 viewerModel 端的硬编码不一致；
-        // v0.50.0 抽到 src/ontology/linkDefs.js 后两处共用，避免漂移。
-        const reverseNames = [...new Set(Object.values(LINK_TYPE_PAIRS))]
-          .filter((v) => LINK_TYPES.includes(v));
+        // v0.51.0 vocabulary 块走 converter 钩子（统一遍历语义）
+        // converter.linkVocabulary() 从 linkDefs.LINK_TYPE_PAIRS 派生；与 v0.50.0 单一事实源一致
+        // 未来 registerConverter 时，调用方无需改动（透明替换）
+        const converter = getConverter();
+        const vocab = converter.linkVocabulary();
+        const linkTypePairs = vocab.linkTypePairs;
+        const reverseNames = vocab.reverseLinkTypes.filter((v) => LINK_TYPES.includes(v));
         const vocabularyObjectTypes = OBJECT_TYPES
           .map((t) => ({
             type: t.type,
@@ -151,15 +153,12 @@ export function createToolRegistry({ snap }) {
           actionNames: ACTION_NAMES,
           prefixMap: Object.fromEntries(OBJECT_TYPES.map((t) => [t.prefix, t.type])),
           // v0.48.0 新增：vocabulary 块（与 viewerModel.blueprint.vocabulary 同形态）
+          // v0.51.0：linkTypePairs 走 converter 钩子（统一遍历语义；与 viewerModel 各自独立）
           vocabulary: {
             objectTypes: vocabularyObjectTypes,
             linkTypes: LINK_TYPES,
             reverseLinkTypes: reverseNames,
-            linkTypePairs: Object.fromEntries(
-              Object.entries(LINK_TYPE_PAIRS).filter(([fwd, rev]) =>
-                LINK_TYPES.includes(fwd) && LINK_TYPES.includes(rev),
-              ),
-            ),
+            linkTypePairs,
             actions: [...ACTION_NAMES],
           },
           // v0.48.0 推导统计（agent 自检 vocabulary 是否完整）

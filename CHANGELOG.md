@@ -2,6 +2,66 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.51.0] - 2026-10-15
+
+### ontology converter 钩子下放（借鉴分析 §2-B 落地）
+
+借鉴 asdm-aos-server `GraphConverter`（`asdm-aos-server/src/modules/graph/converter/aos-gitnexus/index.ts`）的"通用遍历与领域语义分离"思路，nice-aos 落地 3 个钩子的轻量版（保持零依赖、零行为变化）。
+
+详见 [ADR 0016](./docs/adr/0016-converter-hooks.md) + [借鉴分析报告](./.nice-aos/analysis/asdm-aos-borrow-analysis.md §3)。
+
+#### 新增 `src/ontology/converter.js`
+
+单一文件承载 `niceAosConverter` 默认实现 + 注册接口：
+
+- **钩子 1 `resolveLink(linkType)`**：正向 → `{base: 自身, direction: 'out'}`；反向别名 → `{base: forward, direction: 'in'}`；未知 → `null`
+- **钩子 2 `expandLinked(ctx)`**：默认空实现（接口留位，未来多态扩展用）
+- **钩子 3 `linkVocabulary()`**：返回 `{linkTypePairs, reverseLinkTypes}` 派生数据
+- 注册表：`getConverter()` / `registerConverter(c, {default: true})` / `__resetConverterForTest()`
+
+#### wire 一处：toolRegistry.get_schema.vocabulary
+
+`get_schema.vocabulary.linkTypePairs` 与 `reverseLinkTypes` 字段从 `converter.linkVocabulary()` 派生（替代 v0.50.0 的直接 `LINK_TYPE_PAIRS` 导入）。行为对调用方**完全透明**：同样的字段、同样的数据形态。
+
+**Viewer 端不动**：viewerModel.js 的 19 对 UI 词汇（`passesProps → propsFrom` 等不在 linkDefs 内的展示性反向名）保留，与 API 端 linkDefs 17 对形成 API/UI 双视图的合理分工。
+
+#### 不动清单（保持轻量）
+
+| 文件 | 是否改 | 原因 |
+|------|--------|------|
+| `blueprint.js` 27 个具名 linkImpls | ❌ | 后续 round 时机成熟再迁移；本 ADR 只是接口层 |
+| `linkMeta.js` | ❌ | 工作良好；`expandLinked` 钩子留位待接入 |
+| `viewerModel.js` | ❌ | UI 词汇独立语义（19 对 vs 17 对）合理 |
+| `linkDefs.js` | ❌ | v0.50.0 稳定，被 converter 复用 |
+
+#### 新增测试（+11 测试，0 回归）
+
+- `test/converter.test.mjs` 新增 **11** 测试：
+  - niceAosConverter 三钩子形态
+  - resolveLink 正向 / 反向 / 未知（含 `''`/`null`/`undefined`）
+  - expandLinked 默认空（无副作用，纯函数验证）
+  - linkVocabulary 派生 linkTypePairs + reverseLinkTypes
+  - getConverter 单例（两次调用同一实例）
+  - registerConverter 默认不替换 / `{default: true}` 替换 / 拒绝缺钩子
+  - hook 调用无副作用（不修改 ctx）
+
+#### 已锁定的 4 个设计决策（详见 ADR 0016）
+
+- **D1 converter 抽象层 3 钩子**：与 asdm 同构，但默认 singleton 实现（不引入多 converter 并存市场）
+- **D2 wire 一处**：只换 toolRegistry.get_schema.vocabulary；不动 viewerModel / blueprint / linkMeta
+- **D3 注册表接口保留**：用作未来多 converter 扩展口子（v0.52+ 评估）
+- **D4 不动现有架构**：避免大爆炸式 refactor 的回归风险
+
+#### 后续候选（v0.52+）
+
+| 主题 | 内容 |
+|------|------|
+| **v0.52.0 MCP server 接入** | toolRegistry.call() 接 MCP protocol / withSnapshot 包装终态化（需 user 决策 transport） |
+| linkImpls 27 函数 → lookup 表 | blueprint.js linkImpls 收敛 + converter 钩子接入（当前接口已留位） |
+| expandLinked 真实接入 | linkMeta.js 接到 converter.expandLinked 钩子（接口已留位） |
+
+---
+
 ## [0.50.0] - 2026-10-15
 
 ### linkDefs 元数据层（借鉴分析 §2-A 落地）
