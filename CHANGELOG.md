@@ -2,6 +2,65 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.50.0] - 2026-10-15
+
+### linkDefs 元数据层（借鉴分析 §2-A 落地）
+
+将 asdm-aos-server 借鉴分析报告中"LinkDef 数据驱动"思路落地——抽取 nice-aos 56 个 linkType 的**元数据单一事实源**，不改 linkImpls 行为（最安全的渐进式做法）。
+
+详见 [ADR 0015](./docs/adr/0015-linkDefs-metadata-layer.md) + [借鉴分析报告](./.nice-aos/analysis/asdm-aos-borrow-analysis.md §2-A)。
+
+#### 新增 `src/ontology/linkDefs.js`
+
+nice-aos 56 个 linkType 的**元数据单一事实源**（name / reverse / sourcePrefixes / targetPrefixes / description / category / hasImpl）：
+
+- 56 个 `LINK_DEFS` 数组（27 个有 blueprint.linkImpls 具名实现 + 29 个 shell/CMake/Nix/ROS/crossLang 等待实现）
+- `LINK_TYPE_PAIRS`（17 个正反向对）、`REVERSE_OF` / `FORWARD_OF` / `REVERSE_LINK_TYPES` 派生
+- `LINK_DEFS_BY_CATEGORY`：hierarchy / reference / derive 三类分组
+- 工具函数：`getLinkDef()` / `acceptsSource()` / `hasLinkImpl()`
+- fail-fast 一致性校验：name 唯一、reverse 互指、sourcePrefixes 非空、双声明防护
+
+#### `get_schema.vocabulary` 切换到 linkDefs 派生
+
+`v0.48.0` 在 `toolRegistry.js:get_schema` 手写 11 条 `LINK_TYPE_PAIRS` 常量移除，改为从 `linkDefs.LINK_TYPE_PAIRS` 派生。`viewerModel.blueprint.vocabulary.linkTypePairs` 在 v0.51+ 替换（保持单点改动）。
+
+#### 质量护栏（fail-fast + 测试同步）
+
+- **fail-fast**：模块加载时执行 `_validateLinkDefs(defs)`，数据错误立即抛错（不静默运行）
+- **测试同步**：新增 `test/linkDefs.test.mjs`（11 测试）断言 `LINK_TYPE_NAMES` 与 `blueprint.js LINK_TYPES` 严格同步（56 ↔ 56）
+- **行为零变化**：blueprint.js 27 个具名 linkImpls 函数原样运行；get_schema 字段向后兼容（旧工具入参不变）
+
+#### 新增测试（+11 测试，0 回归）
+
+- `test/linkDefs.test.mjs` 新增 **11** 测试：
+  - name 集合唯一 / reverse 互指 / sourcePrefixes 非空
+  - 与 blueprint.LINK_TYPES 完全同步（56 ↔ 56）
+  - `REVERSE_OF` / `FORWARD_OF` 对称性
+  - `getLinkDef` / `acceptsSource` / `hasLinkImpl` 行为
+  - `LINK_DEFS_BY_CATEGORY` 完整性
+
+#### 已锁定的 5 个设计决策（详见 ADR 0015）
+
+- **D1 linkDefs 是元数据单一事实源**：linkType 描述性信息集中管理
+- **D2 blueprint.js LINK_TYPES 仍是顺序/行为源**：避免顺序敏感的回归；linkDefs 测试断言同步
+- **D3 vocabulary 从内联常量切到 linkDefs 派生**：消除 v0.48.0 留下的 11 条硬编码
+- **D4 reverse 只在 forward def 上声明**：防双声明的 fail-fast 规则
+- **D5 数据建模 5 原则**：sourcePrefixes 必填 / targetPrefixes 仅作 hint / category 三档
+
+#### 不进入此 ADR（明确留给后续）
+
+- ❌ linkImpls 27 个具名函数硬编码（仍在 blueprint.js）— v0.51+ converter 钩子下放阶段收敛
+- ❌ viewerModel.js `LINK_TYPE_PAIRS` 硬编码（待 v0.51 同步切换）
+
+#### 后续候选（v0.51+）
+
+| 主题 | 内容 |
+|------|------|
+| **v0.51.0 converter 钩子下放** | linkImpls 27 个函数 → lookup 表 + `resolveLink` / `virtualEntity` / `expandLinked` / `linkVocabulary` 4 钩子（本 ADR 是前置） |
+| viewerModel 同步 | `viewerModel.LINK_TYPE_PAIRS` 改 `import linkDefs.LINK_TYPE_PAIRS`（消除 v0.48.0 的硬编码残留） |
+
+---
+
 ## [0.48.0] - 2026-10-15
 
 ### asdm-aos-server 借鉴 round 3：withSnapshot 透明加载 + vocabulary envelope

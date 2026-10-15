@@ -26,6 +26,7 @@
 // 后续阶段 2 增量加：query_graph（Cypher-like）、search_duplicates、trace_flows 等
 
 import { OBJECT_TYPES, LINK_TYPES, ACTION_NAMES, ONTOLOGY_META } from './blueprint.js';
+import { LINK_TYPE_PAIRS } from './linkDefs.js'; // v0.50.0 单一事实源
 import { linkWithMeta2, linkBfsWithMeta } from './linkMeta.js';
 import { projectObjects } from '../cli/shared.js'; // ADR 0012 D1：字段白名单投影（与 CLI query --field 同语义）
 
@@ -122,20 +123,11 @@ export function createToolRegistry({ snap }) {
       description: '获取本体元模型：对象类型（带 prefix/category/level 描述）、链接类型（含反向对）、action 名称、抽象层级（L0-L3）、概念范畴。v0.48.0 起额外返回 vocabulary 块（与 viewerModel.blueprint.vocabulary 共享形态：objectTypes 按 count 倒序、含 active 标记；链接按 LINK_TYPE_PAIRS 区分正向/反向），便于 agent 与 viewer 共享同一词汇源',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        // v0.48.0 vocabulary 块：与 viewerModel.blueprint.vocabulary 共享数据形态，
-        // 但这里走 cost-static 路径（不调用 createBlueprint），让 get_schema 在大快照上也轻量。
-        // 与 viewer 端 linkTypePairs 推导保持一致（正向含反向对里出现的 name，反向含 LINK_TYPE_PAIRS 的 values 集合）。
-        const LINK_TYPE_PAIRS = {
-          contains: 'containedBy', belongsTo: 'belongsTo',
-          imports: 'importedBy', renders: 'renderedBy', calls: 'calledBy',
-          usesStore: 'usedByStore', usesTrait: 'usedByTrait',
-          extends: 'extendedBy', implements: 'implementedBy',
-          overrides: 'overriddenBy', mapsToTable: 'mappedFromCode',
-        };
-        // 仅保留当前 LINK_TYPES 里实际存在的反向名
-        const reverseNames = [...new Set(Object.entries(LINK_TYPE_PAIRS)
-          .filter(([fwd, rev]) => LINK_TYPES.includes(fwd) && LINK_TYPES.includes(rev))
-          .map(([, rev]) => rev))].filter((v) => LINK_TYPES.includes(v));
+        // v0.50.0 vocabulary 块：从 linkDefs 派生 linkTypePairs / reverseLinkTypes（单一事实源）
+        // v0.48.0 时这里手写了 11 条 LINK_TYPE_PAIRS，与 viewerModel 端的硬编码不一致；
+        // v0.50.0 抽到 src/ontology/linkDefs.js 后两处共用，避免漂移。
+        const reverseNames = [...new Set(Object.values(LINK_TYPE_PAIRS))]
+          .filter((v) => LINK_TYPES.includes(v));
         const vocabularyObjectTypes = OBJECT_TYPES
           .map((t) => ({
             type: t.type,
