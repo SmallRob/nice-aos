@@ -2,6 +2,101 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.48.0] - 2026-10-15
+
+### asdm-aos-server 借鉴 round 3：withSnapshot 透明加载 + vocabulary envelope
+
+继 ADR 0012 (查询投影/RPC/SKILL契约)、ADR 0013 (RPC normalization/factsCache/refIntegrity) 之后，asdm-aos-server 借鉴的第三轮。本轮聚焦 **agent 友好度最后一公里**——独立、互不依赖、可单点回滚。
+
+详见 [ADR 0014](./docs/adr/0014-asdm-aos-withsnapshot-vocabulary-envelope.md) + [借鉴分析报告](./.nice-aos/analysis/asdm-aos-borrow-analysis.md)。
+
+#### 新增 `src/ontology/withSnapshot.js`
+
+借鉴 asdm-aos-server 的 `withGraph(gid, fn)`（`mcp.server.ts:53-56`）的"透明按需加载"思路：
+
+- `withSnapshot(projectRoot, fn, opts?)` — 快照存在时直接 `fn(snap)`；缺失或 `forceRefresh` 时先 `buildOntologyData` 再 `fn(snap)`。返回 `{value, rebuilt}` 便于观测
+- `ensureSnapshot(projectRoot, opts?)` — 仅触发保证，不消费 fn
+- 默认 `silent: true`（与 [ADR 0001](./docs/adr/0001-asdm-aos-borrowed-capabilities.md) 决策 4 一致）
+- **透传非 `NO_SNAPSHOT` 错误**（损坏 JSON / IO 错误必须向上抛，不静默重 build）
+
+#### `get_schema` 扩展：vocabulary 块（v0.48.0）
+
+借鉴 asdm-aos-server `get_vocabulary`(`ontology.service.ts:176-196`) 的"实际出现 vs 蓝图声明"二层信息，但**走 cost-static 路径**——不调用 `createBlueprint`，让 `get_schema` 在大快照上也轻量。数据结构与 `viewerModel.blueprint.vocabulary` 共享形态，便于 agent 与 viewer 共用同一词汇源：
+
+```js
+{
+  // ...原有字段（向后兼容）
+  vocabulary: {
+    objectTypes: [...],        // 按 count 倒序、含 active 标记
+    linkTypes: [...],
+    reverseLinkTypes: [...],    // 由 LINK_TYPE_PAIRS 推导
+    linkTypePairs: { ... },     // 正反向对（如 contains → containedBy）
+    actions: [...],
+  },
+  _vocabularyStats: {
+    objectTypeActiveCount,
+    objectTypeDeclaredCount,
+    linkTypeDeclaredCount,
+    reverseLinkTypeCount,
+    generatedAt,
+  },
+}
+```
+
+#### 错误信 envelope 扩展：`_meta.suggestions`（v0.48.0）
+
+借鉴 asdm-aos `AppError('ONT_UNKNOWN_LINK_TYPE', unknownLinkTypeMessage(...))` 模式，nice-aos 走返回值 envelope（保持错误约定）：
+
+`traverse_links` 与 `query_objects` 遇到未知值时返回：
+
+```js
+{
+  ok: false,
+  error: '未知链接类型: rendesr',
+  validValues: [...LINK_TYPES, 'links', 'all'],
+  _meta: {
+    epistemic: 'lower-bound',
+    suggestions: [
+      { value: 'renders', score: 0.286 },
+      // ...（编辑距离打分）
+    ],
+  },
+}
+```
+
+候选打分与 `findSimilarIds` 同算法（完全 > 前缀 > 子串 > Levenshtein），提取为 `findSimilarStrings(strings[], query, k)` 复用。
+
+#### 新增测试（+10 测试，0 回归）
+
+- `test/with-snapshot.test.mjs` 新增 **6** 测试：参数校验 / 损坏 JSON 透传 / 命中缓存路径不构建 / `ensureSnapshot` 存在 / 默认 `silent=true` 契约
+- `test/toolRegistry.test.mjs` 25 → **29** 测试，新增 4 条：
+  - `get_schema` 返回 vocabulary 块 + `_vocabularyStats`
+  - `query_objects` 未知 type `_meta.suggestions`
+  - `traverse_links` 未知 linkType `_meta.suggestions` + `validValues`
+  - `traverse_links` "links" / "all" 是合法 linkType（不被误拒）
+
+#### 已锁定的 3 个设计决策（详见 ADR 0014）
+
+- **D1 withSnapshot 透明包装**：与 asdm `withGraph(gid, fn)` 同构，对应 nice-aos 本地 `loadSnapshot` + `buildOntologyData`；保留接口给未来 MCP server 接入
+- **D2 vocabulary 与 viewer 共享形态**：cost-static 路径（不调 `createBlueprint`），让 `get_schema` 在大快照上仍轻量
+- **D3 错误信 suggestions**：`_meta.ambiguity` 已有机制扩展（v0.35）；`_meta.suggestions` 是"未知值"场景的同类做法
+
+#### 不借鉴（保持零依赖 + 单一可推理）
+
+- ❌ asdm 的 zod / Express / Streamable HTTP MCP / OTel / pino / vitest
+- ❌ GraphConverter 多 converter 并存（保留接口，默认实现单例，留 v0.49+）
+- ❌ v1.3.6 Pending refs + 阶段屏障（规模不匹配）
+
+#### 后续候选（v0.49+）
+
+| 主题 | 内容 |
+|------|------|
+| MCP server 接入 | 把 `toolRegistry.call()` 接到 MCP protocol，让 `withSnapshot` 包装真正发挥价值（asdm `withGraph` 的镜像终态） |
+| linkDefs 数据驱动 | `LINK_TYPES` + `builderLinks.js` + `linkMeta.js` 三处收敛为单一 def 表，新增 linkType 从 3 文件改 1 表行 |
+| converter 钩子下放 | `traverse_links` 的 130 行集中逻辑拆 4 钩子（`resolveLink` / `virtualEntity` / `expandLinked` / `linkVocabulary`） |
+
+---
+
 ## [0.47.0] - 2026-09-23
 
 ### 借鉴 asdm-aos 第二批能力：RPC 匹配增强、facts 解析缓存、跨仓补链、引用完整性、迁移校验和、查询谓词与分析器注册表

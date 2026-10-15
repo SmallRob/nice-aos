@@ -119,20 +119,67 @@ export function createToolRegistry({ snap }) {
 
     {
       name: 'get_schema',
-      description: '获取本体元模型：20 种对象类型（带 prefix/category/level 描述）、26 链接类型、4 个 action 名称、抽象层级（L0-L3）、6 个概念范畴。供 agent 自动发现能力',
+      description: '获取本体元模型：对象类型（带 prefix/category/level 描述）、链接类型（含反向对）、action 名称、抽象层级（L0-L3）、概念范畴。v0.48.0 起额外返回 vocabulary 块（与 viewerModel.blueprint.vocabulary 共享形态：objectTypes 按 count 倒序、含 active 标记；链接按 LINK_TYPE_PAIRS 区分正向/反向），便于 agent 与 viewer 共享同一词汇源',
       inputSchema: { type: 'object', properties: {}, required: [] },
-      handler: async () => ({
-        ok: true,
-        meta: {
-          version: ONTOLOGY_META.version,
-          abstractionLevels: ONTOLOGY_META.abstractionLevels,
-          categories: ONTOLOGY_META.categories,
-        },
-        objectTypes: OBJECT_TYPES,
-        linkTypes: LINK_TYPES,
-        actionNames: ACTION_NAMES,
-        prefixMap: Object.fromEntries(OBJECT_TYPES.map((t) => [t.prefix, t.type])),
-      }),
+      handler: async () => {
+        // v0.48.0 vocabulary 块：与 viewerModel.blueprint.vocabulary 共享数据形态，
+        // 但这里走 cost-static 路径（不调用 createBlueprint），让 get_schema 在大快照上也轻量。
+        // 与 viewer 端 linkTypePairs 推导保持一致（正向含反向对里出现的 name，反向含 LINK_TYPE_PAIRS 的 values 集合）。
+        const LINK_TYPE_PAIRS = {
+          contains: 'containedBy', belongsTo: 'belongsTo',
+          imports: 'importedBy', renders: 'renderedBy', calls: 'calledBy',
+          usesStore: 'usedByStore', usesTrait: 'usedByTrait',
+          extends: 'extendedBy', implements: 'implementedBy',
+          overrides: 'overriddenBy', mapsToTable: 'mappedFromCode',
+        };
+        // 仅保留当前 LINK_TYPES 里实际存在的反向名
+        const reverseNames = [...new Set(Object.entries(LINK_TYPE_PAIRS)
+          .filter(([fwd, rev]) => LINK_TYPES.includes(fwd) && LINK_TYPES.includes(rev))
+          .map(([, rev]) => rev))].filter((v) => LINK_TYPES.includes(v));
+        const vocabularyObjectTypes = OBJECT_TYPES
+          .map((t) => ({
+            type: t.type,
+            prefix: t.prefix,
+            category: t.category,
+            level: t.level,
+            description: t.description,
+            count: counts[t.type] ?? 0,
+            active: (counts[t.type] ?? 0) > 0,
+          }))
+          .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type));
+        return {
+          ok: true,
+          meta: {
+            version: ONTOLOGY_META.version,
+            abstractionLevels: ONTOLOGY_META.abstractionLevels,
+            categories: ONTOLOGY_META.categories,
+          },
+          objectTypes: OBJECT_TYPES,
+          linkTypes: LINK_TYPES,
+          actionNames: ACTION_NAMES,
+          prefixMap: Object.fromEntries(OBJECT_TYPES.map((t) => [t.prefix, t.type])),
+          // v0.48.0 新增：vocabulary 块（与 viewerModel.blueprint.vocabulary 同形态）
+          vocabulary: {
+            objectTypes: vocabularyObjectTypes,
+            linkTypes: LINK_TYPES,
+            reverseLinkTypes: reverseNames,
+            linkTypePairs: Object.fromEntries(
+              Object.entries(LINK_TYPE_PAIRS).filter(([fwd, rev]) =>
+                LINK_TYPES.includes(fwd) && LINK_TYPES.includes(rev),
+              ),
+            ),
+            actions: [...ACTION_NAMES],
+          },
+          // v0.48.0 推导统计（agent 自检 vocabulary 是否完整）
+          _vocabularyStats: {
+            objectTypeActiveCount: vocabularyObjectTypes.filter((t) => t.active).length,
+            objectTypeDeclaredCount: OBJECT_TYPES.length,
+            linkTypeDeclaredCount: LINK_TYPES.length,
+            reverseLinkTypeCount: reverseNames.length,
+            generatedAt: meta.generatedAt ?? null,
+          },
+        };
+      },
     },
 
     {
@@ -182,10 +229,20 @@ export function createToolRegistry({ snap }) {
       },
       handler: async ({ type, where, limit = 200, fields }) => {
         if (!OBJECT_TYPES.some((t) => t.type === type)) {
+          // v0.48.0 借鉴 asdm-aos unknown linkType 错误信：附 _meta.suggestions
+          // 与 traverse_links 一致，便于 agent 自纠错
           return {
             ok: false,
             error: `未知对象类型: ${type}`,
             validTypes: OBJECT_TYPES.map((t) => t.type),
+            _meta: {
+              epistemic: 'lower-bound',
+              suggestions: findSimilarStrings(
+                OBJECT_TYPES.map((t) => t.type),
+                type,
+                5,
+              ),
+            },
           };
         }
         const objects = snap[type] ?? [];
@@ -301,6 +358,19 @@ export function createToolRegistry({ snap }) {
         required: ['linkType', 'srcId'],
       },
       handler: async ({ linkType, srcId, depth = 1, withMeta = false }) => {
+        // v0.48.0 借鉴 asdm-aos UNKNOWN_LINK_TYPE：未声明 linkType 早返，避免静默空 targets
+        const VALID_LINK_TYPES = [...LINK_TYPES, 'links', 'all'];
+        if (!linkType || !VALID_LINK_TYPES.includes(linkType)) {
+          return {
+            ok: false,
+            error: `未知链接类型: ${linkType}`,
+            validValues: VALID_LINK_TYPES,
+            _meta: {
+              epistemic: 'lower-bound',
+              suggestions: findSimilarStrings(VALID_LINK_TYPES, linkType, 5),
+            },
+          };
+        }
         if (!srcId) return { ok: false, error: '缺少参数 srcId' };
         const src = byId.get(srcId);
         if (!src) {
@@ -521,6 +591,39 @@ function nameRelevance(candidate, query) {
   const d = levenshtein(c.slice(0, 64), q.slice(0, 64));
   const max = Math.max(c.length, q.length, 1);
   return Math.max(0, 1 - d / max) * 0.4;
+}
+
+/**
+ * v0.48.0 借鉴 asdm-aos UNKNOWN_LINK_TYPE 错误信（ontology.service.ts:95-101）：
+ *   "未知 linkType: 'foo'。可用正向: calls, contains, ...；反向: calledBy, containedBy, ..."
+ * nice-aos 形态：未知值时返回相似候选（复用 findSimilarIds 的 Levenshtein 打分，操作字符串数组）
+ * 用于 traverse_links / query_objects 错误路径，避免 agent 反复试错。
+ *
+ * @param {string[]} candidates 候选值数组（如 LINK_TYPES / OBJECT_TYPES）
+ * @param {string} query 未知值
+ * @param {number} [k=5] 返回条数上限
+ * @returns {Array<{value: string, score: number}>}
+ */
+function findSimilarStrings(candidates, query, k = 5) {
+  if (!query || !Array.isArray(candidates)) return [];
+  const q = String(query).toLowerCase();
+  const out = [];
+  for (const value of candidates) {
+    if (!value) continue;
+    const lower = String(value).toLowerCase();
+    let score = 0;
+    if (lower === q) score = 1.0;
+    else if (lower.startsWith(q)) score = 0.85;
+    else if (lower.includes(q)) score = 0.6;
+    else {
+      const t = lower.slice(0, 64);
+      const d = levenshtein(t, q.slice(0, 64));
+      const max = Math.max(t.length, q.length, 1);
+      score = Math.max(0, 1 - d / max) * 0.4;
+    }
+    if (score > 0.2) out.push({ value, score: Number(score.toFixed(3)) });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, k);
 }
 
 /** 标准 Levenshtein 距离（O(n*m) 空间），用于 id/name 相似度 */

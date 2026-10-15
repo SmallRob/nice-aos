@@ -306,3 +306,66 @@ test('createToolRegistry 拒绝空快照', () => {
   assert.throws(() => createToolRegistry({ snap: null }), /必须传入 snap/);
   assert.throws(() => createToolRegistry({}), /必须传入 snap/);
 });
+
+// ============================================================
+// v0.48.0：vocabulary envelope + suggestions
+// 借鉴 asdm-aos ontology.service.ts getVocabulary 思路 + UNKNOWN_LINK_TYPE 错误信
+// ============================================================
+
+test('get_schema 返回 vocabulary 块（v0.48.0 借鉴 asdm get_vocabulary）', async () => {
+  const reg = createToolRegistry({ snap: FIXTURE });
+  const r = await reg.call('get_schema', {});
+  assert.equal(r.ok, true);
+  assert.ok(r.vocabulary, 'v0.48.0 vocabulary 字段');
+  assert.ok(Array.isArray(r.vocabulary.objectTypes));
+  // objectTypes 按 count 倒序；Component (2) 排在 SourceFile (2) 之前或之后无所谓，但 active 标记正确
+  const comp = r.vocabulary.objectTypes.find((t) => t.type === 'Component');
+  assert.ok(comp, 'Component 应在 vocabulary.objectTypes');
+  assert.equal(comp.count, 2);
+  assert.equal(comp.active, true);
+  assert.equal(comp.prefix, 'comp:');
+  // 反向链接对：LINK_TYPE_PAIRS 仅保留 LINK_TYPES 里实际存在的
+  assert.ok(Array.isArray(r.vocabulary.reverseLinkTypes));
+  // linkTypePairs 字段
+  assert.ok(r.vocabulary.linkTypePairs && typeof r.vocabulary.linkTypePairs === 'object');
+  // actions 列表
+  assert.ok(Array.isArray(r.vocabulary.actions));
+  assert.ok(r.vocabulary.actions.length >= 4);
+  // _vocabularyStats
+  assert.ok(r._vocabularyStats);
+  assert.equal(typeof r._vocabularyStats.objectTypeActiveCount, 'number');
+  assert.equal(typeof r._vocabularyStats.objectTypeDeclaredCount, 'number');
+});
+
+test('query_objects 未知 type 返 _meta.suggestions（v0.48.0 借鉴 asdm-aos unknown linkType）', async () => {
+  const reg = createToolRegistry({ snap: FIXTURE });
+  const r = await reg.call('query_objects', { type: 'Componnt' }); // typo
+  assert.equal(r.ok, false);
+  assert.ok(r._meta, '应返回 _meta');
+  assert.equal(r._meta.epistemic, 'lower-bound');
+  assert.ok(Array.isArray(r._meta.suggestions));
+  // typo 'Componnt' → 'Component' 是高相似度候选
+  assert.ok(r._meta.suggestions.some((s) => s.value === 'Component' && s.score > 0.3),
+    'Component 应作为相近候选出现');
+});
+
+test('traverse_links 未知 linkType 返 _meta.suggestions + validValues（v0.48.0 借鉴 asdm-aos UNKNOWN_LINK_TYPE）', async () => {
+  const reg = createToolRegistry({ snap: FIXTURE });
+  const r = await reg.call('traverse_links', { linkType: 'rendesr', srcId: 'comp:Button' }); // 末两位调换
+  assert.equal(r.ok, false);
+  assert.match(r.error, /未知链接类型/);
+  assert.ok(Array.isArray(r.validValues));
+  assert.ok(r.validValues.includes('renders'), 'validValues 应包含 renders');
+  assert.ok(r._meta, '应返回 _meta');
+  assert.equal(r._meta.epistemic, 'lower-bound');
+  assert.ok(Array.isArray(r._meta.suggestions));
+  assert.ok(r._meta.suggestions.some((s) => s.value === 'renders' && s.score > 0.25),
+    'renders 应作为相近候选出现');
+});
+
+test('traverse_links "links" / "all" 是合法 linkType（不应被拒为未知）', async () => {
+  const reg = createToolRegistry({ snap: FIXTURE });
+  const r = await reg.call('traverse_links', { linkType: 'links', srcId: 'comp:Button' });
+  assert.equal(r.ok, true);
+  assert.equal(r.linkType, 'links');
+});
