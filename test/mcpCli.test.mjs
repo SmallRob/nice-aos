@@ -48,20 +48,17 @@ test('mcp --help 正常输出 + 描述含 "MCP server"', async () => {
   assert.match(r.stdout, /--dir/, '应列 --dir 选项');
 });
 
-test('mcp --dir 快照不存在时报错并退出（fail-fast）', async () => {
-  const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-mcp-nope-'));
-  const r = await runCli(['mcp', '--dir', emptyDir]);
-  assert.notEqual(r.code, 0, '缺快照应非零退出');
-  assert.match(r.stderr, /快照未找到/, `stderr 应含 "快照未找到"。实际:\n${r.stderr}`);
-  assert.match(r.stderr, /refreshRepo/, 'stderr 应提示先跑 refreshRepo');
-});
+// v0.52.0 行为变更：withSnapshot 透明加载，缺快照自动 build 不再 fail-fast
+// 见 ADR 0017。原先的两个 fail-fast 测试已废除——行为有意不同。
 
-test('mcp --dir 快照 JSON 损坏时报错并退出', async () => {
+test('mcp --dir 快照 JSON 损坏时报错并退出（withSnapshot 透传非 NO_SNAPSHOT 错误）', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-mcp-bad-'));
   fs.writeFileSync(path.join(dir, 'snapshot.json'), '{ this is not valid JSON');
   const r = await runCli(['mcp', '--dir', dir]);
   assert.notEqual(r.code, 0, '坏 JSON 应非零退出');
-  assert.match(r.stderr, /快照加载失败|PARSE_FAILED/, `stderr 应含解析错误。实际:\n${r.stderr}`);
+  // v0.52.0: withSnapshot 透传 SyntaxError，stderr 错误信息前缀会带 "快照加载/构建失败"
+  assert.match(r.stderr, /快照加载\/构建失败|JSON|Unexpected|ParseError|SyntaxError/,
+    `stderr 应含解析错误。实际:\n${r.stderr}`);
 });
 
 test('mcp --dir 合法快照能启动 + stderr 包含 "就绪" + 工具数 + 工具名', async () => {

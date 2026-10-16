@@ -2,6 +2,95 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.52.0] - 2026-10-16
+
+### MCP stdio server 接 withSnapshot 透明加载（候选三项收官）
+
+候选三项的最后一项落地：在远端 v0.46 已用 `@modelcontextprotocol/sdk` 实现 MCP server 基础上，做两处增强：
+1. **`withSnapshot` 透明加载**（v0.48.0 思路）：缺快照自动 build 不再 fail-fast
+2. **`createMcpHandlers(snap)` 工厂函数抽取**：handler 逻辑可独立单测
+
+详见 [ADR 0017](./docs/adr/0017-mcp-stdio-withsnapshot.md)。
+
+#### MCP server 透明加载改造（v0.52.0）
+
+旧 `src/cli/commands/mcp.js`（157 行 v0.46 实现）快照缺失时直接 `process.exit(1)`。改造后：
+
+```js
+// v0.52.0：withSnapshot 透明加载（v0.48.0 思路）
+const { value: snap, rebuilt } = await withSnapshot(root, s => s, {
+  silent: true,
+  onRebuild: () => { rebuilt = true; },
+});
+if (rebuilt) process.stderr.write('[nice-aos mcp] 快照缺失，已自动 build（v0.48.0 透明加载）\n');
+```
+
+**对照 asdm `withGraph(gid, fn)` 设计哲学** —— "查询自动 load，无需先手动 load"。agent 启动 `nice-aos mcp` 不再需要"先跑 `action refreshRepo`"前提。
+
+**JSON 损坏仍报错退出**：`withSnapshot` 透传非 NO_SNAPSHOT 错误（v0.48.0 决策），损坏 JSON → SyntaxError → CLI 退出。保护性 fail-fast 保留。
+
+#### `createMcpHandlers(snap)` 工厂函数（v0.52.0 可维护性提升）
+
+```js
+export function createMcpHandlers(snap) {
+  const registry = createToolRegistry({ snap });
+  function listTools() { return { tools: registry.list().map(/* 形态映射 */) }; }
+  async function callTool(request) { /* callTool */ }
+  return { listTools, callTool };
+}
+```
+
+**好处**：
+- `listTools` / `callTool` 是纯函数，独立于 SDK 不依赖 stdio
+- 8 个单测覆盖完整 handler 行为（无需 spawn 子进程）
+- 协议层（`server.setRequestHandler`）与业务层（`createMcpHandlers`）解耦，未来换 HTTP transport 直接复用
+
+#### 协议常量集中
+
+```js
+export const MCP_PROTOCOL_VERSION = '2024-11-05';  // SDK 期望
+export const MCP_SERVER_NAME = 'nice-aos';
+```
+
+#### 新增测试（+8 测试，0 回归；-1 测试废除）
+
+- `test/mcp.test.mjs` 新增 **8** 测试：
+  - createMcpHandlers 返回双函数
+  - listTools 返回 7 个 tool（name/description/inputSchema 字段齐全）
+  - callTool 缺 name / 缺 params → isError=true + 错误 JSON 文本
+  - callTool 合法 get_stats → isError=false + 业务结果 OK
+  - callTool 未知 tool → isError=true（toolRegistry.call 兜底）
+  - callTool 缺 arguments → 按 `{}` 处理（不报错）
+  - MCP 常量导出测试稳定性
+
+- `test/mcpCli.test.mjs` 更新：
+  - 废除："快照不存在时报错并退出（fail-fast）" —— 行为故意变更（透明加载）
+  - 更新："快照 JSON 损坏时报错并退出" 错误信匹配 → 现在报 "快照加载/构建失败"
+  - 现有 "合法快照启动" 测试 仍通过
+
+#### 已锁定的 4 个设计决策（详见 ADR 0017）
+
+- **D1** `createMcpHandlers(snap)` 工厂函数（纯函数，与 SDK 解耦）
+- **D2** withSnapshot 透明加载（复用 v0.48.0 设计，保留 JSON 损坏的 fail-fast）
+- **D3** 保持 SDK + stdio transport（零新依赖；HTTP 留 v0.53+）
+- **D4** 协议常量导出（`MCP_PROTOCOL_VERSION` / `MCP_SERVER_NAME`）
+
+#### 不进入此 ADR（明确留给后续）
+
+- ❌ HTTP MCP transport（v0.53+ 评估：bearer auth + Streamable HTTP SDK 复杂度）
+- ❌ Multi-graph MCP server（单 server 启动场景已覆盖）
+- ❌ converter 钩子接入 MCP request lifecycle（hook 化收益小）
+
+#### 后续候选（v0.53+）
+
+| 主题 | 内容 |
+|------|------|
+| MCP HTTP transport | Streamable HTTP SDK + bearer auth |
+| linkImpls 27 函数 → lookup 表 | blueprint.js linkImpls 收敛为表 + hooks（converter 已留接口） |
+| expandLinked 真实接入 | linkMeta.js 接到 converter.expandLinked（当前空实现） |
+
+---
+
 ## [0.51.0] - 2026-10-15
 
 ### ontology converter 钩子下放（借鉴分析 §2-B 落地）
