@@ -120,6 +120,62 @@ test('buildProjectProfile：架构画像 / 健康度 / 自然语言总结', () =
   assert.equal(profile.capabilities.length, 1);
 });
 
+test('buildProjectProfile：node-cli 无路由标为命令行工具', () => {
+  const profile = buildProjectProfile({
+    framework: 'node-cli',
+    fileObjects: [{ archLayer: 'shared' }],
+    modules: [],
+    domains: [],
+    routes: [],
+    components: [], stores: [], hooks: [], services: [], userScripts: [],
+    dependencies: [],
+    cycles: [],
+    orphanCandidates: [],
+    analysisErrors: [],
+  });
+  assert.equal(profile.architecture.style, 'cli-tool');
+  assert.equal(profile.architecture.styleLabel, '命令行工具');
+  assert.ok(profile.summary.includes('Node.js CLI 工具'));
+});
+
+test('buildProjectProfile：无路由的 cobra CLI 是命令行工具，有路由的 Go 服务仍是后端', () => {
+  const base = {
+    fileObjects: [{ archLayer: 'entry' }],
+    modules: [],
+    domains: [],
+    components: [], stores: [], hooks: [], services: [], userScripts: [],
+    dependencies: [],
+    cycles: [],
+    orphanCandidates: [],
+    analysisErrors: [],
+  };
+  const cli = buildProjectProfile({ ...base, framework: 'go', frameworkVariants: ['cobra'], routes: [] });
+  assert.equal(cli.architecture.style, 'cli-tool');
+  const api = buildProjectProfile({
+    ...base,
+    framework: 'go',
+    frameworkVariants: ['cobra', 'gin'],
+    routes: [{ id: 'route:/api' }],
+  });
+  assert.equal(api.architecture.style, 'backend-service');
+});
+
+test('buildProjectProfile：无路由的 React 仍是组件应用', () => {
+  const profile = buildProjectProfile({
+    framework: 'react',
+    fileObjects: [{ archLayer: 'presentation' }],
+    modules: [],
+    domains: [],
+    routes: [],
+    components: [{ id: 'comp:A' }], stores: [], hooks: [], services: [], userScripts: [],
+    dependencies: [],
+    cycles: [],
+    orphanCandidates: [],
+    analysisErrors: [],
+  });
+  assert.equal(profile.architecture.style, 'component-app');
+});
+
 // ---- 端到端：React fixture（分层目录 + feature-sliced 目录混合布局）----
 function buildFixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-sem-'));

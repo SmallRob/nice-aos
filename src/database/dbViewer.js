@@ -18,6 +18,7 @@ import {
 import { buildEntities, classifyTableKind, TABLE_KIND_LABELS } from './dbModel.js';
 import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
 import { SHARED_CSS } from '../themes/sharedCss.js';
+import { htmlShell } from '../themes/htmlShell.js';
 import { RING_JS } from '../themes/ring.js';
 
 function esc(s) {
@@ -366,14 +367,10 @@ export function renderDbOverviewHtml(model, options = {}) {
   const title = esc(model.meta.sourceDir ? model.meta.sourceDir.split('/').pop() : '数据库蓝图');
   const theme = options.theme || DEFAULT_THEMES.db;
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN" data-theme="${esc(theme)}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${title} · 数据库蓝图</title>
-<style>
-${buildThemeCss(theme)}
+  return htmlShell({
+    theme: esc(theme),
+    title: `${title} · 数据库蓝图`,
+    css: `${buildThemeCss(theme)}
 ${SHARED_CSS}
 /* ---- 布局骨架固定，以下为数据库蓝图专属样式 ---- */
 /* 顶部统计卡片：固定 8 项，网格均分整行（flex 版本窄屏会出现"7 张挤一行 + 1 张孤卡拉满整行"） */
@@ -489,11 +486,8 @@ svg.focus .dgn.hl { opacity: 1; }
 svg.focus .dge { opacity: .06; }
 svg.focus .dge.hl { opacity: 1; }
 #dg-info { margin-top: 10px; min-height: 20px; font-size: 13px; }
-#dg-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--purple); }
-</style>
-</head>
-<body>
-<header>
+#dg-info .name { font-family: 'SF Mono', Menlo, monospace; color: var(--purple); }`,
+    body: `<header>
   <h1>${title} · 数据库蓝图</h1>
   <div class="sub">${esc(model.meta.sourceDir)} · 扫描于 ${esc(fmtLocalTime(model.meta.scannedAt) || 'N/A')}${model.meta.incremental ? ' · 增量' : ' · 全量'}</div>
   <div class="stats" id="stats"></div>
@@ -1631,7 +1625,6 @@ const origSvg = document.getElementById('er-svg');
 origSvg.setAttribute('data-original-vb', origSvg.getAttribute('viewBox'));
 
 function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-</script>
-</body>
-</html>`;
+</script>`,
+  });
 }

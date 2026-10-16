@@ -19,6 +19,7 @@ import { SHARED_CSS } from '../themes/sharedCss.js';
 import { BLUEPRINT_CSS } from './viewerStyles.js';
 import { renderInteractive, renderActionCardHtml } from './viewerInteractive.js';
 import { CLIENT_BASE } from './viewerClient.js';
+import { htmlShell } from '../themes/htmlShell.js';
 export { buildViewerModel } from './viewerModel.js';
 
 // ============================================================
@@ -27,21 +28,14 @@ export { buildViewerModel } from './viewerModel.js';
 export function renderViewerHtml(model, options = {}) {
   const dataJson = JSON.stringify(model).replace(/</g, '\\u003c').replace(/-->/g, '--\\u003e');
   const theme = options.theme || DEFAULT_THEMES.code;
-  return `<!DOCTYPE html>
-<html lang="zh-CN" data-theme="${esc(theme)}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${esc(model.project.name)} · 本体蓝图查看器</title>
-<style>
-${buildThemeCss(theme, { '--teal': '#00b4ab', '--go': '#00add8' })}
+  return htmlShell({
+    theme: esc(theme),
+    title: `${esc(model.project.name)} · 本体蓝图查看器`,
+    css: `${buildThemeCss(theme, { '--teal': '#00b4ab', '--go': '#00add8' })}
 ${SHARED_CSS}
 /* ---- 布局骨架固定，以下为代码蓝图专属样式 ---- */
-${BLUEPRINT_CSS}
-</style>
-</head>
-<body>
-<header>
+${BLUEPRINT_CSS}`,
+    body: `<header>
   <h1 id="v-title"></h1>
   <div class="sub" id="v-sub"></div>
   <nav class="tabs">
@@ -74,9 +68,8 @@ ${BLUEPRINT_CSS}
   <section class="view" id="view-interactive"></section>
 </main>
 <script id="viewer-data" type="application/json">${dataJson}</script>
-${CLIENT_BASE}` + renderInteractiveScript() + `
-</body>
-</html>`;
+${CLIENT_BASE}` + renderInteractiveScript(),
+  });
 }
 
 // 借鉴 asdm-aos v0.0.12 ActionPanel.tsx 设计：按对象类型过滤可用动作、点击对象自动填表单、提交走 fetch 调 nice-aos serve

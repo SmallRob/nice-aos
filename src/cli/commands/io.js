@@ -14,7 +14,8 @@ import { Command } from 'commander';
 import { resolveSnapshotDirs, loadSnapshotFile } from '../shared.js';
 import { scanSnapshotIOWithContent } from '../../analyzers/ioScanner.js';
 
-export const ioCommand = new Command('io')
+export function createIoCommand() {
+  return new Command('io')
   .description('扫描快照中所有 method 的 IO 敏感 API 使用（借鉴 code-graph-rag 的 IO_SINKS 数据驱动注册表，v0.32.0 静态扫描版）')
   .option('--root <dir>', '项目根目录（默认当前目录）', process.cwd())
   .option('--dir <path>', '快照目录（默认 <root>/.nice-aos/data）')
@@ -123,3 +124,6 @@ export const ioCommand = new Command('io')
     if (opts.output) fs.writeFileSync(opts.output, text, 'utf-8');
     else process.stdout.write(text + '\n');
   });
+}
+
+export const ioCommand = createIoCommand();

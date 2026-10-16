@@ -14,7 +14,8 @@ import { Command } from 'commander';
 import { resolveSnapshotDirs, loadSnapshotFile } from '../shared.js';
 import { findDeadExported, markDeadCandidates } from '../../analyzers/deadCode.js';
 
-export const deadcodeCommand = new Command('deadcode')
+export function createDeadcodeCommand() {
+  return new Command('deadcode')
   .description('基于 entry-point BFS 找出"导出但不可达"的 class（借鉴 code-graph-rag 的 cgr dead-code 算法）')
   .option('--root <dir>', '项目根目录（默认当前目录）', process.cwd())
   .option('--dir <path>', '快照目录（默认 <root>/.nice-aos/data）')
@@ -99,3 +100,6 @@ export const deadcodeCommand = new Command('deadcode')
     if (opts.output) fs.writeFileSync(opts.output, text, 'utf-8');
     else process.stdout.write(text + '\n');
   });
+}
+
+export const deadcodeCommand = createDeadcodeCommand();

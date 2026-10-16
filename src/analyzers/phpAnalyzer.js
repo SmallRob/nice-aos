@@ -20,7 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { findMatchingPair } from './textUtils.js';
+import { computeLineStarts, findMatchingPair, lineAt } from './textUtils.js';
 
 export function isPhpCandidate(relPath) {
   return relPath.endsWith('.php') && !relPath.endsWith('.blade.php');
@@ -63,12 +63,6 @@ function stripPhpNoise(src) {
     i += 1;
   }
   return out.join('');
-}
-
-function computeLineStarts(src) {
-  const starts = [0];
-  for (let i = 0; i < src.length; i += 1) if (src.charCodeAt(i) === 10) starts.push(i + 1);
-  return starts;
 }
 
 // DAO 链 SQL 表名提取（zentaopms `dao` 惯例；复用 pythonAnalyzer/tsAnalyzer sqlQueries 通道）：
@@ -132,13 +126,7 @@ function extractDefines(src) {
   }
   return defines;
 }
-function lineAt(ls, pos) {
-  if (pos < 0) return 1;
-  let lo = 0, hi = ls.length - 1;
-  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (ls[mid] <= pos) lo = mid; else hi = mid - 1; }
-  return lo + 1;
-}
-// 配对查找收敛于 textUtils.findMatchingPair（输入为已剥离注释的文本）
+// 行号与配对查找收敛于 textUtils（lineAt / findMatchingPair）（输入为已剥离注释的文本）
 function findMatchingBrace(s, openIdx) { return findMatchingPair(s, openIdx, '{', '}'); }
 function findMatchingParen(s, openIdx) { return findMatchingPair(s, openIdx, '(', ')'); }
 function readIdent(s, pos) {

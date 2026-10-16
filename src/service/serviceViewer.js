@@ -14,6 +14,7 @@
 import { auditHealth, runAllServiceAudits } from './serviceAuditor.js';
 import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
 import { SHARED_CSS } from '../themes/sharedCss.js';
+import { htmlShell } from '../themes/htmlShell.js';
 import { RING_JS } from '../themes/ring.js';
 
 const ENDPOINT_DISPLAY_CAP = 2000;
@@ -128,14 +129,10 @@ export function renderServiceBlueprintHtml(model, options = {}) {
   const title = esc(model.meta.repositoryName || (model.meta.snapshotPath ? model.meta.snapshotPath.split('/').pop() : '后端服务'));
   const theme = options.theme || DEFAULT_THEMES.service;
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN" data-theme="${esc(theme)}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${title} · 后端服务蓝图</title>
-<style>
-${buildThemeCss(theme)}
+  return htmlShell({
+    theme: esc(theme),
+    title: `${title} · 后端服务蓝图`,
+    css: `${buildThemeCss(theme)}
 ${SHARED_CSS}
 /* ---- 布局骨架固定，以下为服务蓝图专属样式 ---- */
 /* ---- 技术栈 ---- */
@@ -187,11 +184,8 @@ svg.focus .sge.hl { opacity: 1; }
 .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
 .legend .line { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--blue); margin: 0 4px 0 2px; vertical-align: 3px; }
 .legend .cg-hint { color: var(--fg-faint); }
-.note { margin-top: 10px; font-size: 12px; color: var(--fg-faint); }
-</style>
-</head>
-<body>
-<header>
+.note { margin-top: 10px; font-size: 12px; color: var(--fg-faint); }`,
+    body: `<header>
   <h1>${title} · 后端服务蓝图</h1>
   <div class="sub">${esc(model.meta.repositoryName ? '仓库 ' + model.meta.repositoryName : model.meta.snapshotPath)} · ${MODULE_SOURCE_LABELS[model.meta.modulePrefixSource] || ''} · 扫描于 ${esc(fmtLocalTime(model.meta.scannedAt) || 'N/A')}</div>
   <div class="stats" id="stats"></div>
@@ -927,7 +921,6 @@ function renderGraph() {
 }
 
 renderGraph();
-</script>
-</body>
-</html>`;
+</script>`,
+  });
 }

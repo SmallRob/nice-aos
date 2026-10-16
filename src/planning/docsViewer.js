@@ -7,6 +7,7 @@ import { auditHealth } from './docsAuditor.js';
 import { STATUS_DEFS, STATUS_ORDER } from './docsModel.js';
 import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
 import { SHARED_CSS } from '../themes/sharedCss.js';
+import { htmlShell } from '../themes/htmlShell.js';
 import { RING_JS } from '../themes/ring.js';
 
 const GRAPH_NODE_CAP = 160;
@@ -59,14 +60,10 @@ export function renderPlanningBlueprintHtml(model, options = {}) {
   const title = esc(meta.name || '产品规划蓝图');
   const theme = options.theme || DEFAULT_THEMES.planning || 'deep-blue';
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN" data-theme="${esc(theme)}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${title} · 产品规划蓝图</title>
-<style>
-${buildThemeCss(theme)}
+  return htmlShell({
+    theme: esc(theme),
+    title: `${title} · 产品规划蓝图`,
+    css: `${buildThemeCss(theme)}
 ${SHARED_CSS}
 /* ---- 产品规划蓝图专属样式 ---- */
 .ctrl { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; align-items: center; }
@@ -115,11 +112,8 @@ table.pgrid tr:hover td { background: color-mix(in srgb, var(--accent-blue, var(
 .theme-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 .theme-card .tc-title { font-weight: 600; margin-bottom: 4px; }
 .theme-card .tc-sum { font-size: 12px; color: var(--fg-dim); }
-.empty { color: var(--fg-faint); font-size: 13px; padding: 12px 2px; }
-</style>
-</head>
-<body>
-<header>
+.empty { color: var(--fg-faint); font-size: 13px; padding: 12px 2px; }`,
+    body: `<header>
   <div style="max-width:1600px;margin:0 auto;">
     <h1>🛰 ${title} · 产品规划蓝图</h1>
     <div class="sub">来源 <b id="h-source">${esc(meta.sourceDir || '—')}</b> ｜ 扫描 <span id="h-scanned"></span> ｜ 引擎 <span id="h-ver"></span></div>
@@ -794,7 +788,6 @@ function renderAudit(){
     issues.slice(0, 120).map(i => '<tr><td>' + esc(i.dimension) + '</td><td>' + esc(i.feature || (i.source ? i.source+'→'+i.target : '')) + '</td><td>' + esc(i.reason || i.title || '') + '</td></tr>').join('') +
     '</tbody></table>' : '<div class="empty">✅ 无审计问题</div>';
 }
-</script>
-</body>
-</html>`;
+</script>`,
+  });
 }

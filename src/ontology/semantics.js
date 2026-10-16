@@ -345,13 +345,33 @@ const FRAMEWORK_LABELS = {
   'react-native': 'React Native 应用',
   expo: 'React Native（Expo）应用',
   userscript: '油猴脚本集合',
+  'node-cli': 'Node.js CLI 工具',
   unknown: '前端项目',
 };
+
+const STYLE_LABELS = {
+  'layered-spa': '分层单页应用',
+  'component-app': '组件应用',
+  'script-collection': '脚本集合',
+  'backend-service': '后端服务',
+  'cli-tool': '命令行工具',
+};
+
+// node-cli（package.json bin）以及无 HTTP 路由的 cobra CLI，不再掉进「组件应用」。
+function inferArchitectureStyle(framework, routes, frameworkVariants) {
+  if (framework === 'userscript') return 'script-collection';
+  const variants = frameworkVariants ?? [];
+  if (framework === 'node-cli') return 'cli-tool';
+  if (framework === 'go' && routes.length === 0 && variants.includes('cobra')) return 'cli-tool';
+  if (BACKEND_FRAMEWORKS.has(framework)) return 'backend-service';
+  if (routes.length > 0) return 'layered-spa';
+  return 'component-app';
+}
 
 // 项目级架构画像：分层结构 / 架构风格 / 健康度 / 自然语言总结
 export function buildProjectProfile(ctx) {
   const {
-    framework, frameworkLabel, fileObjects, modules, domains, routes, components, stores, hooks, services,
+    framework, frameworkLabel, frameworkVariants, fileObjects, modules, domains, routes, components, stores, hooks, services,
     userScripts, dependencies, cycles, orphanCandidates, analysisErrors,
     deadFunctionCount = 0, deadTypeCount = 0, deadExportCount = 0,
   } = ctx;
@@ -369,9 +389,7 @@ export function buildProjectProfile(ctx) {
     }))
     .sort((a, b) => b.fileCount - a.fileCount);
 
-  const style = framework === 'userscript' ? 'script-collection'
-    : BACKEND_FRAMEWORKS.has(framework) ? 'backend-service'
-    : (routes.length > 0 ? 'layered-spa' : 'component-app');
+  const style = inferArchitectureStyle(framework, routes, frameworkVariants);
 
   const undeclaredDependencyCount = dependencies.filter((d) => d.source === 'undeclared').length;
   const highRiskScriptCount = userScripts.filter((s) => s.riskLevel === 'high').length;
@@ -402,7 +420,7 @@ export function buildProjectProfile(ctx) {
   return {
     architecture: {
       style,
-      styleLabel: { 'layered-spa': '分层单页应用', 'component-app': '组件应用', 'script-collection': '脚本集合', 'backend-service': '后端服务' }[style],
+      styleLabel: STYLE_LABELS[style],
       layers,
       layerCount: layers.length,
       domainCount: domains.length,

@@ -89,6 +89,7 @@ export function builderAssemblePhase(ctx) {
   const profile = buildProjectProfile({
     framework: scan.framework,
     frameworkLabel: project.frameworkLabel,
+    frameworkVariants: scan.frameworkVariants,
     fileObjects, modules, domains, routes,
     components, stores, hooks, services, userScripts,
     dependencies, cycles, orphanCandidates, analysisErrors,

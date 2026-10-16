@@ -2,6 +2,18 @@
 
 本项目的所有重要变更均记录于此。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 入口收束（行为保持）
+
+- README 收到一屏，场景 / 本体 / CLI / 解析说明移到 `docs/guide.md`
+- `check deadcode|duplicates|io` 作为体检入口；顶层同名命令仍可用，只是不再出现在顶层帮助
+- `ask --help` 选项表只留 `--agent`、`--json`、`--since`、`--save`；其余旗标仍可用，列在帮助末尾
+- 五份蓝图 HTML 共用 `htmlShell`，渲染结果与拆分前一致
+- 蓝图客户端脚本按 Tab 拆到 `src/ontology/viewerClient/`，拼回的脚本与拆分前一致
+- `package.json` 含 `bin` 的 Node CLI，以及无路由的 cobra 项目，架构风格记为「命令行工具」
+- PHP 分析器的行号计算改走 `textUtils`
+
 ## [0.52.0] - 2026-10-16
 
 ### MCP stdio server 接 withSnapshot 透明加载（候选三项收官）

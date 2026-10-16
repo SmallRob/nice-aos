@@ -25,7 +25,7 @@
 
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { loadSnapshot, saveSnapshot } from '../../ontology/snapshot.js';
 import { buildAskContextFromSql, saveSnapshot as sqlSaveSnapshot } from '../../storage/index.js';
 import { getSnapshotDir } from '../../paths.js';
@@ -374,25 +374,39 @@ function listAvailableAgentsTip() {
 
 // ---------- CLI 命令定义 ----------
 
+function askOpt(flags, description, { hide = false, defaultValue, parser } = {}) {
+  const option = new Option(flags, description);
+  if (hide) option.hideHelp();
+  if (parser) option.argParser(parser);
+  if (defaultValue !== undefined) option.default(defaultValue);
+  return option;
+}
+
 export const askCommand = new Command('ask')
-  .description('基于本体快照向 AI 提问：默认优先后自定义模型服务（OpenAI 兼容），亦可选择 AI CLI（codebuddy/opencode/trae/qoder/...）或 --agent-cmd 接入任意 CLI；支持 --tools 自治深查、--since 增量问答、--session 多轮、--stream 流式、--save 落盘')
+  .description('基于本体快照向 AI 提问。常用：--agent --json --since --save。进阶旗标仍可用，见帮助末尾')
   .argument('[question]', '问题文本（config / eval 子命令时省略）')
-  .option('--agent <name>', `问答通道: auto | api | ${['codebuddy', 'opencode', 'trae', 'qoder'].join(' | ')} | ...（默认 auto：已配置的自定义模型服务优先，其次按注册表序探测可用 CLI）`, 'auto')
-  .option('--agent-cmd <template>', '自定义 AI CLI 接入模板: "<bin> [args...] {prompt}"；含 {prompt} 占位符按位注入，缺省追加末尾。示例: --agent-cmd "myai --ask {prompt}"')
-  .option('--cwd <path>', '项目根目录（默认当前目录；影响快照目录解析链）')
-  .option('--serve', '同时后台启动 serve，把 HTTP URL 拼进 prompt 供 AI 深查完整快照')
-  .option('--tools', '自治深查模式（隐含 --serve）：把 query/link/export CLI 与 HTTP 端点使用指引注入 prompt，让 AI 按需自行取证并引用对象 id')
-  .option('--tool-call', '自治工具循环（sub-tool 正式版，仅模型服务通道）：AI 输出 aos-tool JSON 块 → 进程执行真实 query/link/output → 结果回填再生成，≤5 步收敛')
-  .option('--max-tool-steps <n>', '--tool-call 的最大循环步数（默认 5）', parseInt)
-  .option('--no-auto-refresh', '跳过空数据自动快照（无快照/空项目时不自动 refreshRepo，直接按现状处理）')
-  .option('--timeout <ms>', 'agent / 模型服务调用超时（默认 120000）', '120000')
-  .option('--stream', '流式输出（仅 --agent api 有效：token 逐字打到 stdout；CLI agent 不支持流式，自动降级到非流式）')
-  .option('--json', 'JSON 结构化输出 {ok, agent, contextSource, durationMs, answer, streamed}')
-  .option('--session <id>', '多轮会话：把历史 turn 折进 prompt，回答后 append 到 ~/.nice-aos/sessions/<id>.jsonl；同 id 续聊可保持上下文')
-  .option('--session-max-turns <n>', '多轮会话：prompt 中只带最近 N 轮（默认全带；防止 token 击穿）', (v) => parseInt(v, 10))
-  .option('--save [path]', '回答落盘为自包含 Markdown 存档；省略路径时写入 <snapshotDir>/answers/ask-<时间戳>.md')
-  .option('--since <ref>', '跨快照 diff 问答：git ref 以来的变更文件与涉及对象折叠进 prompt（语法同 export --since）；适合"这次改动影响谁"类提问')
-  .option('--staged', '配合 --since：只看已暂存变更（pre-commit 体检场景）')
+  .addOption(askOpt('--agent <name>', '问答通道: auto | api | codebuddy | opencode | ...（默认 auto）', { defaultValue: 'auto' }))
+  .addOption(askOpt('--json', 'JSON 结构化输出 {ok, agent, contextSource, durationMs, answer}'))
+  .addOption(askOpt('--since <ref>', '把 git ref 以来的变更折叠进提问'))
+  .addOption(askOpt('--save [path]', '回答落盘为 Markdown；省略路径时写入快照目录 answers/'))
+  .addOption(askOpt('--agent-cmd <template>', '自定义 AI CLI："<bin> [args...] {prompt}"', { hide: true }))
+  .addOption(askOpt('--cwd <path>', '项目根目录（默认当前目录）', { hide: true }))
+  .addOption(askOpt('--serve', '后台启动 serve，把 HTTP URL 拼进 prompt', { hide: true }))
+  .addOption(askOpt('--tools', '自治深查（隐含 --serve）：把 query/link/export 用法注入 prompt', { hide: true }))
+  .addOption(askOpt('--tool-call', '自治工具循环：模型输出 aos-tool JSON，进程执行后回填（仅模型通道）', { hide: true }))
+  .addOption(askOpt('--max-tool-steps <n>', '--tool-call 最大步数（默认 5）', { hide: true, parser: (v) => parseInt(v, 10) }))
+  .addOption(askOpt('--no-auto-refresh', '无快照时不自动 refreshRepo', { hide: true }))
+  .addOption(askOpt('--timeout <ms>', '调用超时（默认 120000）', { hide: true, defaultValue: '120000' }))
+  .addOption(askOpt('--stream', '流式输出（仅 --agent api）', { hide: true }))
+  .addOption(askOpt('--session <id>', '多轮会话 id，历史写入 ~/.nice-aos/sessions/<id>.jsonl', { hide: true }))
+  .addOption(askOpt('--session-max-turns <n>', 'prompt 只带最近 N 轮', { hide: true, parser: (v) => parseInt(v, 10) }))
+  .addOption(askOpt('--staged', '配合 --since：只看已暂存变更', { hide: true }))
+  .addHelpText('after', [
+    '',
+    '进阶旗标仍然可用：--agent-cmd --cwd --serve --tools --tool-call --max-tool-steps',
+    '  --no-auto-refresh --timeout --stream --session --session-max-turns --staged',
+    '子命令：ask config（模型） / ask eval（评测）。多轮会话用 --session <id>。',
+  ].join('\n'))
   .action(async (question, opts) => {
     if (question === undefined) {
       fail('缺少问题文本。用法: nice-aos ask "<问题>"（配置模型服务: nice-aos ask config set --provider deepseek --api-key <key>）');

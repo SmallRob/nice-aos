@@ -18,6 +18,7 @@ import {
 import { SERVICE_TYPE_LABELS, SERVICE_TYPE_COLORS, LAYER_RULES } from './deployModel.js';
 import { buildThemeCss, DEFAULT_THEMES } from '../themes/index.js';
 import { SHARED_CSS } from '../themes/sharedCss.js';
+import { htmlShell } from '../themes/htmlShell.js';
 import { RING_JS } from '../themes/ring.js';
 
 function esc(s) {
@@ -211,14 +212,10 @@ export function renderDeployOverviewHtml(model, options = {}) {
   const title = esc(model.meta.sourceDir ? model.meta.sourceDir.split('/').pop() : '部署蓝图');
   const theme = options.theme || DEFAULT_THEMES.deploy;
 
-  return `<!DOCTYPE html>
-<html lang="zh-CN" data-theme="${esc(theme)}">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>${title} · 部署架构蓝图</title>
-<style>
-${buildThemeCss(theme)}
+  return htmlShell({
+    theme: esc(theme),
+    title: `${title} · 部署架构蓝图`,
+    css: `${buildThemeCss(theme)}
 ${SHARED_CSS}
 /* ---- 布局骨架固定，以下为部署蓝图专属样式 ---- */
 /* ---- 拓扑 ---- */
@@ -263,11 +260,8 @@ ${SHARED_CSS}
 .mw-kv { font-size: 12px; color: var(--fg-dim); padding: 2px 0; }
 .consumer-tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--panel2); margin: 2px 4px 2px 0; font-family: 'SF Mono', Menlo, monospace; }
 /* ---- 健康（基础仪表盘样式见共享骨架，此处仅部署专属） ---- */
-.issue-item .loc { display: block; font-size: 11px; color: var(--fg-faint); font-family: 'SF Mono', Menlo, monospace; margin-top: 2px; }
-</style>
-</head>
-<body>
-<header>
+.issue-item .loc { display: block; font-size: 11px; color: var(--fg-faint); font-family: 'SF Mono', Menlo, monospace; margin-top: 2px; }`,
+    body: `<header>
   <h1>${title} · 部署架构蓝图</h1>
   <div class="sub">${esc(model.meta.sourceDir)} · 扫描于 ${esc(fmtLocalTime(model.meta.scannedAt) || 'N/A')}${model.meta.incremental ? ' · 增量' : ' · 全量'}</div>
   <div class="stats" id="stats"></div>
@@ -1030,7 +1024,6 @@ function setK8sNs(chip, ns) {
 renderTopology();
 renderServices();
 renderDepGraph();
-</script>
-</body>
-</html>`;
+</script>`,
+  });
 }

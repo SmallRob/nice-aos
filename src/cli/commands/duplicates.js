@@ -44,7 +44,8 @@ function collectMethods(snap) {
   return { items, skippedNoFingerprint };
 }
 
-export const duplicatesCommand = new Command('duplicates')
+export function createDuplicatesCommand() {
+  return new Command('duplicates')
   .description('扫描本体快照中的结构重复函数（AST fingerprint 群组分析）—— 借鉴 code-graph-rag 的 cgr duplicates 算法')
   .option('--root <dir>', '项目根目录（默认当前目录）', process.cwd())
   .option('--dir <path>', '快照目录（默认 <root>/.nice-aos/data）')
@@ -125,3 +126,6 @@ export const duplicatesCommand = new Command('duplicates')
     if (opts.output) fs.writeFileSync(opts.output, text, 'utf-8');
     else process.stdout.write(text + '\n');
   });
+}
+
+export const duplicatesCommand = createDuplicatesCommand();

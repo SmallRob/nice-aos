@@ -18,6 +18,7 @@ import { actionCommand } from './commands/action.js';
 import { exportCommand } from './commands/export.js';
 import { serveCommand } from './commands/serve.js';
 import { mcpCommand } from './commands/mcp.js';
+import { checkCommand } from './commands/check.js';
 import { duplicatesCommand } from './commands/duplicates.js';
 import { deadcodeCommand } from './commands/deadcode.js';
 import { ioCommand } from './commands/io.js';
@@ -40,17 +41,18 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(PKG_ROOT, 'package.json'), 
 const program = new Command();
 program
   .name('nice-aos')
-  .description('nice-aos —— 通用前端代码本体分析 CLI：扫描 React/TypeScript、Vue 3 SFC 与油猴脚本（Tampermonkey UserScript）生成结构化本体快照（模块/文件/组件/Hook/Store/Service/路由/依赖 + import/render/导航关系图谱；油猴脚本含 GM API/DOM 注入/网络端点/函数调用图），供 AI agent 与开发者毫秒级查询')
+  .description('把代码仓库扫成可查询的本体快照。核心：ask / output / serve；体检：check')
   .version(VERSION)
   // 三大核心命令提示（顶层 --help 顶部显示，让 ask / output / serve 显眼）
   .addHelpText('beforeAll', () => {
     return [
       '★ 三大核心命令（输入 / 输出 / 服务）',
-      '  ask       基于本体快照向 AI 提问（自定义模型服务优先，可选 codebuddy/opencode/trae/qoder 等 CLI 或 --agent-cmd 接入；支持 --tools 自治深查 / --since 增量问答 / --save 落盘 / ask eval 评测）',
-      '  output    导出项目报告与蓝图（Markdown / JSON / HTML 蓝图 / viewmodel / 架构图画布；output = export 别名）',
-      '  serve     启动本地数据源 HTTP 服务（CORS *），暴露快照与 7 个 /api/* 端点给 agent 跨源拉取',
+      '  ask       基于本体快照向 AI 提问（默认：nice-aos ask "问题"）',
+      '  output    导出报告与蓝图（output = export 别名）',
+      '  serve     启动本地 HTTP 数据源（快照、蓝图、/api/*）',
+      '  check     快照体检：deadcode / duplicates / io',
       '',
-      '详细定位见 README "三大核心命令" 区块；升级路线见 docs/plan/aos-three-core-roadmap.md。',
+      '对象类型与链接以 get_schema 为准。详细说明见 docs/guide.md。',
       '',
     ].join('\n');
   })
@@ -88,9 +90,10 @@ program.addCommand(exportCommand);
 exportCommand.alias('output'); // 三大核心命令：output 是 export 的顶层别名（用户视角"产出报告"）
 program.addCommand(serveCommand);
 program.addCommand(mcpCommand);
-program.addCommand(duplicatesCommand);
-program.addCommand(deadcodeCommand);
-program.addCommand(ioCommand);
+program.addCommand(checkCommand);
+program.addCommand(duplicatesCommand, { hidden: true });
+program.addCommand(deadcodeCommand, { hidden: true });
+program.addCommand(ioCommand, { hidden: true });
 program.addCommand(updateCommand);
 program.addCommand(dbCommand);
 program.addCommand(deployCommand);
